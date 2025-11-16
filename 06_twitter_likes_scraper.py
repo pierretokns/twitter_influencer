@@ -20,6 +20,7 @@ import time
 import random
 import sqlite3
 import ssl
+import re
 from pathlib import Path
 from datetime import datetime
 from typing import List, Dict, Any, Optional
@@ -78,10 +79,19 @@ class TwitterAuth:
             )
             for char in self.username:
                 username_input.send_keys(char)
-                time.sleep(random.uniform(0.05, 0.15))
-            time.sleep(random.uniform(0.5, 1.5))
+                # More realistic typing speed with occasional pauses
+                if random.random() < 0.1:
+                    time.sleep(random.uniform(0.2, 0.4))
+                else:
+                    time.sleep(random.uniform(0.08, 0.18))
+                if random.random() < 0.05 and len(self.username) > 1:
+                    time.sleep(random.uniform(0.1, 0.3))
+                    username_input.send_keys(Keys.BACKSPACE)
+                    time.sleep(random.uniform(0.05, 0.15))
+                    username_input.send_keys(char)
+            time.sleep(random.uniform(0.8, 2.0))
             username_input.send_keys(Keys.RETURN)
-            time.sleep(random.uniform(2, 4))
+            time.sleep(random.uniform(2.5, 5.0))
             
             # Password
             password_input = WebDriverWait(self.driver, 15).until(
@@ -89,10 +99,13 @@ class TwitterAuth:
             )
             for char in self.password:
                 password_input.send_keys(char)
-                time.sleep(random.uniform(0.05, 0.15))
-            time.sleep(random.uniform(0.5, 1.5))
+                if random.random() < 0.1:
+                    time.sleep(random.uniform(0.15, 0.35))
+                else:
+                    time.sleep(random.uniform(0.06, 0.16))
+            time.sleep(random.uniform(0.6, 1.8))
             password_input.send_keys(Keys.RETURN)
-            time.sleep(random.uniform(3, 6))
+            time.sleep(random.uniform(3.5, 7.0))
             
             # Verify login
             try:
@@ -196,41 +209,65 @@ class TweetParser:
 class ThreadExtractor:
     """Extracts complete conversation threads"""
     
-    def __init__(self, driver, parser: TweetParser):
+    def __init__(self, driver, parser: TweetParser, *, max_scrolls: int = 40,
+                 max_tweets: int = 30):
         self.driver = driver
         self.parser = parser
+        self.max_scrolls = max_scrolls
+        self.max_tweets = max_tweets
     
     def extract_complete_thread(self, tweet_data: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """Extract complete thread by navigating to tweet and scrolling slowly"""
+        """
+        Extract complete thread by navigating to tweet and scrolling slowly
+        Returns: List of all tweets in the thread (sorted by timestamp)
+        """
         if not tweet_data.get('is_reply') or not tweet_data.get('tweet_id'):
             return []
         
         try:
             current_url = self.driver.current_url
+            original_window = self.driver.current_window_handle
+            thread_window = None
             tweet_id = tweet_data['tweet_id']
             
-            Logger.info(f"Extracting thread for tweet {tweet_id[:15]}...")
+            Logger.info(f"Extracting thread for tweet {tweet_id}...")
             
-            # Navigate to tweet
             tweet_url = f"https://twitter.com/i/web/status/{tweet_id}"
+            try:
+                self.driver.switch_to.new_window('tab')
+                thread_window = self.driver.current_window_handle
+            except Exception:
+                try:
+                    existing_handles = set(self.driver.window_handles)
+                    self.driver.execute_script("window.open('about:blank','_blank');")
+                    WebDriverWait(self.driver, 5).until(
+                        lambda d: len(d.window_handles) > len(existing_handles)
+                    )
+                    new_handles = [h for h in self.driver.window_handles if h not in existing_handles]
+                    if new_handles:
+                        thread_window = new_handles[0]
+                        self.driver.switch_to.window(thread_window)
+                except Exception:
+                    thread_window = None
+                    self.driver.switch_to.window(original_window)
+            
             self.driver.get(tweet_url)
             time.sleep(5)
             
-            # Scroll to top
             print("      ⬆️  Scrolling to top...")
             for _ in range(20):
                 self.driver.execute_script("window.scrollTo(0, 0);")
                 time.sleep(0.3)
             time.sleep(3)
             
-            # Extract tweets
             print("      📜 Extracting tweets...")
-            seen_ids = set([tweet_id])
+            seen_ids = set()
             all_tweets = []
             scroll_count = 0
             no_new_count = 0
+            target_found = False
             
-            while scroll_count < 80 and no_new_count < 8:
+            while scroll_count < self.max_scrolls and no_new_count < 8:
                 elements = self.driver.find_elements(By.CSS_SELECTOR, 'article[data-testid="tweet"]')
                 
                 new_count = 0
@@ -240,10 +277,21 @@ class ThreadExtractor:
                         time.sleep(0.2)
                         
                         parsed = self.parser.parse(elem)
-                        if parsed and parsed['tweet_id'] not in seen_ids:
-                            seen_ids.add(parsed['tweet_id'])
-                            all_tweets.append(parsed)
-                            new_count += 1
+                        if not parsed or not parsed.get('tweet_id'):
+                            continue
+                        if parsed['tweet_id'] in seen_ids:
+                            continue
+                        seen_ids.add(parsed['tweet_id'])
+                        all_tweets.append(parsed)
+                        new_count += 1
+                        
+                        text = parsed.get('text', '')
+                        num = re.match(r'^(\d+)\.', text)
+                        preview = f"#{num.group(1)}" if num else text[:30]
+                        print(f"         ✓ {preview}")
+                        if parsed['tweet_id'] == tweet_id:
+                            target_found = True
+                            break
                     except:
                         continue
                 
@@ -251,6 +299,13 @@ class ThreadExtractor:
                     no_new_count = 0
                 else:
                     no_new_count += 1
+                
+                if len(all_tweets) >= self.max_tweets:
+                    Logger.info("Reached max tweets for thread; stopping to avoid infinite scroll")
+                    break
+                if target_found:
+                    Logger.info("Encountered liked tweet; stopping thread crawl")
+                    break
                 
                 self.driver.execute_script("window.scrollBy(0, 150);")
                 time.sleep(1.5)
@@ -270,16 +325,25 @@ class ThreadExtractor:
                 root_id = all_tweets[0]['tweet_id']
                 tweet_data['parent_tweet_id'] = root_id
             
-            self.driver.get(current_url)
-            time.sleep(2)
+            if thread_window:
+                self.driver.close()
+                self.driver.switch_to.window(original_window)
+            else:
+                self.driver.get(current_url)
+                time.sleep(2)
             
             return all_tweets
             
         except Exception as e:
             Logger.error(f"Thread extraction failed: {str(e)}")
             try:
-                self.driver.get(current_url)
-            except:
+                if thread_window and thread_window in self.driver.window_handles:
+                    self.driver.close()
+                    self.driver.switch_to.window(original_window)
+                else:
+                    self.driver.get(current_url)
+                    time.sleep(2)
+            except Exception:
                 pass
             return []
 
@@ -496,106 +560,156 @@ class TwitterLikesScraper:
         """Setup Chrome driver"""
         options = uc.ChromeOptions()
         options.add_argument('--start-maximized')
-        self.driver = uc.Chrome(options=options, version_main=None)
-        return self.driver
-    
-    def scrape_likes(self, max_scrolls: int = 100) -> List[Dict[str, Any]]:
-        """Scrape all liked tweets"""
-        Logger.info("Starting likes extraction...")
-        
-        # Navigate to YOUR likes page
-        # First, get your own username by visiting your profile
-        Logger.info("Finding your username...")
-        self.driver.get("https://twitter.com/home")
-        time.sleep(3)
-        
-        # Click on "Profile" to get to your profile page
+        options.add_argument('--no-sandbox')
+        options.add_argument('--disable-dev-shm-usage')
+        options.add_argument('--disable-gpu')
+
         try:
-            # Try to find profile link in sidebar
+            self.driver = uc.Chrome(options=options, version_main=129)
+        except Exception as e:
+            Logger.warning(f"Failed with version 129: {e}")
+            try:
+                self.driver = uc.Chrome(options=options, version_main=None)
+            except Exception as e2:
+                Logger.warning(f"Failed with auto detection: {e2}")
+                self.driver = uc.Chrome(options=options)
+        return self.driver
+
+    def _prime_likes_feed(self):
+        """Force-load the likes feed to ensure items enter the DOM"""
+        try:
+            Logger.info("Priming likes timeline with full-depth scroll...")
+            self.driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+            time.sleep(5)
+            self.driver.execute_script("window.scrollTo(0, 0);")
+            time.sleep(2)
+        except Exception as e:
+            Logger.warning(f"Likes priming scroll failed: {e}")
+
+    def _scroll_one_viewport(self, wait_seconds: float = 2.0) -> bool:
+        """Scroll down by exactly one viewport height to keep tweets loaded"""
+        try:
+            previous_offset = self.driver.execute_script(
+                "return window.pageYOffset || document.documentElement.scrollTop || 0;"
+            )
+            viewport_height = self.driver.execute_script("return window.innerHeight || 900;")
+            self.driver.execute_script("window.scrollBy(0, arguments[0]);", viewport_height)
+            time.sleep(wait_seconds)
+            current_offset = self.driver.execute_script(
+                "return window.pageYOffset || document.documentElement.scrollTop || 0;"
+            )
+            if abs(current_offset - previous_offset) < 5:
+                Logger.info("No further movement detected while scrolling; stopping early.")
+                return False
+            return True
+        except Exception as e:
+            Logger.warning(f"Incremental scroll failed: {e}")
+            time.sleep(wait_seconds)
+            return False
+
+    def _navigate_to_likes_page(self) -> bool:
+        """Navigate to the authenticated user's likes timeline"""
+        Logger.info("Locating likes timeline...")
+        try:
+            self.driver.get("https://twitter.com/home")
+            time.sleep(3)
             profile_link = self.driver.find_element(By.CSS_SELECTOR, 'a[data-testid="AppTabBar_Profile_Link"]')
             profile_url = profile_link.get_attribute('href')
             Logger.info(f"Found profile: {profile_url}")
-            
-            # Navigate to likes - replace '/profile' or username with '/likes'
             likes_url = profile_url.rstrip('/') + '/likes'
             Logger.info(f"Navigating to likes: {likes_url}")
-            
             self.driver.get(likes_url)
             time.sleep(5)
+            return True
         except Exception as e:
-            Logger.error(f"Could not navigate to likes: {str(e)}")
-            # Fallback: try direct URL with username from .env
-            Logger.info("Trying fallback with username from .env...")
-            self.driver.get(f"https://twitter.com/{self.username}/likes")
-            time.sleep(5)
-        
-        # Verify we're on the likes page
+            Logger.warning(f"Could not navigate via profile link: {e}")
+            try:
+                username = (self.username or '').lstrip('@')
+                if not username:
+                    Logger.error("TWITTER_USERNAME missing; add it to the .env file")
+                    return False
+                fallback_url = f"https://twitter.com/{username}/likes"
+                Logger.info(f"Fallback likes URL: {fallback_url}")
+                self.driver.get(fallback_url)
+                time.sleep(5)
+                return True
+            except Exception as inner:
+                Logger.error(f"Fallback navigation failed: {inner}")
+                return False
+    
+    def scrape_likes(self, max_scrolls: int = 1000) -> List[Dict[str, Any]]:
+        """Scrape all liked tweets"""
+        Logger.info("Starting likes extraction...")
+
+        if not self._navigate_to_likes_page():
+            Logger.error("Unable to reach likes timeline; aborting scrape")
+            return self.likes
+
         current_url = self.driver.current_url
         if 'likes' not in current_url.lower():
             Logger.error(f"Not on likes page! Current URL: {current_url}")
-            Logger.warning("Make sure your profile is public or you're logged in correctly")
-            return []
-        
-        Logger.success(f"On likes page: {current_url}")
-        
+            Logger.warning("Make sure your profile is accessible and credentials are valid")
+            return self.likes
+
+        self._prime_likes_feed()
+
         scroll_count = 0
         no_new_count = 0
-        
+
         while scroll_count < max_scrolls and no_new_count < 3:
             scroll_count += 1
             print(f"\n📜 Scroll {scroll_count}/{max_scrolls}")
-            
+
             elements = self.driver.find_elements(By.CSS_SELECTOR, 'article[data-testid="tweet"]')
             new_count = 0
-            
+
             for elem in elements:
                 try:
                     parsed = self.parser.parse(elem)
                     if not parsed or parsed['tweet_id'] in self.seen_ids:
                         continue
-                    
+
                     self.seen_ids.add(parsed['tweet_id'])
                     self.likes.append(parsed)
                     new_count += 1
-                    
-                    # Save to database
+
                     self.db.save_user(parsed)
-                    
-                    # Extract thread if reply
+
                     if parsed.get('is_reply'):
                         extractor = ThreadExtractor(self.driver, self.parser)
                         thread_tweets = extractor.extract_complete_thread(parsed)
-                        
+
                         if thread_tweets:
                             root_id = thread_tweets[0]['tweet_id']
                             print(f"      🔗 Linking {len(thread_tweets)} tweets to root")
-                            
+
                             for i, tt in enumerate(thread_tweets):
                                 self.db.save_user(tt)
                                 if i > 0 and not tt.get('parent_tweet_id'):
                                     tt['parent_tweet_id'] = root_id
                                 self.db.save_tweet(tt, is_liked=False)
-                    
-                    # Save liked tweet
+
                     self.db.save_tweet(parsed, is_liked=True)
-                    
+
                     preview = parsed.get('text', '')[:50]
                     print(f"   ✓ [{len(self.likes)}] @{parsed.get('username', 'N/A')}: {preview}...")
-                    
-                except Exception as e:
+
+                except Exception:
                     continue
-            
+
             print(f"   📊 New: {new_count} | Total: {len(self.likes)}")
-            
+
             if new_count == 0:
                 no_new_count += 1
             else:
                 no_new_count = 0
-            
-            # Scroll
-            self.driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-            time.sleep(2)
-        
+
+            if not self._scroll_one_viewport():
+                no_new_count += 1
+                if no_new_count >= 3:
+                    Logger.info("Halting because no new tweets are loading with incremental scrolls.")
+                break
+
         Logger.success(f"Extracted {len(self.likes)} likes")
         return self.likes
     
@@ -626,7 +740,7 @@ class TwitterLikesScraper:
                 return
             
             # Scrape
-            self.scrape_likes(max_scrolls=100)
+            self.scrape_likes(max_scrolls=1000)
             
             # Export
             if self.likes:
