@@ -2,7 +2,7 @@
 
 ## Env setup
 
-Have a .env file with your twitter username and passwork. The script will use this to log in.
+Have a .env file with your twitter username and password. The script will use this to log in.
 
 ```
 TWITTER_USERNAME=your_username
