@@ -1,5 +1,20 @@
 # Social Media Automation Tools
 
+- [Social Media Automation Tools](#social-media-automation-tools)
+  - [Env Setup](#env-setup)
+  - [AI News Scraper](#ai-news-scraper)
+  - [Quick Start](#quick-start)
+  - [Usage](#usage)
+    - [3. AI News Scraper](#3-ai-news-scraper)
+    - [Querying](#querying)
+    - [Analysis](#analysis)
+  - [Features](#features)
+    - [4. LinkedIn Autopilot](#4-linkedin-autopilot)
+      - [LinkedIn Autopilot Features](#linkedin-autopilot-features)
+  - [Output](#output)
+  - [Typical Workflow](#typical-workflow)
+  - [Running Tests](#running-tests)
+
 A collection of Twitter/X and LinkedIn automation tools for content scraping, AI news aggregation, and automated content publishing.
 
 ## Env Setup
@@ -21,31 +36,29 @@ LINKEDIN_PASSWORD=your_password
 
 **Note:** For AI-powered content generation, the LinkedIn autopilot uses the Claude CLI tool (installed via `npm install -g @anthropic-ai/claude-code`). Make sure you're logged in to Claude via the CLI.
 
-## Running
+## AI News Scraper
 
-All scripts are designed to run using `uv`. If you don't have uv installed:
+Twitter/X AI content aggregator with vector similarity search. Scrapes AI news from curated influencers, detects emerging trends, and discovers new high-signal accounts.
 
-```bash
-pip install uv
-```
-
----
-
-## Available Scripts
-
-### 1. Bookmarks Scraper
-Scrapes all your Twitter bookmarks with full thread support.
+## Quick Start
 
 ```bash
-uv run 04_twitter_bookmarks_advanced.py
+# Install uv if you don't have it
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# Clone and setup
+git clone <repo-url>
+cd twitter_influencer
+echo "GOOGLE_EMAIL=your_google_signin_email" > .env
+# Create .env with Twitter credentials
+echo "TWITTER_USERNAME=your_username" >> .env
+echo "TWITTER_PASSWORD=your_password" >> .env
+
+# Install dependencies and run
+uv sync
 ```
 
-### 2. Likes Scraper
-Scrapes all your liked tweets with complete thread extraction.
-
-```bash
-uv run 06_twitter_likes_scraper.py
-```
+## Usage
 
 ### 3. AI News Scraper
 Scrapes AI news from curated influencers, stores in SQLite with vector similarity search, detects emerging trends, and discovers new high-signal accounts.
@@ -58,19 +71,36 @@ uv run ai_news_scraper.py --stats
 uv run ai_news_scraper.py --scrape --google-auth=your@gmail.com
 
 # With options
-uv run ai_news_scraper.py --scrape --max-users 20 --tweets-per-user 30
+uv run python ai_news_scraper.py --scrape --max-users 20 --tweets-per-user 30
 
-# Analyze trends from recent data
-uv run ai_news_scraper.py --trends --hours 48
-
-# Semantic search across scraped content
-uv run ai_news_scraper.py --search "latest LLM releases"
-
-# Generate JSON report
-uv run ai_news_scraper.py --report
+# Show database statistics
+uv run python ai_news_scraper.py --stats
 ```
 
-#### AI News Scraper Features
+### Querying
+
+```bash
+# Semantic search
+uv run python query_news.py search "latest LLM releases"
+
+# List detected topics/trends
+uv run python query_news.py topics
+
+# Recent AI tweets
+uv run python query_news.py recent
+```
+
+### Analysis
+
+```bash
+# Analyze trends from recent data
+uv run python ai_news_scraper.py --trends --hours 48
+
+# Generate JSON report
+uv run python ai_news_scraper.py --report
+```
+
+## Features
 
 - **45 Curated Seed Influencers** across 5 categories:
   - Researchers (Yann LeCun, Andrej Karpathy, Andrew Ng, etc.)
@@ -140,16 +170,14 @@ uv run linkedin_autopilot.py --login --schedule --google-auth=your@gmail.com
   - Identifies best-performing content types
   - Optimizes posting schedule based on data
 
----
-
 ## Output
 
 All data is stored in SQLite databases in the `output_data/` folder:
 
-- `twitter_bookmarks.db` - Bookmarks data
-- `twitter_likes.db` - Likes data
 - `ai_news.db` - AI news with embeddings and trend data
 - `linkedin_autopilot.db` - LinkedIn posts, comments, and engagement metrics
+
+Data is stored in `output_data/ai_news.db` (SQLite with vector embeddings).
 
 Images are stored in `output_data/images/`.
 
@@ -183,5 +211,5 @@ Images are stored in `output_data/images/`.
 ## Running Tests
 
 ```bash
-uv run test_ai_scraper.py
+uv run python test_ai_scraper.py
 ```
