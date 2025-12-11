@@ -1305,34 +1305,39 @@ class LinkedInPoster:
 
             time.sleep(random.uniform(1, 2))
 
-            # Add image if provided - based on research from multiple LinkedIn automation repos
-            # Sources: github.com/SelmiAbderrahim/automate-linkedin, github.com/ColombiaPython/social-media-automation
+            # Add image if provided - based on joeygoesgrey/Linkedln-Automation-Framework (2025)
+            # Source: https://github.com/joeygoesgrey/Linkedln-Automation-Framework
             if image_path and os.path.exists(image_path):
                 try:
                     Logger.info(f"Attaching image: {image_path}")
                     abs_image_path = os.path.abspath(image_path)
                     image_attached = False
 
-                    # Step 1: Click the "Add a photo" button to open media picker
-                    # Selector from automate-linkedin repo
+                    # Step 1: Click the "Add a photo" button - selectors from LinkedIn Automation Framework
                     media_button_selectors = [
-                        "//button[@aria-label='Add a photo']",  # Primary from automate-linkedin
-                        "//button[contains(@aria-label, 'Add a photo')]",
+                        # CSS selectors (from media.py)
+                        "button.share-box-feed-entry-toolbar__item[aria-label='Add a photo']",
+                        "button[aria-label='Add a photo']",
+                        # XPath selectors
                         "//button[contains(@aria-label, 'photo')]",
-                        "//button[contains(@aria-label, 'image')]",
-                        "//button[contains(@aria-label, 'media')]",
-                        "//*[@data-test-icon='image-medium']/ancestor::button",
-                        "//li[contains(@class, 'share-creation-state__detour-btn')]//button",
+                        "//button[.//svg[contains(@data-test-icon, 'image')]]",
+                        "//button[@aria-label='Add a photo']",
+                        "//button[contains(@class, 'share-box')]//button[contains(@aria-label, 'photo')]",
                     ]
 
                     media_clicked = False
                     for selector in media_button_selectors:
                         try:
-                            media_btn = WebDriverWait(self.driver, 3).until(
-                                EC.element_to_be_clickable((By.XPATH, selector))
-                            )
+                            if selector.startswith("//"):
+                                media_btn = WebDriverWait(self.driver, 3).until(
+                                    EC.element_to_be_clickable((By.XPATH, selector))
+                                )
+                            else:
+                                media_btn = WebDriverWait(self.driver, 3).until(
+                                    EC.element_to_be_clickable((By.CSS_SELECTOR, selector))
+                                )
                             ActionChains(self.driver).move_to_element(media_btn).click().perform()
-                            Logger.info(f"Clicked media button: {selector[:50]}")
+                            Logger.info(f"Clicked media button")
                             media_clicked = True
                             time.sleep(2)
                             break
@@ -1340,16 +1345,18 @@ class LinkedInPoster:
                             continue
 
                     if not media_clicked:
-                        Logger.warning("Could not find media button")
+                        Logger.warning("Could not find media button, trying to inject file input...")
 
-                    # Step 2: Find file input and send the image path
-                    # Multiple selectors from different repos
+                    # Step 2: Find file input - selectors from LinkedIn Automation Framework
                     file_input_selectors = [
-                        "//input[contains(@id, 'image-sharing-detour-container')]",  # From automate-linkedin
-                        "//input[@name='file']",  # From social-media-automation
-                        "//input[@type='file'][contains(@id, 'image')]",
-                        "//input[@type='file'][contains(@class, 'upload')]",
-                        "//input[@type='file']",  # Generic fallback
+                        # Primary selector from media.py
+                        "#media-editor-file-selector__file-input",
+                        # Modal-scoped searches
+                        "div.share-box input[type='file']",
+                        "div.media-editor input[type='file']",
+                        # XPath variants
+                        "//div[contains(@class,'share') or contains(@class,'media')]//input[@type='file']",
+                        "//input[@type='file']",
                     ]
 
                     time.sleep(1)
@@ -1361,14 +1368,15 @@ class LinkedInPoster:
                             else:
                                 file_input = self.driver.find_element(By.CSS_SELECTOR, selector)
 
-                            # Make visible if hidden
+                            # Make visible using JS (from media.py pattern)
                             self.driver.execute_script("""
-                                arguments[0].style.display = 'block';
-                                arguments[0].style.visibility = 'visible';
+                                arguments[0].style.display = 'block !important';
+                                arguments[0].style.visibility = 'visible !important';
                                 arguments[0].style.opacity = '1';
                                 arguments[0].style.height = 'auto';
                                 arguments[0].style.width = 'auto';
                                 arguments[0].style.position = 'relative';
+                                arguments[0].removeAttribute('hidden');
                             """, file_input)
 
                             file_input.send_keys(abs_image_path)
@@ -1379,25 +1387,63 @@ class LinkedInPoster:
                         except Exception as e:
                             continue
 
-                    # Step 3: If still not attached, try finding ALL file inputs
+                    # Step 3: If still not attached, use JS to find ALL file inputs including shadow DOM
                     if not image_attached:
-                        Logger.info("Trying all file inputs on page...")
-                        all_file_inputs = self.driver.find_elements(By.CSS_SELECTOR, 'input[type="file"]')
-                        Logger.info(f"Found {len(all_file_inputs)} file inputs")
+                        Logger.info("Trying JavaScript file input discovery...")
+                        try:
+                            # JavaScript to find and reveal all file inputs
+                            file_inputs_found = self.driver.execute_script("""
+                                var inputs = document.querySelectorAll('input[type="file"]');
+                                var found = [];
+                                inputs.forEach(function(input) {
+                                    input.style.display = 'block';
+                                    input.style.visibility = 'visible';
+                                    input.style.opacity = '1';
+                                    input.style.position = 'fixed';
+                                    input.style.top = '50%';
+                                    input.style.left = '50%';
+                                    input.style.zIndex = '99999';
+                                    found.push(input);
+                                });
+                                return found.length;
+                            """)
+                            Logger.info(f"JS revealed {file_inputs_found} file inputs")
 
-                        for i, file_input in enumerate(all_file_inputs):
-                            try:
-                                self.driver.execute_script("""
-                                    arguments[0].style.display = 'block';
-                                    arguments[0].style.visibility = 'visible';
-                                """, file_input)
-                                file_input.send_keys(abs_image_path)
-                                Logger.info(f"Image attached via file input #{i}")
-                                image_attached = True
-                                time.sleep(random.uniform(3, 5))
-                                break
-                            except:
-                                continue
+                            if file_inputs_found > 0:
+                                time.sleep(0.5)
+                                all_file_inputs = self.driver.find_elements(By.CSS_SELECTOR, 'input[type="file"]')
+                                for i, file_input in enumerate(all_file_inputs):
+                                    try:
+                                        file_input.send_keys(abs_image_path)
+                                        Logger.info(f"Image attached via JS-revealed input #{i}")
+                                        image_attached = True
+                                        time.sleep(random.uniform(3, 5))
+                                        break
+                                    except:
+                                        continue
+                        except Exception as e:
+                            Logger.debug(f"JS discovery failed: {e}")
+
+                    # Step 4: Handle post-upload confirmation buttons (Done, Next, Add)
+                    if image_attached:
+                        try:
+                            confirm_selectors = [
+                                "//button[contains(text(), 'Done')]",
+                                "//button[contains(text(), 'Next')]",
+                                "//button[@aria-label='Done']",
+                                "//span[text()='Done']/ancestor::button",
+                            ]
+                            for selector in confirm_selectors:
+                                try:
+                                    confirm_btn = self.driver.find_element(By.XPATH, selector)
+                                    confirm_btn.click()
+                                    Logger.info("Clicked upload confirmation button")
+                                    time.sleep(1)
+                                    break
+                                except:
+                                    continue
+                        except:
+                            pass
 
                     if not image_attached:
                         Logger.warning("Could not attach image - posting without image")
