@@ -17,10 +17,9 @@ GOOGLE_EMAIL=your_email@gmail.com
 # LinkedIn credentials (for autopilot)
 LINKEDIN_EMAIL=your_email
 LINKEDIN_PASSWORD=your_password
-
-# Anthropic API (for AI-powered content generation with Claude)
-ANTHROPIC_API_KEY=sk-ant-your-api-key
 ```
+
+**Note:** For AI-powered content generation, the LinkedIn autopilot uses the Claude CLI tool (installed via `npm install -g @anthropic-ai/claude-code`). Make sure you're logged in to Claude via the CLI.
 
 ## Running
 
@@ -117,8 +116,8 @@ uv run linkedin_autopilot.py --login --schedule --google-auth=your@gmail.com
 #### LinkedIn Autopilot Features
 
 - **Content Generation**: Creates engaging LinkedIn posts from scraped AI news
-  - Uses Claude (Anthropic) for intelligent content creation
-  - Falls back to templates if no API key configured
+  - Uses Claude CLI for intelligent content creation
+  - Falls back to templates if CLI unavailable
   - Multiple post types: news breakdowns, hot takes, curated lists, questions, insights
 
 - **Image Generation**: Creates professional images for posts

@@ -7,7 +7,6 @@
 #     "requests>=2.31.0",
 #     "pillow>=10.0.0",
 #     "schedule>=1.2.0",
-#     "anthropic>=0.39.0",
 # ]
 # ///
 
@@ -28,6 +27,7 @@ import sqlite3
 import ssl
 import re
 import schedule
+import subprocess
 from pathlib import Path
 from datetime import datetime, timedelta
 from typing import List, Dict, Any, Optional, Tuple
@@ -516,17 +516,32 @@ class ContentGenerator:
     def __init__(self, db: LinkedInDatabase, ai_news_db_path: Path = None):
         self.db = db
         self.ai_news_db_path = ai_news_db_path
-        self._claude_client = None
 
-    @property
-    def claude_client(self):
-        """Lazy load Anthropic Claude client"""
-        if self._claude_client is None:
-            api_key = os.getenv('ANTHROPIC_API_KEY')
-            if api_key:
-                from anthropic import Anthropic
-                self._claude_client = Anthropic(api_key=api_key)
-        return self._claude_client
+    def _call_claude_cli(self, prompt: str, max_tokens: int = 500) -> Optional[str]:
+        """Call Claude CLI tool for content generation"""
+        try:
+            # Use the claude CLI tool installed via npm
+            result = subprocess.run(
+                ['claude', '-p', prompt, '--max-tokens', str(max_tokens)],
+                capture_output=True,
+                text=True,
+                timeout=60
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                return result.stdout.strip()
+            else:
+                if result.stderr:
+                    Logger.warning(f"Claude CLI error: {result.stderr}")
+                return None
+        except FileNotFoundError:
+            Logger.warning("Claude CLI not found. Make sure it's installed via npm.")
+            return None
+        except subprocess.TimeoutExpired:
+            Logger.warning("Claude CLI timed out")
+            return None
+        except Exception as e:
+            Logger.warning(f"Claude CLI call failed: {e}")
+            return None
 
     def get_recent_ai_news(self, limit: int = 20) -> List[Dict]:
         """Get recent AI news from the scraper database"""
@@ -551,11 +566,7 @@ class ContentGenerator:
 
     def generate_post_with_ai(self, news_items: List[Dict],
                               template_type: str = "news_breakdown") -> Optional[str]:
-        """Generate a LinkedIn post using Claude"""
-        if not self.claude_client:
-            Logger.warning("ANTHROPIC_API_KEY not configured, using template fallback")
-            return self.generate_post_from_template(news_items, template_type)
-
+        """Generate a LinkedIn post using Claude CLI"""
         # Prepare context from news items
         news_context = "\n".join([
             f"- {item.get('text', '')[:200]}" for item in news_items[:5]
@@ -578,15 +589,11 @@ Post type: {template_type}
 
 Generate the LinkedIn post:"""
 
-        try:
-            response = self.claude_client.messages.create(
-                model="claude-sonnet-4-20250514",
-                max_tokens=500,
-                messages=[{"role": "user", "content": prompt}]
-            )
-            return response.content[0].text.strip()
-        except Exception as e:
-            Logger.error(f"Claude generation failed: {e}")
+        result = self._call_claude_cli(prompt, max_tokens=500)
+        if result:
+            return result
+        else:
+            Logger.warning("Claude CLI unavailable, using template fallback")
             return self.generate_post_from_template(news_items, template_type)
 
     def generate_post_from_template(self, news_items: List[Dict],
@@ -664,13 +671,11 @@ Generate the LinkedIn post:"""
         return posts
 
     def generate_comment_response(self, comment: str, post_content: str) -> str:
-        """Generate a response to a comment"""
-        # Analyze sentiment
+        """Generate a response to a comment using Claude CLI"""
+        # Analyze sentiment for fallback
         sentiment = self._analyze_sentiment(comment)
 
-        if self.claude_client:
-            try:
-                prompt = f"""You're responding to a comment on your LinkedIn post.
+        prompt = f"""You're responding to a comment on your LinkedIn post.
 
 Your post: {post_content[:200]}...
 Comment: {comment}
@@ -678,14 +683,9 @@ Comment: {comment}
 Write a brief, friendly, professional response (1-2 sentences).
 Be genuine and encourage further discussion."""
 
-                response = self.claude_client.messages.create(
-                    model="claude-sonnet-4-20250514",
-                    max_tokens=100,
-                    messages=[{"role": "user", "content": prompt}]
-                )
-                return response.content[0].text.strip()
-            except Exception as e:
-                Logger.warning(f"Claude response generation failed: {e}")
+        result = self._call_claude_cli(prompt, max_tokens=100)
+        if result:
+            return result
 
         # Fallback to templates
         responses = COMMENT_RESPONSES.get(sentiment, COMMENT_RESPONSES["neutral"])
