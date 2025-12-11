@@ -1348,31 +1348,28 @@ class LinkedInPoster:
                     if not media_clicked:
                         Logger.warning("Could not find 'Add media' button")
                     else:
-                        # Step 2: Handle native file picker with pyautogui
+                        # Step 2: Handle native file picker with pyautogui + clipboard
                         if PYAUTOGUI_AVAILABLE:
                             Logger.info("Using pyautogui to navigate native file dialog...")
-                            time.sleep(1)  # Ensure dialog is fully open
+                            time.sleep(1.5)  # Ensure dialog is fully open
 
                             try:
+                                # Copy path to clipboard using subprocess (works on macOS)
+                                import subprocess
+                                process = subprocess.Popen(['pbcopy'], stdin=subprocess.PIPE)
+                                process.communicate(abs_image_path.encode('utf-8'))
+
                                 # On macOS, use Cmd+Shift+G to open "Go to folder" dialog
                                 pyautogui.hotkey('command', 'shift', 'g')
                                 time.sleep(0.8)
 
-                                # Type the full file path using write() which handles special chars
-                                # pyautogui.write() is an alias for typewrite() but we use keyboard directly
-                                import subprocess
-                                # Use osascript to type the path (handles all characters properly)
-                                script = f'''
-                                tell application "System Events"
-                                    keystroke "{abs_image_path}"
-                                end tell
-                                '''
-                                subprocess.run(['osascript', '-e', script], check=True, timeout=5)
+                                # Paste the path from clipboard (Cmd+V)
+                                pyautogui.hotkey('command', 'v')
                                 time.sleep(0.5)
 
                                 # Press Enter to navigate to the file
                                 pyautogui.press('enter')
-                                time.sleep(0.8)
+                                time.sleep(1.0)
 
                                 # Press Enter again to select/open the file
                                 pyautogui.press('enter')
@@ -1391,26 +1388,32 @@ class LinkedInPoster:
                         else:
                             Logger.warning("pyautogui not available - cannot handle native file dialog")
 
-                    # Step 3: Handle any post-upload confirmation buttons (Done, Next, etc.)
+                    # Step 3: Handle multi-step image upload flow (Next → Done)
                     if image_attached:
                         time.sleep(2)  # Wait for upload to process
-                        confirm_selectors = [
-                            "//button[.//span[text()='Done']]",
-                            "//button[contains(text(), 'Done')]",
-                            "//button[.//span[text()='Next']]",
-                            "//span[text()='Done']/ancestor::button",
+
+                        # LinkedIn has a multi-step flow: Select image → Edit → Confirm
+                        # We may need to click "Next" then "Done" in sequence
+                        confirmation_steps = [
+                            ("Next", ["//button[.//span[text()='Next']]", "//span[text()='Next']/ancestor::button"]),
+                            ("Done", ["//button[.//span[text()='Done']]", "//span[text()='Done']/ancestor::button"]),
                         ]
-                        for selector in confirm_selectors:
-                            try:
-                                confirm_btn = WebDriverWait(self.driver, 3).until(
-                                    EC.element_to_be_clickable((By.XPATH, selector))
-                                )
-                                confirm_btn.click()
-                                Logger.info("Clicked upload confirmation button")
-                                time.sleep(1)
-                                break
-                            except:
-                                continue
+
+                        for step_name, selectors in confirmation_steps:
+                            clicked = False
+                            for selector in selectors:
+                                try:
+                                    confirm_btn = WebDriverWait(self.driver, 3).until(
+                                        EC.element_to_be_clickable((By.XPATH, selector))
+                                    )
+                                    confirm_btn.click()
+                                    Logger.info(f"Clicked '{step_name}' button")
+                                    clicked = True
+                                    time.sleep(2)
+                                    break
+                                except:
+                                    continue
+                            # Continue to next step regardless of whether this step was clicked
 
                     if not image_attached:
                         Logger.warning("Could not attach image - posting without image")
