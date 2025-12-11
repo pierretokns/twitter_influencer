@@ -40,6 +40,13 @@ from dotenv import load_dotenv
 from PIL import Image, ImageDraw, ImageFont
 import requests
 
+# Optional pyautogui for native file dialogs
+try:
+    import pyautogui
+    PYAUTOGUI_AVAILABLE = True
+except ImportError:
+    PYAUTOGUI_AVAILABLE = False
+
 # Fix SSL certificate verification
 ssl._create_default_https_context = ssl._create_unverified_context
 
@@ -1305,145 +1312,105 @@ class LinkedInPoster:
 
             time.sleep(random.uniform(1, 2))
 
-            # Add image if provided - based on joeygoesgrey/Linkedln-Automation-Framework (2025)
-            # Source: https://github.com/joeygoesgrey/Linkedln-Automation-Framework
+            # Add image if provided - clicking "Add media" opens native file picker
             if image_path and os.path.exists(image_path):
                 try:
                     Logger.info(f"Attaching image: {image_path}")
                     abs_image_path = os.path.abspath(image_path)
                     image_attached = False
 
-                    # Step 1: Click the "Add a photo" button - selectors from LinkedIn Automation Framework
+                    # Step 1: Click the "Add media" button (opens native file picker)
                     media_button_selectors = [
-                        # CSS selectors (from media.py)
-                        "button.share-box-feed-entry-toolbar__item[aria-label='Add a photo']",
-                        "button[aria-label='Add a photo']",
-                        # XPath selectors
-                        "//button[contains(@aria-label, 'photo')]",
-                        "//button[.//svg[contains(@data-test-icon, 'image')]]",
-                        "//button[@aria-label='Add a photo']",
-                        "//button[contains(@class, 'share-box')]//button[contains(@aria-label, 'photo')]",
+                        "button[aria-label='Add media']",
+                        "//button[@aria-label='Add media']",
+                        "//button[contains(@aria-label, 'media')]",
                     ]
 
                     media_clicked = False
                     for selector in media_button_selectors:
                         try:
                             if selector.startswith("//"):
-                                media_btn = WebDriverWait(self.driver, 3).until(
+                                media_btn = WebDriverWait(self.driver, 5).until(
                                     EC.element_to_be_clickable((By.XPATH, selector))
                                 )
                             else:
-                                media_btn = WebDriverWait(self.driver, 3).until(
+                                media_btn = WebDriverWait(self.driver, 5).until(
                                     EC.element_to_be_clickable((By.CSS_SELECTOR, selector))
                                 )
                             ActionChains(self.driver).move_to_element(media_btn).click().perform()
-                            Logger.info(f"Clicked media button")
+                            Logger.info("Clicked 'Add media' button - native file picker should open")
                             media_clicked = True
-                            time.sleep(2)
+                            time.sleep(2)  # Wait for native dialog to open
                             break
                         except:
                             continue
 
                     if not media_clicked:
-                        Logger.warning("Could not find media button, trying to inject file input...")
+                        Logger.warning("Could not find 'Add media' button")
+                    else:
+                        # Step 2: Handle native file picker with pyautogui
+                        if PYAUTOGUI_AVAILABLE:
+                            Logger.info("Using pyautogui to navigate native file dialog...")
+                            time.sleep(1)  # Ensure dialog is fully open
 
-                    # Step 2: Find file input - selectors from LinkedIn Automation Framework
-                    file_input_selectors = [
-                        # Primary selector from media.py
-                        "#media-editor-file-selector__file-input",
-                        # Modal-scoped searches
-                        "div.share-box input[type='file']",
-                        "div.media-editor input[type='file']",
-                        # XPath variants
-                        "//div[contains(@class,'share') or contains(@class,'media')]//input[@type='file']",
-                        "//input[@type='file']",
-                    ]
+                            try:
+                                # On macOS, use Cmd+Shift+G to open "Go to folder" dialog
+                                pyautogui.hotkey('command', 'shift', 'g')
+                                time.sleep(0.8)
 
-                    time.sleep(1)
-
-                    for selector in file_input_selectors:
-                        try:
-                            if selector.startswith("//"):
-                                file_input = self.driver.find_element(By.XPATH, selector)
-                            else:
-                                file_input = self.driver.find_element(By.CSS_SELECTOR, selector)
-
-                            # Make visible using JS (from media.py pattern)
-                            self.driver.execute_script("""
-                                arguments[0].style.display = 'block !important';
-                                arguments[0].style.visibility = 'visible !important';
-                                arguments[0].style.opacity = '1';
-                                arguments[0].style.height = 'auto';
-                                arguments[0].style.width = 'auto';
-                                arguments[0].style.position = 'relative';
-                                arguments[0].removeAttribute('hidden');
-                            """, file_input)
-
-                            file_input.send_keys(abs_image_path)
-                            Logger.info(f"Image attached via: {selector[:40]}")
-                            image_attached = True
-                            time.sleep(random.uniform(3, 5))  # Wait for upload
-                            break
-                        except Exception as e:
-                            continue
-
-                    # Step 3: If still not attached, use JS to find ALL file inputs including shadow DOM
-                    if not image_attached:
-                        Logger.info("Trying JavaScript file input discovery...")
-                        try:
-                            # JavaScript to find and reveal all file inputs
-                            file_inputs_found = self.driver.execute_script("""
-                                var inputs = document.querySelectorAll('input[type="file"]');
-                                var found = [];
-                                inputs.forEach(function(input) {
-                                    input.style.display = 'block';
-                                    input.style.visibility = 'visible';
-                                    input.style.opacity = '1';
-                                    input.style.position = 'fixed';
-                                    input.style.top = '50%';
-                                    input.style.left = '50%';
-                                    input.style.zIndex = '99999';
-                                    found.push(input);
-                                });
-                                return found.length;
-                            """)
-                            Logger.info(f"JS revealed {file_inputs_found} file inputs")
-
-                            if file_inputs_found > 0:
+                                # Type the full file path using write() which handles special chars
+                                # pyautogui.write() is an alias for typewrite() but we use keyboard directly
+                                import subprocess
+                                # Use osascript to type the path (handles all characters properly)
+                                script = f'''
+                                tell application "System Events"
+                                    keystroke "{abs_image_path}"
+                                end tell
+                                '''
+                                subprocess.run(['osascript', '-e', script], check=True, timeout=5)
                                 time.sleep(0.5)
-                                all_file_inputs = self.driver.find_elements(By.CSS_SELECTOR, 'input[type="file"]')
-                                for i, file_input in enumerate(all_file_inputs):
-                                    try:
-                                        file_input.send_keys(abs_image_path)
-                                        Logger.info(f"Image attached via JS-revealed input #{i}")
-                                        image_attached = True
-                                        time.sleep(random.uniform(3, 5))
-                                        break
-                                    except:
-                                        continue
-                        except Exception as e:
-                            Logger.debug(f"JS discovery failed: {e}")
 
-                    # Step 4: Handle post-upload confirmation buttons (Done, Next, Add)
-                    if image_attached:
-                        try:
-                            confirm_selectors = [
-                                "//button[contains(text(), 'Done')]",
-                                "//button[contains(text(), 'Next')]",
-                                "//button[@aria-label='Done']",
-                                "//span[text()='Done']/ancestor::button",
-                            ]
-                            for selector in confirm_selectors:
+                                # Press Enter to navigate to the file
+                                pyautogui.press('enter')
+                                time.sleep(0.8)
+
+                                # Press Enter again to select/open the file
+                                pyautogui.press('enter')
+                                time.sleep(3)  # Wait for file to be processed
+
+                                Logger.info("Image attached via native file dialog")
+                                image_attached = True
+
+                            except Exception as e:
+                                Logger.warning(f"Native file dialog handling failed: {e}")
+                                # Fallback: try pressing Escape to close dialog
                                 try:
-                                    confirm_btn = self.driver.find_element(By.XPATH, selector)
-                                    confirm_btn.click()
-                                    Logger.info("Clicked upload confirmation button")
-                                    time.sleep(1)
-                                    break
+                                    pyautogui.press('escape')
                                 except:
-                                    continue
-                        except:
-                            pass
+                                    pass
+                        else:
+                            Logger.warning("pyautogui not available - cannot handle native file dialog")
+
+                    # Step 3: Handle any post-upload confirmation buttons (Done, Next, etc.)
+                    if image_attached:
+                        time.sleep(2)  # Wait for upload to process
+                        confirm_selectors = [
+                            "//button[.//span[text()='Done']]",
+                            "//button[contains(text(), 'Done')]",
+                            "//button[.//span[text()='Next']]",
+                            "//span[text()='Done']/ancestor::button",
+                        ]
+                        for selector in confirm_selectors:
+                            try:
+                                confirm_btn = WebDriverWait(self.driver, 3).until(
+                                    EC.element_to_be_clickable((By.XPATH, selector))
+                                )
+                                confirm_btn.click()
+                                Logger.info("Clicked upload confirmation button")
+                                time.sleep(1)
+                                break
+                            except:
+                                continue
 
                     if not image_attached:
                         Logger.warning("Could not attach image - posting without image")
