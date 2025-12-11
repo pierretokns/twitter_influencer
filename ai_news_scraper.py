@@ -911,13 +911,139 @@ class EmbeddingGenerator:
 class TwitterAuth:
     """Handles Twitter authentication"""
 
-    def __init__(self, driver, username: str, password: str):
+    def __init__(self, driver, username: str = None, password: str = None,
+                 google_email: str = None):
         self.driver = driver
         self.username = username
         self.password = password
+        self.google_email = google_email
 
     def login(self) -> bool:
-        """Login to Twitter"""
+        """Login to Twitter - uses Google auth if google_email is set"""
+        if self.google_email:
+            return self.login_with_google()
+        else:
+            return self.login_with_password()
+
+    def login_with_google(self) -> bool:
+        """Login to Twitter using Google authentication"""
+        try:
+            from selenium.webdriver.common.by import By
+            from selenium.webdriver.support.ui import WebDriverWait
+            from selenium.webdriver.support import expected_conditions as EC
+
+            Logger.info(f"Logging into Twitter via Google ({self.google_email})...")
+
+            self.driver.get("https://twitter.com")
+            time.sleep(random.uniform(2, 4))
+            self.driver.get("https://twitter.com/i/flow/login")
+            time.sleep(random.uniform(3, 5))
+
+            # Look for "Sign in with Google" button
+            try:
+                # Twitter's Google sign-in button
+                google_btn = WebDriverWait(self.driver, 10).until(
+                    EC.element_to_be_clickable((By.XPATH,
+                        "//button[contains(., 'Google')]|//div[contains(., 'Sign in with Google')]|"
+                        "//span[contains(text(), 'Google')]/ancestor::div[@role='button']|"
+                        "//img[contains(@src, 'google')]/ancestor::div[@role='button']"
+                    ))
+                )
+                google_btn.click()
+                Logger.info("Clicked Google sign-in button")
+                time.sleep(random.uniform(3, 5))
+            except Exception as e:
+                Logger.warning(f"Could not find Google button: {e}")
+                # Try alternative: look for Google iframe or redirect
+                try:
+                    # Sometimes it's in an iframe
+                    iframes = self.driver.find_elements(By.TAG_NAME, 'iframe')
+                    for iframe in iframes:
+                        src = iframe.get_attribute('src') or ''
+                        if 'google' in src.lower():
+                            self.driver.switch_to.frame(iframe)
+                            break
+                except:
+                    pass
+
+            # Wait for Google account picker / sign-in page
+            time.sleep(random.uniform(2, 4))
+
+            # Handle Google account selection
+            # First, check if we're on a Google domain
+            current_url = self.driver.current_url
+            Logger.info(f"Current URL: {current_url}")
+
+            if 'accounts.google.com' in current_url or 'google.com' in current_url:
+                # Look for the account with the specified email
+                try:
+                    # Wait for account list to load
+                    time.sleep(random.uniform(2, 3))
+
+                    # Try multiple selectors for the account
+                    account_selectors = [
+                        f"//div[contains(text(), '{self.google_email}')]",
+                        f"//div[@data-email='{self.google_email}']",
+                        f"//*[contains(text(), '{self.google_email}')]",
+                        f"//div[contains(@data-identifier, '{self.google_email}')]",
+                    ]
+
+                    account_elem = None
+                    for selector in account_selectors:
+                        try:
+                            account_elem = WebDriverWait(self.driver, 5).until(
+                                EC.element_to_be_clickable((By.XPATH, selector))
+                            )
+                            if account_elem:
+                                break
+                        except:
+                            continue
+
+                    if account_elem:
+                        account_elem.click()
+                        Logger.success(f"Selected Google account: {self.google_email}")
+                        time.sleep(random.uniform(3, 5))
+                    else:
+                        Logger.warning(f"Could not find account {self.google_email}, waiting for manual selection...")
+                        # Wait longer for user to manually select
+                        time.sleep(15)
+
+                except Exception as e:
+                    Logger.warning(f"Account selection issue: {e}")
+                    Logger.info("Waiting for manual Google authentication...")
+                    time.sleep(15)
+
+            # Wait for redirect back to Twitter
+            Logger.info("Waiting for Twitter redirect...")
+            try:
+                WebDriverWait(self.driver, 30).until(
+                    lambda d: 'twitter.com' in d.current_url or 'x.com' in d.current_url
+                )
+            except:
+                Logger.warning("Still waiting for redirect...")
+                time.sleep(10)
+
+            # Verify login success
+            time.sleep(random.uniform(3, 5))
+            try:
+                WebDriverWait(self.driver, 15).until(
+                    lambda d: "home" in d.current_url.lower() or
+                             len(d.find_elements(By.CSS_SELECTOR, '[data-testid="AppTabBar_Home_Link"]')) > 0
+                )
+                Logger.success("Google login successful!")
+                return True
+            except:
+                Logger.warning("Login status unclear, continuing...")
+                return True
+
+        except Exception as e:
+            Logger.error(f"Google login failed: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            return False
+
+    def login_with_password(self) -> bool:
+        """Login to Twitter using username/password"""
         try:
             from selenium.webdriver.common.by import By
             from selenium.webdriver.common.keys import Keys
@@ -1067,9 +1193,11 @@ class TweetParser:
 class AINewsScraper:
     """Main scraper for AI news from Twitter"""
 
-    def __init__(self, username: str, password: str, db: AINewsDatabase):
+    def __init__(self, db: AINewsDatabase, username: str = None, password: str = None,
+                 google_email: str = None):
         self.username = username
         self.password = password
+        self.google_email = google_email
         self.db = db
         self.driver = None
         self.parser = TweetParser()
@@ -1257,8 +1385,13 @@ class AINewsScraper:
             # Setup
             self.setup_driver()
 
-            # Auth
-            auth = TwitterAuth(self.driver, self.username, self.password)
+            # Auth - prefer Google auth if available
+            auth = TwitterAuth(
+                self.driver,
+                username=self.username,
+                password=self.password,
+                google_email=self.google_email
+            )
             if not auth.login():
                 Logger.error("Login failed, aborting")
                 return
@@ -1354,7 +1487,8 @@ class AINewsOrchestrator:
 
         Logger.success(f"Seeded {seed_count} influencers across {len(AI_INFLUENCERS)} categories")
 
-    def run_scrape(self, username: str, password: str,
+    def run_scrape(self, username: str = None, password: str = None,
+                  google_email: str = None,
                   max_influencers: int = 15,
                   tweets_per_user: int = 25):
         """Run a scraping session"""
@@ -1368,7 +1502,12 @@ class AINewsOrchestrator:
             "neural network paper",
         ]
 
-        scraper = AINewsScraper(username, password, self.db)
+        scraper = AINewsScraper(
+            self.db,
+            username=username,
+            password=password,
+            google_email=google_email
+        )
         scraper.run_full_scrape(
             max_influencers=max_influencers,
             tweets_per_user=tweets_per_user,
@@ -1492,6 +1631,7 @@ def main():
     parser.add_argument('--max-users', type=int, default=15, help='Max influencers to scrape')
     parser.add_argument('--tweets-per-user', type=int, default=25, help='Tweets per user')
     parser.add_argument('--hours', type=int, default=48, help='Hours for trend analysis')
+    parser.add_argument('--google-auth', type=str, help='Google email for OAuth login (e.g., user@gmail.com)')
 
     args = parser.parse_args()
 
@@ -1501,6 +1641,7 @@ def main():
 
     username = os.getenv('TWITTER_USERNAME')
     password = os.getenv('TWITTER_PASSWORD')
+    google_email = args.google_auth or os.getenv('GOOGLE_EMAIL')
 
     # Initialize orchestrator
     output_dir = script_dir / 'output_data'
@@ -1509,11 +1650,15 @@ def main():
 
     try:
         if args.scrape:
-            if not username or not password:
-                Logger.error("Set TWITTER_USERNAME and TWITTER_PASSWORD in .env")
+            # Check we have either Google auth or username/password
+            if not google_email and (not username or not password):
+                Logger.error("Set GOOGLE_EMAIL or TWITTER_USERNAME/TWITTER_PASSWORD in .env")
+                Logger.info("Or use --google-auth=your@email.com")
                 sys.exit(1)
             orchestrator.run_scrape(
-                username, password,
+                username=username,
+                password=password,
+                google_email=google_email,
                 max_influencers=args.max_users,
                 tweets_per_user=args.tweets_per_user
             )
