@@ -1194,7 +1194,7 @@ class AINewsScraper:
     """Main scraper for AI news from Twitter"""
 
     def __init__(self, db: AINewsDatabase, username: str = None, password: str = None,
-                 google_email: str = None):
+                 google_email: str = None, output_dir: Path = None):
         self.username = username
         self.password = password
         self.google_email = google_email
@@ -1206,8 +1206,13 @@ class AINewsScraper:
         self.tweets_scraped = 0
         self.ai_tweets_found = 0
 
+        # Session persistence
+        self.output_dir = output_dir or Path('output_data')
+        self.cookies_path = self.output_dir / 'twitter_cookies.json'
+        self.profile_dir = self.output_dir / 'chrome_profile_twitter'
+
     def setup_driver(self):
-        """Setup Chrome driver with undetected-chromedriver"""
+        """Setup Chrome driver with undetected-chromedriver and persistent profile"""
         import undetected_chromedriver as uc
 
         options = uc.ChromeOptions()
@@ -1215,6 +1220,10 @@ class AINewsScraper:
         options.add_argument('--no-sandbox')
         options.add_argument('--disable-dev-shm-usage')
         options.add_argument('--disable-gpu')
+
+        # Use a persistent profile directory for session persistence
+        self.profile_dir.mkdir(parents=True, exist_ok=True)
+        options.add_argument(f'--user-data-dir={self.profile_dir}')
 
         # Let undetected-chromedriver auto-detect Chrome version
         try:
@@ -1224,6 +1233,76 @@ class AINewsScraper:
             raise
 
         return self.driver
+
+    def save_cookies(self):
+        """Save browser cookies to file"""
+        if self.driver:
+            try:
+                cookies = self.driver.get_cookies()
+                with open(self.cookies_path, 'w') as f:
+                    json.dump(cookies, f)
+                Logger.success(f"Saved {len(cookies)} Twitter cookies")
+            except Exception as e:
+                Logger.warning(f"Could not save cookies: {e}")
+
+    def load_cookies(self) -> bool:
+        """Load cookies from file"""
+        if not self.cookies_path.exists():
+            return False
+
+        try:
+            with open(self.cookies_path, 'r') as f:
+                cookies = json.load(f)
+
+            # Navigate to Twitter first (required to set cookies for domain)
+            self.driver.get("https://twitter.com")
+            time.sleep(2)
+
+            for cookie in cookies:
+                # Remove expiry if it's in the past
+                if 'expiry' in cookie:
+                    del cookie['expiry']
+                try:
+                    self.driver.add_cookie(cookie)
+                except:
+                    pass
+
+            Logger.success(f"Loaded {len(cookies)} Twitter cookies")
+            return True
+        except Exception as e:
+            Logger.warning(f"Could not load cookies: {e}")
+            return False
+
+    def is_logged_in(self) -> bool:
+        """Check if already logged into Twitter"""
+        from selenium.webdriver.common.by import By
+
+        try:
+            self.driver.get("https://twitter.com/home")
+            time.sleep(3)
+            # Check if we're on the home timeline (logged in)
+            current_url = self.driver.current_url
+            if 'login' in current_url or 'flow' in current_url:
+                return False
+            # Check for home timeline elements
+            home_elements = self.driver.find_elements(By.CSS_SELECTOR, '[data-testid="AppTabBar_Home_Link"]')
+            return len(home_elements) > 0
+        except:
+            return False
+
+    def _do_login(self):
+        """Perform login and save cookies"""
+        auth = TwitterAuth(
+            self.driver,
+            username=self.username,
+            password=self.password,
+            google_email=self.google_email
+        )
+        if auth.login():
+            # Save cookies for future sessions
+            self.save_cookies()
+        else:
+            Logger.error("Login failed")
 
     def scrape_user_timeline(self, username: str, max_tweets: int = 50,
                             max_scrolls: int = 20) -> int:
@@ -1385,16 +1464,21 @@ class AINewsScraper:
             # Setup
             self.setup_driver()
 
-            # Auth - prefer Google auth if available
-            auth = TwitterAuth(
-                self.driver,
-                username=self.username,
-                password=self.password,
-                google_email=self.google_email
-            )
-            if not auth.login():
-                Logger.error("Login failed, aborting")
-                return
+            # Try to use existing session first
+            Logger.info("Checking for existing Twitter session...")
+            if self.is_logged_in():
+                Logger.success("Already logged in via persistent session!")
+            else:
+                # Try loading cookies
+                if self.load_cookies():
+                    if self.is_logged_in():
+                        Logger.success("Logged in via saved cookies!")
+                    else:
+                        # Need fresh login
+                        self._do_login()
+                else:
+                    # Need fresh login
+                    self._do_login()
 
             # Get influencers to scrape
             influencers = self.db.get_influencers_to_scrape(limit=max_influencers)
@@ -1506,7 +1590,8 @@ class AINewsOrchestrator:
             self.db,
             username=username,
             password=password,
-            google_email=google_email
+            google_email=google_email,
+            output_dir=self.output_dir
         )
         scraper.run_full_scrape(
             max_influencers=max_influencers,

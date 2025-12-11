@@ -522,7 +522,7 @@ class ContentGenerator:
         try:
             # Use the claude CLI tool installed via npm
             result = subprocess.run(
-                ['claude', '-p', prompt, '--max-tokens', str(max_tokens)],
+                ['claude', '-p', prompt],
                 capture_output=True,
                 text=True,
                 timeout=60
@@ -866,27 +866,60 @@ class LinkedInAuth:
 
             Logger.info(f"Logging into LinkedIn via Google ({self.google_email})...")
 
-            self.driver.get("https://www.linkedin.com")
-            time.sleep(random.uniform(2, 4))
             self.driver.get("https://www.linkedin.com/login")
-            time.sleep(random.uniform(2, 4))
+            time.sleep(random.uniform(3, 5))
 
-            # Look for Google sign-in option
-            try:
-                google_btn = WebDriverWait(self.driver, 10).until(
-                    EC.element_to_be_clickable((By.XPATH,
-                        "//button[contains(., 'Google')]|"
-                        "//a[contains(@href, 'google')]|"
-                        "//span[contains(text(), 'Google')]/ancestor::button"
-                    ))
-                )
-                google_btn.click()
-                Logger.info("Clicked Google sign-in")
-                time.sleep(random.uniform(3, 5))
-            except Exception as e:
-                Logger.warning(f"Google button not found: {e}")
-                Logger.info("Trying alternative login methods...")
-                return self.login_with_password()
+            # LinkedIn uses Google One Tap - look for various Google sign-in options
+            google_selectors = [
+                "//div[contains(@class, 'google-auth-button')]//button",
+                "//div[contains(@class, 'alternate-signin__btn--google')]",
+                "//div[contains(@id, 'google')]//div[@role='button']",
+                "//button[contains(@data-provider, 'google')]",
+                "//iframe[contains(@src, 'accounts.google.com')]",
+                "//*[contains(@class, 'google')]//button",
+            ]
+
+            google_clicked = False
+            for selector in google_selectors:
+                try:
+                    google_btn = WebDriverWait(self.driver, 5).until(
+                        EC.element_to_be_clickable((By.XPATH, selector))
+                    )
+                    google_btn.click()
+                    Logger.info("Clicked Google sign-in")
+                    google_clicked = True
+                    time.sleep(random.uniform(3, 5))
+                    break
+                except:
+                    continue
+
+            if not google_clicked:
+                # Try finding Google One Tap iframe
+                try:
+                    iframes = self.driver.find_elements(By.TAG_NAME, 'iframe')
+                    for iframe in iframes:
+                        src = iframe.get_attribute('src') or ''
+                        if 'google' in src.lower():
+                            self.driver.switch_to.frame(iframe)
+                            try:
+                                tap_btn = WebDriverWait(self.driver, 5).until(
+                                    EC.element_to_be_clickable((By.XPATH, "//*[@role='button']"))
+                                )
+                                tap_btn.click()
+                                google_clicked = True
+                                Logger.info("Clicked Google One Tap")
+                            finally:
+                                self.driver.switch_to.default_content()
+                            if google_clicked:
+                                break
+                except:
+                    pass
+
+            if not google_clicked:
+                Logger.warning("Google sign-in button not found automatically")
+                Logger.info("Please manually click the Google sign-in option...")
+                Logger.info("Waiting 30 seconds for manual login...")
+                time.sleep(30)
 
             # Handle Google account selection
             current_url = self.driver.current_url
@@ -998,6 +1031,7 @@ class LinkedInPoster:
         from selenium.webdriver.common.keys import Keys
         from selenium.webdriver.support.ui import WebDriverWait
         from selenium.webdriver.support import expected_conditions as EC
+        from selenium.webdriver.common.action_chains import ActionChains
 
         try:
             Logger.info("Creating LinkedIn post...")
@@ -1005,75 +1039,160 @@ class LinkedInPoster:
             # Navigate to feed if not there
             if 'feed' not in self.driver.current_url:
                 self.driver.get("https://www.linkedin.com/feed/")
-                time.sleep(random.uniform(3, 5))
+                time.sleep(random.uniform(4, 6))
 
-            # Click "Start a post" button
-            try:
-                start_post_btn = WebDriverWait(self.driver, 10).until(
-                    EC.element_to_be_clickable((By.XPATH,
-                        "//button[contains(@class, 'share-box-feed-entry__trigger')]|"
-                        "//button[contains(., 'Start a post')]|"
-                        "//span[contains(text(), 'Start a post')]/ancestor::button"
-                    ))
-                )
-                start_post_btn.click()
-                time.sleep(random.uniform(2, 3))
-            except Exception as e:
-                Logger.error(f"Could not find 'Start a post' button: {e}")
+            # Wait for page to fully load
+            time.sleep(random.uniform(2, 4))
+
+            # Scroll up to make sure start post is visible
+            self.driver.execute_script("window.scrollTo(0, 0)")
+            time.sleep(random.uniform(1, 2))
+
+            # Click "Start a post" button - try multiple selectors
+            start_post_selectors = [
+                "//button[contains(@class, 'share-box-feed-entry__trigger')]",
+                "//button[contains(@class, 'artdeco-button')][contains(., 'Start a post')]",
+                "//span[contains(text(), 'Start a post')]/ancestor::button",
+                "//div[contains(@class, 'share-box')]//button",
+                "//button[contains(@aria-label, 'post')]",
+            ]
+
+            start_post_btn = None
+            for selector in start_post_selectors:
+                try:
+                    start_post_btn = WebDriverWait(self.driver, 5).until(
+                        EC.presence_of_element_located((By.XPATH, selector))
+                    )
+                    # Scroll element into view
+                    self.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", start_post_btn)
+                    time.sleep(0.5)
+                    # Try clicking with ActionChains
+                    ActionChains(self.driver).move_to_element(start_post_btn).pause(0.5).click().perform()
+                    Logger.info("Clicked 'Start a post' button")
+                    time.sleep(random.uniform(2, 3))
+                    break
+                except:
+                    continue
+
+            if not start_post_btn:
+                Logger.error("Could not find 'Start a post' button")
                 return False
 
-            # Wait for post modal
-            try:
-                text_area = WebDriverWait(self.driver, 10).until(
-                    EC.presence_of_element_located((By.XPATH,
-                        "//div[@role='textbox']|"
-                        "//div[contains(@class, 'editor-content')]|"
-                        "//div[@data-placeholder]"
-                    ))
-                )
-            except:
-                Logger.error("Post modal did not open")
+            # Wait for post modal to fully open
+            time.sleep(random.uniform(2, 3))
+
+            # Find and interact with text area
+            text_area_selectors = [
+                "//div[@role='textbox']",
+                "//div[contains(@class, 'ql-editor')]",
+                "//div[contains(@class, 'editor-content')]",
+                "//div[@data-placeholder]",
+                "//div[contains(@class, 'share-creation-state')]//div[@role='textbox']",
+                "//div[@contenteditable='true']",
+            ]
+
+            text_area = None
+            for selector in text_area_selectors:
+                try:
+                    text_area = WebDriverWait(self.driver, 5).until(
+                        EC.presence_of_element_located((By.XPATH, selector))
+                    )
+                    # Click to focus first
+                    self.driver.execute_script("arguments[0].click();", text_area)
+                    time.sleep(0.5)
+                    Logger.info("Found text area")
+                    break
+                except:
+                    continue
+
+            if not text_area:
+                Logger.error("Post modal did not open - no text area found")
                 return False
 
-            # Type content with human-like delays
-            for char in content:
-                text_area.send_keys(char)
-                if random.random() < 0.1:
-                    time.sleep(random.uniform(0.1, 0.3))
-                else:
-                    time.sleep(random.uniform(0.02, 0.08))
+            # Type content using JavaScript for reliability
+            self.driver.execute_script("arguments[0].focus();", text_area)
+            time.sleep(0.3)
+
+            # Use JavaScript to set the content directly (handles emojis better)
+            # Then simulate some typing for human-like feel
+            self.driver.execute_script("""
+                arguments[0].innerHTML = arguments[1];
+                arguments[0].dispatchEvent(new Event('input', { bubbles: true }));
+            """, text_area, content.replace('\n', '<br>'))
+            time.sleep(random.uniform(1, 2))
 
             time.sleep(random.uniform(1, 2))
 
             # Add image if provided
             if image_path and os.path.exists(image_path):
                 try:
-                    # Find image upload input
-                    image_input = self.driver.find_element(By.XPATH,
-                        "//input[@type='file']|//input[contains(@accept, 'image')]"
-                    )
-                    image_input.send_keys(os.path.abspath(image_path))
-                    Logger.info("Image attached")
-                    time.sleep(random.uniform(3, 5))  # Wait for upload
+                    Logger.info(f"Attaching image: {image_path}")
+                    # First click the media button to open image upload
+                    try:
+                        media_btn = self.driver.find_element(By.XPATH,
+                            "//button[contains(@aria-label, 'Add media')]|"
+                            "//button[contains(@aria-label, 'image')]|"
+                            "//button[contains(@aria-label, 'photo')]|"
+                            "//span[contains(text(), 'Media')]/ancestor::button"
+                        )
+                        media_btn.click()
+                        time.sleep(1)
+                    except:
+                        pass  # Media button might not exist in all UI versions
+
+                    # Find image upload input (hidden file input)
+                    file_inputs = self.driver.find_elements(By.CSS_SELECTOR, 'input[type="file"]')
+                    for file_input in file_inputs:
+                        accept = file_input.get_attribute('accept') or ''
+                        if 'image' in accept or not accept:
+                            file_input.send_keys(os.path.abspath(image_path))
+                            Logger.info("Image attached")
+                            time.sleep(random.uniform(4, 6))  # Wait for upload
+                            break
                 except Exception as e:
                     Logger.warning(f"Could not attach image: {e}")
 
-            # Click Post button
-            try:
-                post_btn = WebDriverWait(self.driver, 10).until(
-                    EC.element_to_be_clickable((By.XPATH,
-                        "//button[contains(@class, 'share-actions__primary-action')]|"
-                        "//button[contains(., 'Post')]|"
-                        "//span[text()='Post']/ancestor::button"
-                    ))
-                )
-                post_btn.click()
-                time.sleep(random.uniform(3, 5))
-                Logger.success("Post published!")
-                return True
-            except Exception as e:
-                Logger.error(f"Could not click Post button: {e}")
-                return False
+            # Click Post button - try multiple approaches
+            post_clicked = False
+            post_selectors = [
+                "//button[contains(@class, 'share-actions__primary-action')]",
+                "//button[.//span[text()='Post']]",
+                "//span[text()='Post']/ancestor::button",
+                "//button[@type='submit'][contains(., 'Post')]",
+                "//div[contains(@class, 'share-box')]//button[contains(@class, 'artdeco-button--primary')]",
+            ]
+
+            for selector in post_selectors:
+                try:
+                    post_btn = WebDriverWait(self.driver, 5).until(
+                        EC.presence_of_element_located((By.XPATH, selector))
+                    )
+                    # Scroll into view
+                    self.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", post_btn)
+                    time.sleep(0.5)
+                    # Try clicking with JavaScript (most reliable)
+                    self.driver.execute_script("arguments[0].click();", post_btn)
+                    post_clicked = True
+                    Logger.info("Clicked Post button")
+                    time.sleep(random.uniform(4, 6))
+                    break
+                except Exception as e:
+                    continue
+
+            if not post_clicked:
+                # Last resort: try ActionChains
+                try:
+                    post_btn = self.driver.find_element(By.XPATH, "//button[contains(., 'Post')]")
+                    ActionChains(self.driver).move_to_element(post_btn).pause(0.5).click().perform()
+                    post_clicked = True
+                    Logger.info("Clicked Post button via ActionChains")
+                    time.sleep(random.uniform(4, 6))
+                except Exception as e:
+                    Logger.error(f"Could not click Post button: {e}")
+                    return False
+
+            Logger.success("Post published!")
+            return True
 
         except Exception as e:
             Logger.error(f"Failed to create post: {e}")
@@ -1260,6 +1379,9 @@ class LinkedInAutopilot:
         # AI news database path
         self.ai_news_db = self.output_dir / 'ai_news.db'
 
+        # Cookie storage path
+        self.cookies_path = self.output_dir / 'linkedin_cookies.json'
+
         self.content_gen = ContentGenerator(self.db, self.ai_news_db)
         self.image_gen = ImageGenerator(self.output_dir / 'images')
         self.optimizer = StrategyOptimizer(self.db)
@@ -1275,8 +1397,59 @@ class LinkedInAutopilot:
         options.add_argument('--no-sandbox')
         options.add_argument('--disable-dev-shm-usage')
 
+        # Use a persistent profile directory
+        profile_dir = self.output_dir / 'chrome_profile'
+        profile_dir.mkdir(parents=True, exist_ok=True)
+        options.add_argument(f'--user-data-dir={profile_dir}')
+
         self.driver = uc.Chrome(options=options)
         return self.driver
+
+    def save_cookies(self):
+        """Save browser cookies to file"""
+        if self.driver:
+            cookies = self.driver.get_cookies()
+            with open(self.cookies_path, 'w') as f:
+                json.dump(cookies, f)
+            Logger.success(f"Saved {len(cookies)} cookies")
+
+    def load_cookies(self) -> bool:
+        """Load cookies from file"""
+        if not self.cookies_path.exists():
+            return False
+
+        try:
+            with open(self.cookies_path, 'r') as f:
+                cookies = json.load(f)
+
+            # Navigate to LinkedIn first (required to set cookies for domain)
+            self.driver.get("https://www.linkedin.com")
+            time.sleep(2)
+
+            for cookie in cookies:
+                # Remove expiry if it's in the past
+                if 'expiry' in cookie:
+                    del cookie['expiry']
+                try:
+                    self.driver.add_cookie(cookie)
+                except:
+                    pass
+
+            Logger.success(f"Loaded {len(cookies)} cookies")
+            return True
+        except Exception as e:
+            Logger.warning(f"Could not load cookies: {e}")
+            return False
+
+    def is_logged_in(self) -> bool:
+        """Check if already logged into LinkedIn"""
+        try:
+            self.driver.get("https://www.linkedin.com/feed/")
+            time.sleep(3)
+            # Check if we're on the feed (logged in) or redirected to login
+            return 'feed' in self.driver.current_url and 'login' not in self.driver.current_url
+        except:
+            return False
 
     def login(self, email: str = None, password: str = None,
               google_email: str = None) -> bool:
@@ -1284,8 +1457,27 @@ class LinkedInAutopilot:
         if not self.driver:
             self.setup_driver()
 
+        # Try to use existing session first
+        Logger.info("Checking for existing LinkedIn session...")
+        if self.is_logged_in():
+            Logger.success("Already logged in via persistent session!")
+            return True
+
+        # Try loading cookies
+        if self.load_cookies():
+            if self.is_logged_in():
+                Logger.success("Logged in via saved cookies!")
+                return True
+
+        # Need fresh login
         auth = LinkedInAuth(self.driver, email, password, google_email)
-        return auth.login()
+        success = auth.login()
+
+        if success:
+            # Save cookies for future sessions
+            self.save_cookies()
+
+        return success
 
     def generate_content_queue(self, count: int = 7):
         """Generate a week's worth of content"""
