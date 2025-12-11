@@ -517,6 +517,43 @@ class ContentGenerator:
         self.db = db
         self.ai_news_db_path = ai_news_db_path
 
+    def _clean_post_content(self, content: str) -> str:
+        """Clean up generated content - remove meta-text and fix formatting"""
+        if not content:
+            return ""
+
+        lines = content.split('\n')
+        cleaned_lines = []
+        skip_patterns = [
+            "here's", "here is", "---", "character count", "word count",
+            "linkedin post", "post:", "output:", "```"
+        ]
+
+        for line in lines:
+            line_lower = line.lower().strip()
+            # Skip meta-text lines
+            if any(pattern in line_lower for pattern in skip_patterns):
+                continue
+            # Skip empty dashes
+            if line.strip() == '---' or line.strip() == '—':
+                continue
+            cleaned_lines.append(line)
+
+        content = '\n'.join(cleaned_lines).strip()
+
+        # Remove leading/trailing dashes
+        content = re.sub(r'^[-—]+\s*', '', content)
+        content = re.sub(r'\s*[-—]+$', '', content)
+
+        # Convert markdown bold **text** to UPPERCASE for LinkedIn (since it doesn't support markdown)
+        content = re.sub(r'\*\*([^*]+)\*\*', lambda m: m.group(1).upper(), content)
+
+        # Remove any remaining markdown
+        content = re.sub(r'#{1,6}\s*', '', content)  # Remove headers
+        content = re.sub(r'\*([^*]+)\*', r'\1', content)  # Remove single asterisks
+
+        return content.strip()
+
     def _call_claude_cli(self, prompt: str, max_tokens: int = 500) -> Optional[str]:
         """Call Claude CLI tool for content generation"""
         try:
@@ -528,7 +565,7 @@ class ContentGenerator:
                 timeout=60
             )
             if result.returncode == 0 and result.stdout.strip():
-                return result.stdout.strip()
+                return self._clean_post_content(result.stdout.strip())
             else:
                 if result.stderr:
                     Logger.warning(f"Claude CLI error: {result.stderr}")
@@ -572,22 +609,22 @@ class ContentGenerator:
             f"- {item.get('text', '')[:200]}" for item in news_items[:5]
         ])
 
-        prompt = f"""You are a LinkedIn content creator specializing in AI and technology.
-Based on these recent AI news items, create an engaging LinkedIn post:
+        prompt = f"""Write a LinkedIn post about this AI news. Output ONLY the post text, nothing else.
 
+News context:
 {news_context}
 
-Requirements:
-- Professional but approachable tone
-- Include relevant emojis (but don't overdo it)
-- Add a call-to-action or question to encourage engagement
-- Keep it under 1300 characters
-- Include 3-5 relevant hashtags at the end
-- Make it valuable and insightful, not just a summary
+Rules:
+- Write the post directly, no intro like "Here's a post..."
+- Professional but conversational tone
+- 1-2 relevant emojis max
+- End with a question to drive comments
+- 3-5 hashtags at the very end
+- Under 1300 characters total
+- No markdown formatting (no ** or # symbols)
+- Make a bold claim or share a unique insight
 
-Post type: {template_type}
-
-Generate the LinkedIn post:"""
+Post style: {template_type}"""
 
         result = self._call_claude_cli(prompt, max_tokens=500)
         if result:
@@ -715,11 +752,156 @@ Be genuine and encourage further discussion."""
 # =============================================================================
 
 class ImageGenerator:
-    """Generate images for LinkedIn posts"""
+    """Generate images for LinkedIn posts using AI (DALL-E 3) or fallback"""
 
     def __init__(self, output_dir: Path):
         self.output_dir = output_dir
         self.output_dir.mkdir(parents=True, exist_ok=True)
+        self.openai_api_key = os.getenv('OPENAI_API_KEY')
+
+    def _generate_image_prompt_with_claude(self, topic: str, post_content: str) -> Optional[str]:
+        """Use Claude to generate a creative, viral-worthy image prompt"""
+        try:
+            meta_prompt = f"""You are a creative director for viral social media content. Generate a DALL-E 3 image prompt that will create a scroll-stopping, viral-worthy image for this LinkedIn post.
+
+POST TOPIC: {topic}
+POST CONTENT: {post_content[:400]}
+
+VIRAL IMAGE PRINCIPLES TO APPLY:
+- ONE single powerful visual metaphor (not multiple concepts)
+- Evoke AWE or CURIOSITY - make people stop scrolling
+- Ultra-simple composition with clear focal point
+- Dramatic, cinematic lighting (golden hour, neon, dramatic shadows)
+- Bold, saturated colors that pop on mobile screens
+- Unexpected or surreal element that makes people look twice
+- NO text, words, letters, or UI elements in the image
+- Think "would this make someone screenshot and share?"
+
+OUTPUT FORMAT: Write ONLY the image prompt, nothing else. Be specific about:
+- The exact scene/subject
+- Camera angle and framing
+- Lighting style
+- Color palette
+- Mood/atmosphere
+
+Example good prompts:
+- "A single chess piece (king) made of glowing blue circuitry, standing alone on an infinite mirror floor reflecting a sunset sky, dramatic low angle shot, cinematic lighting"
+- "Human hand reaching toward a robot hand, their fingertips creating an explosion of golden light particles, dark background, close-up macro shot, ethereal glow"
+- "A door opening in the middle of a vast desert, bright white light pouring out, person silhouetted walking toward it, epic wide shot, golden hour lighting"
+
+Now generate a prompt for the post above:"""
+
+            result = subprocess.run(
+                ['claude', '-p', meta_prompt],
+                capture_output=True,
+                text=True,
+                timeout=30
+            )
+
+            if result.returncode == 0 and result.stdout.strip():
+                prompt = result.stdout.strip()
+                # Clean up the prompt
+                prompt = prompt.replace('\n', ' ').strip()
+                if len(prompt) > 50:  # Sanity check
+                    Logger.info(f"Claude generated image prompt: {prompt[:100]}...")
+                    return prompt
+
+        except subprocess.TimeoutExpired:
+            Logger.warning("Claude CLI timed out for image prompt")
+        except Exception as e:
+            Logger.warning(f"Could not generate prompt with Claude: {e}")
+
+        return None
+
+    def generate_ai_image(self, prompt: str, post_content: str = "", style: str = "professional") -> Optional[str]:
+        """Generate an image using DALL-E 3 that tells the story of the post"""
+        if not self.openai_api_key:
+            Logger.warning("OPENAI_API_KEY not set, skipping AI image generation")
+            return None
+
+        try:
+            import requests
+
+            # Use Claude CLI to generate a creative image prompt based on the post
+            image_prompt = self._generate_image_prompt_with_claude(prompt, post_content)
+
+            if not image_prompt:
+                # Fallback to a simpler but evocative prompt based on viral principles
+                image_prompt = f"""A single powerful visual metaphor for "{prompt[:60]}":
+
+One clear focal point, ultra-minimal composition. Dramatic cinematic lighting with deep shadows and bright highlights. Bold saturated colors that pop. Evoke awe and curiosity. Photorealistic or hyperreal quality. NO text, words, or UI elements. 16:9 aspect ratio."""
+
+            Logger.info("Generating AI image with DALL-E 3...")
+
+            response = requests.post(
+                "https://api.openai.com/v1/images/generations",
+                headers={
+                    "Authorization": f"Bearer {self.openai_api_key}",
+                    "Content-Type": "application/json"
+                },
+                json={
+                    "model": "dall-e-3",
+                    "prompt": image_prompt,
+                    "n": 1,
+                    "size": "1792x1024",  # Closest to LinkedIn's 1200x627
+                    "quality": "standard",  # Use "hd" for higher quality (costs more)
+                    "style": "vivid"
+                },
+                timeout=60
+            )
+
+            if response.status_code != 200:
+                Logger.warning(f"DALL-E API error: {response.status_code} - {response.text}")
+                return None
+
+            data = response.json()
+            image_url = data['data'][0]['url']
+
+            # Download the image
+            img_response = requests.get(image_url, timeout=30)
+            if img_response.status_code != 200:
+                Logger.warning("Could not download generated image")
+                return None
+
+            # Save the image
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            filename = f"linkedin_ai_{timestamp}.png"
+            filepath = self.output_dir / filename
+
+            with open(filepath, 'wb') as f:
+                f.write(img_response.content)
+
+            # Resize to LinkedIn optimal dimensions
+            try:
+                img = Image.open(filepath)
+                img = img.resize((1200, 627), Image.Resampling.LANCZOS)
+                img.save(filepath, 'PNG')
+            except Exception as e:
+                Logger.warning(f"Could not resize image: {e}")
+
+            Logger.success(f"Created AI image: {filename}")
+            return str(filepath)
+
+        except Exception as e:
+            Logger.warning(f"AI image generation failed: {e}")
+            return None
+
+    def create_image_for_post(self, post_content: str, use_ai: bool = True) -> Optional[str]:
+        """Create an image for a post - tries AI first, falls back to quote image"""
+        # Extract key theme/topic from post
+        lines = post_content.split('\n')
+        key_line = lines[0] if lines else post_content[:100]
+        key_line = re.sub(r'[^\w\s]', '', key_line)[:100]
+
+        # Try AI generation first - pass full post content for context
+        if use_ai and self.openai_api_key:
+            ai_image = self.generate_ai_image(key_line, post_content=post_content)
+            if ai_image:
+                return ai_image
+
+        # Fallback to simple quote image
+        Logger.info("Using fallback quote image")
+        return self.create_quote_image(key_line)
 
     def create_quote_image(self, text: str, theme: str = "ai") -> str:
         """Create a simple quote/insight image"""
@@ -1123,32 +1305,103 @@ class LinkedInPoster:
 
             time.sleep(random.uniform(1, 2))
 
-            # Add image if provided
+            # Add image if provided - based on research from multiple LinkedIn automation repos
+            # Sources: github.com/SelmiAbderrahim/automate-linkedin, github.com/ColombiaPython/social-media-automation
             if image_path and os.path.exists(image_path):
                 try:
                     Logger.info(f"Attaching image: {image_path}")
-                    # First click the media button to open image upload
-                    try:
-                        media_btn = self.driver.find_element(By.XPATH,
-                            "//button[contains(@aria-label, 'Add media')]|"
-                            "//button[contains(@aria-label, 'image')]|"
-                            "//button[contains(@aria-label, 'photo')]|"
-                            "//span[contains(text(), 'Media')]/ancestor::button"
-                        )
-                        media_btn.click()
-                        time.sleep(1)
-                    except:
-                        pass  # Media button might not exist in all UI versions
+                    abs_image_path = os.path.abspath(image_path)
+                    image_attached = False
 
-                    # Find image upload input (hidden file input)
-                    file_inputs = self.driver.find_elements(By.CSS_SELECTOR, 'input[type="file"]')
-                    for file_input in file_inputs:
-                        accept = file_input.get_attribute('accept') or ''
-                        if 'image' in accept or not accept:
-                            file_input.send_keys(os.path.abspath(image_path))
-                            Logger.info("Image attached")
-                            time.sleep(random.uniform(4, 6))  # Wait for upload
+                    # Step 1: Click the "Add a photo" button to open media picker
+                    # Selector from automate-linkedin repo
+                    media_button_selectors = [
+                        "//button[@aria-label='Add a photo']",  # Primary from automate-linkedin
+                        "//button[contains(@aria-label, 'Add a photo')]",
+                        "//button[contains(@aria-label, 'photo')]",
+                        "//button[contains(@aria-label, 'image')]",
+                        "//button[contains(@aria-label, 'media')]",
+                        "//*[@data-test-icon='image-medium']/ancestor::button",
+                        "//li[contains(@class, 'share-creation-state__detour-btn')]//button",
+                    ]
+
+                    media_clicked = False
+                    for selector in media_button_selectors:
+                        try:
+                            media_btn = WebDriverWait(self.driver, 3).until(
+                                EC.element_to_be_clickable((By.XPATH, selector))
+                            )
+                            ActionChains(self.driver).move_to_element(media_btn).click().perform()
+                            Logger.info(f"Clicked media button: {selector[:50]}")
+                            media_clicked = True
+                            time.sleep(2)
                             break
+                        except:
+                            continue
+
+                    if not media_clicked:
+                        Logger.warning("Could not find media button")
+
+                    # Step 2: Find file input and send the image path
+                    # Multiple selectors from different repos
+                    file_input_selectors = [
+                        "//input[contains(@id, 'image-sharing-detour-container')]",  # From automate-linkedin
+                        "//input[@name='file']",  # From social-media-automation
+                        "//input[@type='file'][contains(@id, 'image')]",
+                        "//input[@type='file'][contains(@class, 'upload')]",
+                        "//input[@type='file']",  # Generic fallback
+                    ]
+
+                    time.sleep(1)
+
+                    for selector in file_input_selectors:
+                        try:
+                            if selector.startswith("//"):
+                                file_input = self.driver.find_element(By.XPATH, selector)
+                            else:
+                                file_input = self.driver.find_element(By.CSS_SELECTOR, selector)
+
+                            # Make visible if hidden
+                            self.driver.execute_script("""
+                                arguments[0].style.display = 'block';
+                                arguments[0].style.visibility = 'visible';
+                                arguments[0].style.opacity = '1';
+                                arguments[0].style.height = 'auto';
+                                arguments[0].style.width = 'auto';
+                                arguments[0].style.position = 'relative';
+                            """, file_input)
+
+                            file_input.send_keys(abs_image_path)
+                            Logger.info(f"Image attached via: {selector[:40]}")
+                            image_attached = True
+                            time.sleep(random.uniform(3, 5))  # Wait for upload
+                            break
+                        except Exception as e:
+                            continue
+
+                    # Step 3: If still not attached, try finding ALL file inputs
+                    if not image_attached:
+                        Logger.info("Trying all file inputs on page...")
+                        all_file_inputs = self.driver.find_elements(By.CSS_SELECTOR, 'input[type="file"]')
+                        Logger.info(f"Found {len(all_file_inputs)} file inputs")
+
+                        for i, file_input in enumerate(all_file_inputs):
+                            try:
+                                self.driver.execute_script("""
+                                    arguments[0].style.display = 'block';
+                                    arguments[0].style.visibility = 'visible';
+                                """, file_input)
+                                file_input.send_keys(abs_image_path)
+                                Logger.info(f"Image attached via file input #{i}")
+                                image_attached = True
+                                time.sleep(random.uniform(3, 5))
+                                break
+                            except:
+                                continue
+
+                    if not image_attached:
+                        Logger.warning("Could not attach image - posting without image")
+
                 except Exception as e:
                     Logger.warning(f"Could not attach image: {e}")
 
@@ -1479,22 +1732,17 @@ class LinkedInAutopilot:
 
         return success
 
-    def generate_content_queue(self, count: int = 7):
-        """Generate a week's worth of content"""
+    def generate_content_queue(self, count: int = 7, use_ai_images: bool = True):
+        """Generate content for the queue with AI-generated images"""
         Logger.info(f"Generating {count} posts for the content queue...")
 
         posts = self.content_gen.generate_content_batch(count)
 
         for post in posts:
-            # Generate image for some posts
-            if random.random() < 0.6:  # 60% chance of image
-                # Extract key insight for image
-                lines = post.content.split('\n')
-                key_line = lines[0] if lines else post.content[:100]
-                key_line = re.sub(r'[^\w\s]', '', key_line)[:100]
-
-                image_path = self.image_gen.create_quote_image(key_line)
-                post.image_path = image_path
+            # Generate AI image for each post (100% of posts get images for better engagement)
+            Logger.info(f"Generating image for post...")
+            image_path = self.image_gen.create_image_for_post(post.content, use_ai=use_ai_images)
+            post.image_path = image_path
 
             self.db.add_to_queue(
                 content=post.content,
@@ -1651,8 +1899,10 @@ def main():
     parser.add_argument('--check-comments', action='store_true', help='Check and respond to comments')
     parser.add_argument('--stats', action='store_true', help='Show statistics')
     parser.add_argument('--run', action='store_true', help='Run single autopilot cycle')
-    parser.add_argument('--schedule', action='store_true', help='Run scheduled autopilot')
+    parser.add_argument('--schedule', action='store_true', help='Run scheduled autopilot (1 post/day)')
     parser.add_argument('--google-auth', type=str, help='Google email for OAuth')
+    parser.add_argument('--no-ai-images', action='store_true', help='Disable AI image generation (use simple quote images)')
+    parser.add_argument('--posts-per-day', type=int, default=1, help='Posts per day for scheduled mode (default: 1)')
 
     args = parser.parse_args()
 
@@ -1681,7 +1931,8 @@ def main():
             )
 
         if args.generate > 0:
-            autopilot.generate_content_queue(args.generate)
+            use_ai_images = not args.no_ai_images
+            autopilot.generate_content_queue(args.generate, use_ai_images=use_ai_images)
 
         if args.post:
             autopilot.post_from_queue()
@@ -1693,7 +1944,7 @@ def main():
             autopilot.run_autopilot_cycle()
 
         if args.schedule:
-            autopilot.run_scheduled()
+            autopilot.run_scheduled(posts_per_day=args.posts_per_day)
 
         if args.stats or not any([args.login, args.generate, args.post,
                                    args.check_comments, args.run, args.schedule]):

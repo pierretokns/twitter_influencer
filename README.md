@@ -32,9 +32,14 @@ GOOGLE_EMAIL=your_email@gmail.com
 # LinkedIn credentials (for autopilot)
 LINKEDIN_EMAIL=your_email
 LINKEDIN_PASSWORD=your_password
+
+# AI Image Generation (optional - falls back to simple quote images)
+OPENAI_API_KEY=your_openai_api_key
 ```
 
 **Note:** For AI-powered content generation, the LinkedIn autopilot uses the Claude CLI tool (installed via `npm install -g @anthropic-ai/claude-code`). Make sure you're logged in to Claude via the CLI.
+
+**AI Images:** For viral, eye-catching images, set `OPENAI_API_KEY` to use DALL-E 3. Without it, the system falls back to simple quote card images.
 
 ## AI News Scraper
 
