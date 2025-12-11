@@ -18,8 +18,8 @@ GOOGLE_EMAIL=your_email@gmail.com
 LINKEDIN_EMAIL=your_email
 LINKEDIN_PASSWORD=your_password
 
-# OpenAI API (for AI-powered content generation)
-OPENAI_API_KEY=sk-your-api-key
+# Anthropic API (for AI-powered content generation with Claude)
+ANTHROPIC_API_KEY=sk-ant-your-api-key
 ```
 
 ## Running
@@ -117,7 +117,7 @@ uv run linkedin_autopilot.py --login --schedule --google-auth=your@gmail.com
 #### LinkedIn Autopilot Features
 
 - **Content Generation**: Creates engaging LinkedIn posts from scraped AI news
-  - Uses OpenAI GPT-4o-mini for intelligent content creation
+  - Uses Claude (Anthropic) for intelligent content creation
   - Falls back to templates if no API key configured
   - Multiple post types: news breakdowns, hot takes, curated lists, questions, insights
 

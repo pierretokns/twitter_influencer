@@ -7,7 +7,7 @@
 #     "requests>=2.31.0",
 #     "pillow>=10.0.0",
 #     "schedule>=1.2.0",
-#     "openai>=1.0.0",
+#     "anthropic>=0.39.0",
 # ]
 # ///
 
@@ -516,17 +516,17 @@ class ContentGenerator:
     def __init__(self, db: LinkedInDatabase, ai_news_db_path: Path = None):
         self.db = db
         self.ai_news_db_path = ai_news_db_path
-        self._openai_client = None
+        self._claude_client = None
 
     @property
-    def openai_client(self):
-        """Lazy load OpenAI client"""
-        if self._openai_client is None:
-            api_key = os.getenv('OPENAI_API_KEY')
+    def claude_client(self):
+        """Lazy load Anthropic Claude client"""
+        if self._claude_client is None:
+            api_key = os.getenv('ANTHROPIC_API_KEY')
             if api_key:
-                from openai import OpenAI
-                self._openai_client = OpenAI(api_key=api_key)
-        return self._openai_client
+                from anthropic import Anthropic
+                self._claude_client = Anthropic(api_key=api_key)
+        return self._claude_client
 
     def get_recent_ai_news(self, limit: int = 20) -> List[Dict]:
         """Get recent AI news from the scraper database"""
@@ -551,9 +551,9 @@ class ContentGenerator:
 
     def generate_post_with_ai(self, news_items: List[Dict],
                               template_type: str = "news_breakdown") -> Optional[str]:
-        """Generate a LinkedIn post using OpenAI"""
-        if not self.openai_client:
-            Logger.warning("OpenAI API key not configured, using template fallback")
+        """Generate a LinkedIn post using Claude"""
+        if not self.claude_client:
+            Logger.warning("ANTHROPIC_API_KEY not configured, using template fallback")
             return self.generate_post_from_template(news_items, template_type)
 
         # Prepare context from news items
@@ -579,15 +579,14 @@ Post type: {template_type}
 Generate the LinkedIn post:"""
 
         try:
-            response = self.openai_client.chat.completions.create(
-                model="gpt-4o-mini",
-                messages=[{"role": "user", "content": prompt}],
+            response = self.claude_client.messages.create(
+                model="claude-sonnet-4-20250514",
                 max_tokens=500,
-                temperature=0.7
+                messages=[{"role": "user", "content": prompt}]
             )
-            return response.choices[0].message.content.strip()
+            return response.content[0].text.strip()
         except Exception as e:
-            Logger.error(f"OpenAI generation failed: {e}")
+            Logger.error(f"Claude generation failed: {e}")
             return self.generate_post_from_template(news_items, template_type)
 
     def generate_post_from_template(self, news_items: List[Dict],
@@ -669,7 +668,7 @@ Generate the LinkedIn post:"""
         # Analyze sentiment
         sentiment = self._analyze_sentiment(comment)
 
-        if self.openai_client:
+        if self.claude_client:
             try:
                 prompt = f"""You're responding to a comment on your LinkedIn post.
 
@@ -679,15 +678,14 @@ Comment: {comment}
 Write a brief, friendly, professional response (1-2 sentences).
 Be genuine and encourage further discussion."""
 
-                response = self.openai_client.chat.completions.create(
-                    model="gpt-4o-mini",
-                    messages=[{"role": "user", "content": prompt}],
+                response = self.claude_client.messages.create(
+                    model="claude-sonnet-4-20250514",
                     max_tokens=100,
-                    temperature=0.7
+                    messages=[{"role": "user", "content": prompt}]
                 )
-                return response.choices[0].message.content.strip()
+                return response.content[0].text.strip()
             except Exception as e:
-                Logger.warning(f"AI response generation failed: {e}")
+                Logger.warning(f"Claude response generation failed: {e}")
 
         # Fallback to templates
         responses = COMMENT_RESPONSES.get(sentiment, COMMENT_RESPONSES["neutral"])
