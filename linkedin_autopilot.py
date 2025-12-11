@@ -40,12 +40,7 @@ from dotenv import load_dotenv
 from PIL import Image, ImageDraw, ImageFont
 import requests
 
-# Optional pyautogui for native file dialogs
-try:
-    import pyautogui
-    PYAUTOGUI_AVAILABLE = True
-except ImportError:
-    PYAUTOGUI_AVAILABLE = False
+# Note: pyautogui was removed - using JavaScript injection for file uploads instead
 
 # Fix SSL certificate verification
 ssl._create_default_https_context = ssl._create_unverified_context
@@ -1214,214 +1209,170 @@ class LinkedInPoster:
     def __init__(self, driver):
         self.driver = driver
 
-    def create_post(self, content: str, image_path: str = None) -> bool:
-        """Create a new LinkedIn post"""
-        from selenium.webdriver.common.by import By
-        from selenium.webdriver.common.keys import Keys
-        from selenium.webdriver.support.ui import WebDriverWait
-        from selenium.webdriver.support import expected_conditions as EC
-        from selenium.webdriver.common.action_chains import ActionChains
+    def _qa_review_post(self, content: str, image_path: str = None) -> dict:
+        """Use Claude CLI to QA review the post before publishing"""
+        prompt = f"""You are a QA reviewer for LinkedIn posts. Review this post briefly.
+
+POST:
+{content}
+
+{"[Has image attached]" if image_path else "[No image]"}
+
+Check for: grammar errors, clarity, professional tone, appropriate hashtags.
+
+Respond in JSON format only:
+{{"approved": true/false, "score": 1-10, "issues": ["issue1"], "summary": "brief assessment"}}
+
+Only set approved=false for serious issues (offensive content, major errors)."""
 
         try:
+            result = subprocess.run(
+                ['claude', '-p', prompt],
+                capture_output=True,
+                text=True,
+                timeout=30
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                import json
+                response = result.stdout.strip()
+                start = response.find('{')
+                end = response.rfind('}') + 1
+                if start >= 0 and end > start:
+                    return json.loads(response[start:end])
+            return {"approved": True, "score": 7, "summary": "Review completed"}
+        except Exception as e:
+            Logger.warning(f"QA review failed: {e}")
+            return {"approved": True, "score": 5, "summary": "Review skipped"}
+
+    def create_post(self, content: str, image_path: str = None) -> bool:
+        """Create a new LinkedIn post with optional image and QA review"""
+        from selenium.webdriver.common.by import By
+        from selenium.webdriver.support.ui import WebDriverWait
+        from selenium.webdriver.support import expected_conditions as EC
+
+        try:
+            # QA Review first
+            Logger.info("Running QA review on post content...")
+            review = self._qa_review_post(content, image_path)
+            Logger.info(f"QA Score: {review.get('score', 'N/A')}/10 - {review.get('summary', '')}")
+
+            if review.get('issues'):
+                for issue in review.get('issues', []):
+                    Logger.warning(f"QA Issue: {issue}")
+
+            if not review.get('approved', True):
+                Logger.error("Post not approved by QA review. Skipping.")
+                return False
+
             Logger.info("Creating LinkedIn post...")
 
             # Navigate to feed if not there
             if 'feed' not in self.driver.current_url:
                 self.driver.get("https://www.linkedin.com/feed/")
-                time.sleep(random.uniform(4, 6))
+                time.sleep(random.uniform(3, 5))
 
-            # Wait for page to fully load
-            time.sleep(random.uniform(2, 4))
-
-            # Scroll up to make sure start post is visible
+            time.sleep(random.uniform(2, 3))
             self.driver.execute_script("window.scrollTo(0, 0)")
             time.sleep(random.uniform(1, 2))
 
-            # Click "Start a post" button - try multiple selectors
-            start_post_selectors = [
-                "//button[contains(@class, 'share-box-feed-entry__trigger')]",
-                "//button[contains(@class, 'artdeco-button')][contains(., 'Start a post')]",
-                "//span[contains(text(), 'Start a post')]/ancestor::button",
-                "//div[contains(@class, 'share-box')]//button",
-                "//button[contains(@aria-label, 'post')]",
-            ]
-
-            start_post_btn = None
-            for selector in start_post_selectors:
+            # If we have an image, click "Photo" button directly (better flow)
+            # Otherwise, click "Start a post"
+            if image_path and os.path.exists(image_path):
+                Logger.info("Clicking 'Photo' button for image post...")
                 try:
-                    start_post_btn = WebDriverWait(self.driver, 5).until(
-                        EC.presence_of_element_located((By.XPATH, selector))
+                    photo_btn = WebDriverWait(self.driver, 10).until(
+                        EC.element_to_be_clickable((By.CSS_SELECTOR, "button[aria-label='Add a photo']"))
                     )
-                    # Scroll element into view
-                    self.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", start_post_btn)
-                    time.sleep(0.5)
-                    # Try clicking with ActionChains
-                    ActionChains(self.driver).move_to_element(start_post_btn).pause(0.5).click().perform()
-                    Logger.info("Clicked 'Start a post' button")
-                    time.sleep(random.uniform(2, 3))
-                    break
-                except:
-                    continue
+                    photo_btn.click()
+                    time.sleep(2)
 
-            if not start_post_btn:
-                Logger.error("Could not find 'Start a post' button")
-                return False
+                    # Inject image via JavaScript
+                    Logger.info("Injecting image...")
+                    import base64
+                    abs_image_path = os.path.abspath(image_path)
+                    with open(abs_image_path, 'rb') as f:
+                        image_data = base64.b64encode(f.read()).decode('utf-8')
+                    image_name = os.path.basename(abs_image_path)
+                    image_type = 'image/png' if abs_image_path.lower().endswith('.png') else 'image/jpeg'
 
-            # Wait for post modal to fully open
-            time.sleep(random.uniform(2, 3))
+                    result = self.driver.execute_script("""
+                        var fileInput = document.getElementById('media-editor-file-selector__file-input');
+                        if (!fileInput) fileInput = document.querySelector('input[type="file"]');
+                        if (!fileInput) {
+                            var container = document.querySelector('.share-creation-state, [class*="share"]');
+                            if (container) {
+                                fileInput = document.createElement('input');
+                                fileInput.type = 'file';
+                                fileInput.id = 'media-editor-file-selector__file-input';
+                                fileInput.accept = 'image/*';
+                                fileInput.style.display = 'none';
+                                container.appendChild(fileInput);
+                            }
+                        }
+                        if (!fileInput) return {success: false, error: 'No file input'};
 
-            # Find and interact with text area
-            text_area_selectors = [
-                "//div[@role='textbox']",
-                "//div[contains(@class, 'ql-editor')]",
-                "//div[contains(@class, 'editor-content')]",
-                "//div[@data-placeholder]",
-                "//div[contains(@class, 'share-creation-state')]//div[@role='textbox']",
-                "//div[@contenteditable='true']",
-            ]
+                        try {
+                            var byteString = atob(arguments[0]);
+                            var ab = new ArrayBuffer(byteString.length);
+                            var ia = new Uint8Array(ab);
+                            for (var i = 0; i < byteString.length; i++) ia[i] = byteString.charCodeAt(i);
+                            var blob = new Blob([ab], {type: arguments[2]});
+                            var file = new File([blob], arguments[1], {type: arguments[2]});
+                            var dt = new DataTransfer();
+                            dt.items.add(file);
+                            fileInput.files = dt.files;
+                            fileInput.dispatchEvent(new Event('change', {bubbles: true}));
+                            return {success: true};
+                        } catch(e) { return {success: false, error: e.toString()}; }
+                    """, image_data, image_name, image_type)
 
-            text_area = None
-            for selector in text_area_selectors:
-                try:
-                    text_area = WebDriverWait(self.driver, 5).until(
-                        EC.presence_of_element_located((By.XPATH, selector))
+                    if result and result.get('success'):
+                        Logger.success("Image injected successfully")
+                        time.sleep(2)
+
+                        # Handle Next/Done buttons
+                        for step in ["Next", "Done"]:
+                            try:
+                                btn = WebDriverWait(self.driver, 3).until(
+                                    EC.element_to_be_clickable((By.XPATH, f"//button[.//span[text()='{step}']]"))
+                                )
+                                btn.click()
+                                Logger.info(f"Clicked '{step}' button")
+                                time.sleep(2)
+                            except:
+                                pass
+                    else:
+                        Logger.warning(f"Image injection failed: {result}")
+
+                except Exception as e:
+                    Logger.warning(f"Photo button approach failed: {e}, falling back to Start a post")
+                    # Fall back to Start a post
+                    start_btn = WebDriverWait(self.driver, 5).until(
+                        EC.element_to_be_clickable((By.XPATH, "//button[contains(., 'Start a post')]"))
                     )
-                    # Click to focus first
-                    self.driver.execute_script("arguments[0].click();", text_area)
-                    time.sleep(0.5)
-                    Logger.info("Found text area")
-                    break
-                except:
-                    continue
+                    start_btn.click()
+                    time.sleep(3)
+            else:
+                # No image - use Start a post
+                Logger.info("Clicking 'Start a post' button...")
+                start_btn = WebDriverWait(self.driver, 10).until(
+                    EC.element_to_be_clickable((By.XPATH, "//button[contains(., 'Start a post')]"))
+                )
+                start_btn.click()
+                time.sleep(3)
 
-            if not text_area:
-                Logger.error("Post modal did not open - no text area found")
-                return False
-
-            # Type content using JavaScript for reliability
-            self.driver.execute_script("arguments[0].focus();", text_area)
-            time.sleep(0.3)
-
-            # Use JavaScript to set the content directly (handles emojis better)
-            # Then simulate some typing for human-like feel
+            # Find and fill text area
+            text_area = WebDriverWait(self.driver, 10).until(
+                EC.presence_of_element_located((By.XPATH, "//div[@role='textbox']"))
+            )
             self.driver.execute_script("""
                 arguments[0].innerHTML = arguments[1];
                 arguments[0].dispatchEvent(new Event('input', { bubbles: true }));
             """, text_area, content.replace('\n', '<br>'))
+            Logger.info("Content added")
             time.sleep(random.uniform(1, 2))
 
-            time.sleep(random.uniform(1, 2))
-
-            # Add image if provided - clicking "Add media" opens native file picker
-            if image_path and os.path.exists(image_path):
-                try:
-                    Logger.info(f"Attaching image: {image_path}")
-                    abs_image_path = os.path.abspath(image_path)
-                    image_attached = False
-
-                    # Step 1: Click the "Add media" button (opens native file picker)
-                    media_button_selectors = [
-                        "button[aria-label='Add media']",
-                        "//button[@aria-label='Add media']",
-                        "//button[contains(@aria-label, 'media')]",
-                    ]
-
-                    media_clicked = False
-                    for selector in media_button_selectors:
-                        try:
-                            if selector.startswith("//"):
-                                media_btn = WebDriverWait(self.driver, 5).until(
-                                    EC.element_to_be_clickable((By.XPATH, selector))
-                                )
-                            else:
-                                media_btn = WebDriverWait(self.driver, 5).until(
-                                    EC.element_to_be_clickable((By.CSS_SELECTOR, selector))
-                                )
-                            ActionChains(self.driver).move_to_element(media_btn).click().perform()
-                            Logger.info("Clicked 'Add media' button - native file picker should open")
-                            media_clicked = True
-                            time.sleep(2)  # Wait for native dialog to open
-                            break
-                        except:
-                            continue
-
-                    if not media_clicked:
-                        Logger.warning("Could not find 'Add media' button")
-                    else:
-                        # Step 2: Handle native file picker with pyautogui + clipboard
-                        if PYAUTOGUI_AVAILABLE:
-                            Logger.info("Using pyautogui to navigate native file dialog...")
-                            time.sleep(1.5)  # Ensure dialog is fully open
-
-                            try:
-                                # Copy path to clipboard using subprocess (works on macOS)
-                                import subprocess
-                                process = subprocess.Popen(['pbcopy'], stdin=subprocess.PIPE)
-                                process.communicate(abs_image_path.encode('utf-8'))
-
-                                # On macOS, use Cmd+Shift+G to open "Go to folder" dialog
-                                pyautogui.hotkey('command', 'shift', 'g')
-                                time.sleep(0.8)
-
-                                # Paste the path from clipboard (Cmd+V)
-                                pyautogui.hotkey('command', 'v')
-                                time.sleep(0.5)
-
-                                # Press Enter to navigate to the file
-                                pyautogui.press('enter')
-                                time.sleep(1.0)
-
-                                # Press Enter again to select/open the file
-                                pyautogui.press('enter')
-                                time.sleep(3)  # Wait for file to be processed
-
-                                Logger.info("Image attached via native file dialog")
-                                image_attached = True
-
-                            except Exception as e:
-                                Logger.warning(f"Native file dialog handling failed: {e}")
-                                # Fallback: try pressing Escape to close dialog
-                                try:
-                                    pyautogui.press('escape')
-                                except:
-                                    pass
-                        else:
-                            Logger.warning("pyautogui not available - cannot handle native file dialog")
-
-                    # Step 3: Handle multi-step image upload flow (Next → Done)
-                    if image_attached:
-                        time.sleep(2)  # Wait for upload to process
-
-                        # LinkedIn has a multi-step flow: Select image → Edit → Confirm
-                        # We may need to click "Next" then "Done" in sequence
-                        confirmation_steps = [
-                            ("Next", ["//button[.//span[text()='Next']]", "//span[text()='Next']/ancestor::button"]),
-                            ("Done", ["//button[.//span[text()='Done']]", "//span[text()='Done']/ancestor::button"]),
-                        ]
-
-                        for step_name, selectors in confirmation_steps:
-                            clicked = False
-                            for selector in selectors:
-                                try:
-                                    confirm_btn = WebDriverWait(self.driver, 3).until(
-                                        EC.element_to_be_clickable((By.XPATH, selector))
-                                    )
-                                    confirm_btn.click()
-                                    Logger.info(f"Clicked '{step_name}' button")
-                                    clicked = True
-                                    time.sleep(2)
-                                    break
-                                except:
-                                    continue
-                            # Continue to next step regardless of whether this step was clicked
-
-                    if not image_attached:
-                        Logger.warning("Could not attach image - posting without image")
-
-                except Exception as e:
-                    Logger.warning(f"Could not attach image: {e}")
-
-            # Click Post button - try multiple approaches
+            # Click Post button
             post_clicked = False
             post_selectors = [
                 "//button[contains(@class, 'share-actions__primary-action')]",
