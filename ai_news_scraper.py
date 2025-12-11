@@ -1088,14 +1088,12 @@ class AINewsScraper:
         options.add_argument('--disable-dev-shm-usage')
         options.add_argument('--disable-gpu')
 
+        # Let undetected-chromedriver auto-detect Chrome version
         try:
-            self.driver = uc.Chrome(options=options, version_main=131)
-        except Exception:
-            try:
-                self.driver = uc.Chrome(options=options)
-            except Exception as e:
-                Logger.error(f"Could not start Chrome: {e}")
-                raise
+            self.driver = uc.Chrome(options=options)
+        except Exception as e:
+            Logger.error(f"Could not start Chrome: {e}")
+            raise
 
         return self.driver
 
