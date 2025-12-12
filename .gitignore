@@ -3,3 +3,4 @@ output_data/
 __pycache__/
 *.pyc
 .env
+deploy/connection_info.txt
