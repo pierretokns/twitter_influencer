@@ -105,12 +105,14 @@ class PostVariantGenerator:
     a specific news item from the scraped sources.
     """
 
-    # LinkedIn post constraints
-    MAX_LENGTH = 1300
-    MAX_EMOJIS = 2
+    # LinkedIn post constraints (based on 2024/2025 algorithm research)
+    # Sweet spot for text posts: 1,800-2,100 chars. Below 1000 = -25% reach
+    MAX_LENGTH = 1900
+    MIN_LENGTH = 1200  # Avoid the -25% penalty for short posts
+    MAX_EMOJIS = 3  # 1-3 emojis = +25% engagement
     HASHTAG_RANGE = (3, 5)
 
-    # The generation prompt template
+    # The generation prompt template (research-backed formatting)
     GENERATION_PROMPT = '''You are a LinkedIn content creator with 100K+ followers. Write a viral post about TODAY'S AI NEWS.
 
 ===== TODAY'S AI NEWS (from Twitter/X and tech blogs) =====
@@ -126,15 +128,25 @@ Write a LinkedIn post that:
 ===== HOOK STYLE: {hook_style} =====
 Example: "{hook_example}"
 
-===== FORMAT REQUIREMENTS =====
-- First 2 lines = scroll-stopping hook (this shows before "see more")
-- Short paragraphs (1-3 lines each) for mobile
-- Include specific details from the news (names, numbers, companies)
-- End with thought-provoking question
+===== FORMAT REQUIREMENTS (research-backed for 2024/2025 algorithm) =====
+
+STRUCTURE:
+- First 210 characters = CRITICAL hook (this shows before "see more" button)
+- One sentence per line with blank lines between paragraphs (gives eyes room to rest)
+- Short sentences under 12 words perform best (+20% reach)
+- 2-3 sentences max per paragraph block
+- End with a thought-provoking QUESTION (+35% engagement, +20% reach)
+
+LENGTH:
+- Target 1,500-1,900 characters (sweet spot for text posts)
+- Posts under 1,000 chars get -25% reach penalty
+- Use the space to develop your insight fully
+
+FORMATTING:
+- NO markdown symbols (no ** or # - LinkedIn doesn't render them)
+- Use blank lines liberally for white space (+57% engagement)
+- 1-3 emojis strategically placed (+25% engagement)
 - 3-5 hashtags at the very end
-- Max 1300 characters total
-- NO markdown symbols (no ** or #)
-- Max 2 emojis
 
 ===== OUTPUT =====
 Write ONLY the post text. No intro, no explanation. Start directly with the hook:'''

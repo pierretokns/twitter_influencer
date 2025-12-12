@@ -52,44 +52,69 @@ class QEAgent:
     detailed feedback for the Evolution Agent to use when improving posts.
     """
 
-    # Scoring criteria with point allocations
+    # Scoring criteria with point allocations (updated for 2024/2025 algorithm)
     CRITERIA = {
-        "hook_strength": 25,      # First 2-3 lines compelling?
-        "single_focus": 15,       # One clear idea?
-        "mobile_format": 15,      # Short paragraphs, scannable?
-        "authenticity": 15,       # Personal, genuine voice?
-        "engagement_cta": 10,     # Good question at end?
+        "hook_strength": 25,      # First 210 chars compelling?
+        "length_depth": 15,       # 1500-1900 chars, insight fully developed?
+        "format_whitespace": 15,  # One sentence/line, white space, short sentences?
+        "authenticity": 15,       # Personal voice, not generic AI content?
+        "question_cta": 10,       # Thought-provoking question at end?
         "hashtag_usage": 5,       # 3-5 relevant hashtags?
-        "clarity": 10,            # Easy to understand?
-        "grammar": 5,             # No errors?
+        "clarity": 10,            # Clear takeaway, easy to understand?
+        "grammar": 5,             # No errors, no markdown symbols?
     }
 
-    # The evaluation prompt template
-    EVALUATION_PROMPT = '''You are a LinkedIn content QA expert. Evaluate this post against best practices.
+    # The evaluation prompt template (updated with 2024/2025 algorithm research)
+    EVALUATION_PROMPT = '''You are a LinkedIn content QA expert. Evaluate this post against 2024/2025 research-backed best practices.
 
-POST:
+POST ({char_count} characters):
 {content}
 
-SCORING CRITERIA (total 100 points):
-1. HOOK STRENGTH (25pts): First 2-3 lines compelling? Would it stop scrolling?
-2. SINGLE FOCUS (15pts): One clear idea, not cramming multiple tips?
-3. MOBILE FORMAT (15pts): Short paragraphs (1-3 lines), scannable?
-4. AUTHENTICITY (15pts): Personal, genuine voice, not generic?
-5. ENGAGEMENT CTA (10pts): Ends with thought-provoking question (not engagement bait)?
-6. HASHTAG USAGE (5pts): 3-5 relevant hashtags at end?
-7. CLARITY (10pts): Easy to understand, clear takeaway?
-8. GRAMMAR (5pts): No spelling/grammar errors?
+===== SCORING CRITERIA (total 100 points) =====
 
-THINGS TO PENALIZE:
-- Generic intros ("Here's my thoughts on...")
-- Engagement bait ("Comment YES if you agree!")
-- Dense paragraphs
+1. HOOK STRENGTH (25pts):
+   - First 210 characters CRITICAL (shows before "see more")
+   - Would it stop someone scrolling?
+   - Curiosity gap, bold claim, or value promise?
+
+2. LENGTH & DEPTH (15pts):
+   - Sweet spot: 1,500-1,900 characters
+   - Under 1,000 chars = -25% reach penalty
+   - Is the insight fully developed, not surface-level?
+
+3. FORMAT & WHITE SPACE (15pts):
+   - One sentence per line with blank lines between thoughts
+   - Short sentences (<12 words ideal = +20% reach)
+   - Uses white space liberally (+57% engagement)
+   - NOT dense wall of text
+
+4. AUTHENTICITY (15pts):
+   - Personal voice, specific details
+   - Not generic AI-sounding content
+   - Unique angle or insight
+
+5. QUESTION CTA (10pts):
+   - Ends with thought-provoking question (+35% engagement)
+   - NOT engagement bait ("Comment YES!")
+   - Invites genuine discussion
+
+6. HASHTAGS (5pts): 3-5 relevant hashtags at end
+
+7. CLARITY (10pts): Clear takeaway, easy to understand
+
+8. GRAMMAR/POLISH (5pts): No errors, clean formatting, no markdown symbols
+
+===== PENALIZE HEAVILY =====
+- Generic intros ("Here's my thoughts...")
+- Engagement bait ("Like if you agree!")
+- Dense paragraphs (no line breaks)
 - Too many emojis (>3)
-- Markdown symbols (** or #)
-- Multiple topics crammed in
+- Markdown symbols (** or # - LinkedIn doesn't render)
+- Multiple unrelated topics crammed in
+- Posts under 1,000 characters
 
 Respond in JSON format ONLY:
-{{"score": 0-100, "breakdown": {{"hook": 0-25, "focus": 0-15, "format": 0-15, "authenticity": 0-15, "cta": 0-10, "hashtags": 0-5, "clarity": 0-10, "grammar": 0-5}}, "feedback": "brief specific feedback", "strengths": ["strength1"], "issues": ["issue1"]}}'''
+{{"score": 0-100, "breakdown": {{"hook": 0-25, "length": 0-15, "format": 0-15, "authenticity": 0-15, "cta": 0-10, "hashtags": 0-5, "clarity": 0-10, "grammar": 0-5}}, "feedback": "brief specific feedback", "strengths": ["strength1"], "issues": ["issue1"]}}'''
 
     def __init__(self):
         """Initialize the QE Agent"""
@@ -132,7 +157,10 @@ Respond in JSON format ONLY:
         Returns:
             The same PostVariant with updated qe_* fields
         """
-        prompt = self.EVALUATION_PROMPT.format(content=variant.content)
+        prompt = self.EVALUATION_PROMPT.format(
+            content=variant.content,
+            char_count=len(variant.content)
+        )
         result = self._call_claude_cli(prompt)
 
         if result:
