@@ -475,10 +475,84 @@ sqlite3 output_data/ai_news.db "VACUUM;"
 
 Note: Claude CLI uses your Claude.ai subscription (Pro or Max), not API credits.
 
+## Step 12: Security Hardening (DISA STIG)
+
+Apply military-grade security hardening using DISA STIG (Security Technical Implementation Guides) - the DoD-approved security standard.
+
+```bash
+# Install Ansible
+sudo apt install -y ansible git
+
+# Clone the STIG role (Ubuntu 22.04 - compatible with 24.04)
+cd /tmp
+git clone https://github.com/ansible-lockdown/UBUNTU22-STIG.git
+cd UBUNTU22-STIG
+
+# Create inventory file
+echo "localhost ansible_connection=local" > inventory
+
+# Create playbook
+cat > harden.yml << 'EOF'
+---
+- name: Apply DISA STIG to Ubuntu
+  hosts: localhost
+  become: yes
+  vars:
+    # Customize for our use case (GUI + VNC needed)
+    ubtu22stig_gui: true
+    ubtu22stig_disruption_high: false
+    # Keep SSH access
+    ubtu22stig_ssh_required: true
+    # Skip controls that break VNC/Chrome
+    ubtu22stig_skip_for_travis: false
+  roles:
+    - UBUNTU22-STIG
+EOF
+
+# Run the hardening (takes 10-20 minutes)
+sudo ansible-playbook -i inventory harden.yml --check  # Dry run first
+sudo ansible-playbook -i inventory harden.yml          # Apply
+
+# Reboot to apply kernel parameters
+sudo reboot
+```
+
+### Post-Hardening Verification
+
+```bash
+# Verify SSH still works (test from another terminal before disconnecting!)
+ssh appuser@YOUR_SERVER_IP
+
+# Check VNC still works
+sudo systemctl status vncserver@1
+
+# Run a compliance scan (optional)
+sudo apt install -y lynis
+sudo lynis audit system
+
+# Check security score
+sudo lynis show details
+```
+
+### Important Notes
+
+1. **Test in dry-run mode first** (`--check` flag)
+2. **Keep an SSH session open** while applying - don't lock yourself out
+3. **VNC access**: Always use SSH tunnel (port 5901 is blocked by STIG):
+   ```bash
+   ssh -L 5901:localhost:5901 appuser@YOUR_SERVER_IP
+   # Then connect VNC client to localhost:5901
+   ```
+
 ## Security Notes
 
 1. Never commit `.env` to git
 2. Use SSH keys, not passwords
 3. Keep system updated: `apt update && apt upgrade`
-4. Consider using fail2ban for SSH protection
+4. Consider using fail2ban for SSH protection:
+   ```bash
+   sudo apt install -y fail2ban
+   sudo systemctl enable fail2ban
+   ```
 5. Backup your database: `cp output_data/ai_news.db ~/backups/`
+6. Run periodic security audits: `sudo lynis audit system`
