@@ -11,11 +11,25 @@
 # ///
 
 """
-LinkedIn Autopilot - AI-Powered Content Automation
+LinkedIn Autopilot - AI-Powered Content Automation with Multi-Agent ELO Ranking
 
-Generates engaging LinkedIn content from AI news, creates images,
-posts automatically, responds to comments, and optimizes strategy
-based on engagement metrics.
+Features:
+- Multi-variant post generation with different viral hook styles
+- QE Agent for quality evaluation against LinkedIn best practices
+- ELO ranking system for head-to-head post comparisons
+- Automated posting and engagement tracking
+
+New Commands:
+  --rank          Generate multiple variants, QE evaluate, and ELO rank them
+  --post-best     Generate ranked posts and publish the winner directly
+  --variants N    Number of variants to generate (default: 5)
+
+Research-backed LinkedIn best practices (2025):
+- Strong hooks in first 2-3 lines (before "see more")
+- Single focus: one idea, one insight, one lesson
+- Mobile-optimized: short paragraphs (1-3 lines)
+- End with thought-provoking questions (not engagement bait)
+- Optimal timing: Tue-Thu, 8am-12pm
 """
 
 import os
@@ -44,6 +58,95 @@ import requests
 
 # Fix SSL certificate verification
 ssl._create_default_https_context = ssl._create_unverified_context
+
+
+# =============================================================================
+# LINKEDIN BEST PRACTICES (Research-backed for 2025)
+# =============================================================================
+
+LINKEDIN_BEST_PRACTICES = {
+    "hooks": {
+        "categories": [
+            "insightful_statement",  # "The most successful leaders all have one thing in common…"
+            "thought_provoking_question",  # "What's the most important skill for success today?"
+            "personal_story",  # "When I started my career, I had no idea what I was doing…"
+            "data_driven",  # "Did you know that 70% of professionals struggle with…"
+            "controversial_opinion",  # "I know this might be controversial, but I believe…"
+            "practical_advice",  # "Here are 5 practical ways to improve your…"
+        ],
+        "examples": [
+            "I was ready to quit… until this one moment changed everything.",
+            "The biggest mistake professionals make is…",
+            "Here's a truth most people don't want to admit…",
+            "Only 10% of people know this about AI…",
+            "I'm going against the grain here, but…",
+            "Stop scrolling. This will change how you think about…",
+        ],
+    },
+    "structure": {
+        "max_chars": 1300,
+        "ideal_paragraphs": "1-3 lines per paragraph for mobile",
+        "single_focus": "One clear idea. One story. One insight. One lesson.",
+        "hashtags": "3-5 relevant hashtags at the end",
+        "cta": "End with thought-provoking question (not engagement bait)",
+    },
+    "timing": {
+        "best_days": ["Tuesday", "Wednesday", "Thursday"],
+        "best_hours": [8, 9, 10, 11, 12],  # 8am-12pm
+        "engagement_window": "60-90 minutes for early engagement",
+    },
+    "avoid": [
+        "Generic intros like 'some thoughts on…'",
+        "Engagement bait like 'Comment YES if you agree!'",
+        "Multiple tips/stories in one post",
+        "External links in main post (put in comments)",
+        "Long dense paragraphs",
+        "Excessive emojis (max 2-3)",
+        "Markdown formatting (LinkedIn doesn't support)",
+    ],
+    "viral_factors": [
+        "Strong hook in first 2-3 lines (before 'see more')",
+        "Personal vulnerability or authentic stories",
+        "Contrarian or bold opinions",
+        "Practical, actionable insights",
+        "Mobile-optimized formatting (short lines)",
+        "Clear single takeaway",
+    ],
+}
+
+# Viral hook templates organized by style
+VIRAL_HOOKS = {
+    "curiosity_gap": [
+        "I spent 10 years learning what I'm about to share in 60 seconds.",
+        "Nobody talks about this, but it's the reason most {topic} fail.",
+        "The secret behind {topic} that nobody wants to admit.",
+        "I've been doing {topic} wrong my entire career. Here's what changed.",
+    ],
+    "bold_claim": [
+        "{Topic} is dead. Here's what's replacing it.",
+        "Unpopular opinion: {topic} is completely overrated.",
+        "I'm calling it now: {topic} will define the next decade.",
+        "Everything you've been told about {topic} is wrong.",
+    ],
+    "personal_story": [
+        "Last week, I almost quit my job because of {topic}.",
+        "A mentor once told me something about {topic} I'll never forget.",
+        "I failed at {topic} 7 times before figuring this out.",
+        "The hardest lesson I learned about {topic} came from an unexpected place.",
+    ],
+    "data_driven": [
+        "I analyzed 1000+ {topic}. Here's what the data shows.",
+        "Only 3% of people know this about {topic}.",
+        "The numbers don't lie: {topic} is changing faster than we thought.",
+        "New research on {topic} just blew my mind.",
+    ],
+    "practical_value": [
+        "5 {topic} mistakes I see every day (and how to fix them).",
+        "The simple {topic} framework that changed everything for me.",
+        "How to master {topic} in 30 days or less.",
+        "The only {topic} advice you'll ever need.",
+    ],
+}
 
 
 # =============================================================================
@@ -583,7 +686,7 @@ class ContentGenerator:
             return None
 
     def get_recent_ai_news(self, limit: int = 20) -> List[Dict]:
-        """Get recent AI news from the scraper database"""
+        """Get recent AI news from the scraper database (tweets + web articles)"""
         if not self.ai_news_db_path or not self.ai_news_db_path.exists():
             Logger.warning("AI news database not found")
             return []
@@ -592,16 +695,46 @@ class ContentGenerator:
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
 
+        all_news = []
+
+        # Get tweets from Twitter/X
         cursor.execute('''
             SELECT * FROM tweets
             WHERE is_ai_relevant = TRUE
             ORDER BY timestamp DESC
             LIMIT ?
-        ''', (limit,))
-
+        ''', (limit // 2,))  # Half from tweets
         tweets = [dict(row) for row in cursor.fetchall()]
+        all_news.extend(tweets)
+
+        # Get web articles (from paddo.dev, vectorlab.dev, etc.)
+        try:
+            cursor.execute('''
+                SELECT
+                    article_id as tweet_id,
+                    source_name as username,
+                    title || ': ' || COALESCE(description, '') as text,
+                    url,
+                    published_at as timestamp,
+                    'web' as source_type
+                FROM web_articles
+                WHERE is_ai_relevant = TRUE
+                ORDER BY published_at DESC
+                LIMIT ?
+            ''', (limit // 2,))  # Half from web
+            web_articles = [dict(row) for row in cursor.fetchall()]
+            all_news.extend(web_articles)
+            Logger.info(f"Loaded {len(tweets)} tweets + {len(web_articles)} web articles")
+        except sqlite3.OperationalError:
+            # web_articles table doesn't exist yet
+            Logger.info(f"Loaded {len(tweets)} tweets (web_articles table not found)")
+
         conn.close()
-        return tweets
+
+        # Sort combined news by timestamp (most recent first)
+        all_news.sort(key=lambda x: x.get('timestamp', ''), reverse=True)
+
+        return all_news[:limit]
 
     def generate_post_with_ai(self, news_items: List[Dict],
                               template_type: str = "news_breakdown") -> Optional[str]:
@@ -750,7 +883,463 @@ Be genuine and encourage further discussion."""
 
 
 # =============================================================================
-# IMAGE GENERATOR
+# MULTI-AGENT POST RANKING SYSTEM
+# =============================================================================
+
+@dataclass
+class PostVariant:
+    """A single post variant for ranking"""
+    variant_id: str
+    content: str
+    hook_style: str
+    elo_rating: float = 1000.0
+    qe_score: float = 0.0
+    qe_feedback: str = ""
+    matches_played: int = 0
+    wins: int = 0
+    losses: int = 0
+
+
+class PostVariantGenerator:
+    """Generate multiple post variants for ELO ranking"""
+
+    def __init__(self):
+        self.hook_styles = list(VIRAL_HOOKS.keys())
+
+    def _call_claude_cli(self, prompt: str, timeout: int = 60) -> Optional[str]:
+        """Call Claude CLI and return response"""
+        try:
+            result = subprocess.run(
+                ['claude', '-p', prompt],
+                capture_output=True,
+                text=True,
+                timeout=timeout
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                return result.stdout.strip()
+            return None
+        except Exception as e:
+            Logger.warning(f"Claude CLI call failed: {e}")
+            return None
+
+    def _clean_post(self, content: str) -> str:
+        """Clean generated post content"""
+        if not content:
+            return ""
+
+        lines = content.split('\n')
+        cleaned_lines = []
+        skip_patterns = [
+            "here's", "here is", "---", "character count", "word count",
+            "linkedin post", "post:", "output:", "```", "variant", "option"
+        ]
+
+        for line in lines:
+            line_lower = line.lower().strip()
+            if any(pattern in line_lower for pattern in skip_patterns):
+                continue
+            if line.strip() == '---' or line.strip() == '—':
+                continue
+            cleaned_lines.append(line)
+
+        content = '\n'.join(cleaned_lines).strip()
+        content = re.sub(r'^[-—]+\s*', '', content)
+        content = re.sub(r'\s*[-—]+$', '', content)
+        content = re.sub(r'\*\*([^*]+)\*\*', lambda m: m.group(1).upper(), content)
+        content = re.sub(r'#{1,6}\s*', '', content)
+        content = re.sub(r'\*([^*]+)\*', r'\1', content)
+
+        return content.strip()[:1300]
+
+    def generate_variants(self, news_items: List[Dict], num_variants: int = 5) -> List[PostVariant]:
+        """Generate multiple post variants with different hook styles, each focusing on specific news"""
+        variants = []
+
+        # Format news items with full context and source
+        formatted_news = []
+        for i, item in enumerate(news_items[:10], 1):
+            text = item.get('text', '')
+            source = item.get('username', item.get('source_name', 'Unknown'))
+            formatted_news.append(f"[{i}] @{source}: {text}")
+
+        news_context = "\n\n".join(formatted_news)
+
+        # Select hook styles for variants
+        selected_styles = random.sample(self.hook_styles, min(num_variants, len(self.hook_styles)))
+        if len(selected_styles) < num_variants:
+            selected_styles = selected_styles * (num_variants // len(selected_styles) + 1)
+        selected_styles = selected_styles[:num_variants]
+
+        Logger.info(f"Generating {num_variants} post variants from {len(news_items)} news items...")
+
+        for i, hook_style in enumerate(selected_styles):
+            hook_examples = VIRAL_HOOKS.get(hook_style, VIRAL_HOOKS["curiosity_gap"])
+            example_hook = random.choice(hook_examples)
+
+            # Each variant focuses on a different news item
+            focus_item_idx = (i % len(news_items)) + 1
+
+            prompt = f"""You are a LinkedIn content creator with 100K+ followers. Write a viral post about TODAY'S AI NEWS.
+
+===== TODAY'S AI NEWS (from Twitter/X and tech blogs) =====
+{news_context}
+
+===== YOUR TASK =====
+Write a LinkedIn post that:
+1. MUST reference specific news from above (mention the actual development, company, or finding)
+2. FOCUS primarily on news item [{focus_item_idx}] but can reference others
+3. Add YOUR unique insight, opinion, or takeaway - don't just summarize
+4. Make it feel timely and current ("Just saw that...", "This week...", "Breaking:")
+
+===== HOOK STYLE: {hook_style.replace('_', ' ').upper()} =====
+Example: "{example_hook}"
+
+===== FORMAT REQUIREMENTS =====
+- First 2 lines = scroll-stopping hook (this shows before "see more")
+- Short paragraphs (1-3 lines each) for mobile
+- Include specific details from the news (names, numbers, companies)
+- End with thought-provoking question
+- 3-5 hashtags at the very end
+- Max 1300 characters total
+- NO markdown symbols (no ** or #)
+- Max 2 emojis
+
+===== OUTPUT =====
+Write ONLY the post text. No intro, no explanation. Start directly with the hook:"""
+
+            result = self._call_claude_cli(prompt, timeout=90)
+            if result:
+                content = self._clean_post(result)
+                if content and len(content) > 100:
+                    variant = PostVariant(
+                        variant_id=f"v{i+1}_{hashlib.md5(content[:50].encode()).hexdigest()[:8]}",
+                        content=content,
+                        hook_style=hook_style,
+                    )
+                    variants.append(variant)
+                    Logger.info(f"  Generated variant {i+1}/{num_variants} ({hook_style}) - {len(content)} chars")
+
+            time.sleep(1)  # Rate limiting
+
+        Logger.success(f"Generated {len(variants)} post variants")
+        return variants
+
+
+class QEAgent:
+    """Quality Evaluation Agent - scores posts against LinkedIn best practices"""
+
+    def __init__(self):
+        self.criteria = {
+            "hook_strength": 25,      # First 2-3 lines compelling?
+            "single_focus": 15,       # One clear idea?
+            "mobile_format": 15,      # Short paragraphs, scannable?
+            "authenticity": 15,       # Personal, genuine voice?
+            "engagement_cta": 10,     # Good question at end?
+            "hashtag_usage": 5,       # 3-5 relevant hashtags?
+            "clarity": 10,            # Easy to understand?
+            "grammar": 5,             # No errors?
+        }
+
+    def _call_claude_cli(self, prompt: str) -> Optional[str]:
+        """Call Claude CLI"""
+        try:
+            result = subprocess.run(
+                ['claude', '-p', prompt],
+                capture_output=True,
+                text=True,
+                timeout=45
+            )
+            if result.returncode == 0:
+                return result.stdout.strip()
+            return None
+        except Exception as e:
+            Logger.warning(f"QE Agent Claude call failed: {e}")
+            return None
+
+    def evaluate_post(self, variant: PostVariant) -> PostVariant:
+        """Evaluate a post variant and assign QE score"""
+        prompt = f"""You are a LinkedIn content QA expert. Evaluate this post against best practices.
+
+POST:
+{variant.content}
+
+SCORING CRITERIA (total 100 points):
+1. HOOK STRENGTH (25pts): First 2-3 lines compelling? Would it stop scrolling?
+2. SINGLE FOCUS (15pts): One clear idea, not cramming multiple tips?
+3. MOBILE FORMAT (15pts): Short paragraphs (1-3 lines), scannable?
+4. AUTHENTICITY (15pts): Personal, genuine voice, not generic?
+5. ENGAGEMENT CTA (10pts): Ends with thought-provoking question (not engagement bait)?
+6. HASHTAG USAGE (5pts): 3-5 relevant hashtags at end?
+7. CLARITY (10pts): Easy to understand, clear takeaway?
+8. GRAMMAR (5pts): No spelling/grammar errors?
+
+THINGS TO PENALIZE:
+- Generic intros ("Here's my thoughts on...")
+- Engagement bait ("Comment YES if you agree!")
+- Dense paragraphs
+- Too many emojis (>3)
+- Markdown symbols (** or #)
+- Multiple topics crammed in
+
+Respond in JSON format ONLY:
+{{"score": 0-100, "breakdown": {{"hook": 0-25, "focus": 0-15, "format": 0-15, "authenticity": 0-15, "cta": 0-10, "hashtags": 0-5, "clarity": 0-10, "grammar": 0-5}}, "feedback": "brief specific feedback", "strengths": ["strength1"], "issues": ["issue1"]}}"""
+
+        result = self._call_claude_cli(prompt)
+
+        if result:
+            try:
+                start = result.find('{')
+                end = result.rfind('}') + 1
+                if start >= 0 and end > start:
+                    data = json.loads(result[start:end])
+                    variant.qe_score = data.get('score', 50)
+                    variant.qe_feedback = data.get('feedback', '')
+                    Logger.info(f"  QE Score: {variant.qe_score}/100 - {variant.qe_feedback[:60]}...")
+                    return variant
+            except json.JSONDecodeError:
+                pass
+
+        # Fallback: basic scoring
+        variant.qe_score = 60
+        variant.qe_feedback = "Evaluation completed with default score"
+        return variant
+
+    def evaluate_batch(self, variants: List[PostVariant]) -> List[PostVariant]:
+        """Evaluate all variants"""
+        Logger.info(f"Running QE evaluation on {len(variants)} variants...")
+        evaluated = []
+        for i, variant in enumerate(variants):
+            Logger.info(f"Evaluating variant {i+1}/{len(variants)} ({variant.hook_style})...")
+            evaluated.append(self.evaluate_post(variant))
+            time.sleep(0.5)
+        return evaluated
+
+
+class ELORanker:
+    """ELO-based ranking system for comparing post variants"""
+
+    K_FACTOR = 32  # Standard ELO K-factor
+
+    def __init__(self):
+        pass
+
+    def _call_claude_cli(self, prompt: str) -> Optional[str]:
+        """Call Claude CLI"""
+        try:
+            result = subprocess.run(
+                ['claude', '-p', prompt],
+                capture_output=True,
+                text=True,
+                timeout=30
+            )
+            if result.returncode == 0:
+                return result.stdout.strip()
+            return None
+        except Exception as e:
+            Logger.warning(f"ELO comparison failed: {e}")
+            return None
+
+    def _expected_score(self, rating_a: float, rating_b: float) -> float:
+        """Calculate expected score for player A"""
+        return 1 / (1 + 10 ** ((rating_b - rating_a) / 400))
+
+    def _update_ratings(self, winner: PostVariant, loser: PostVariant):
+        """Update ELO ratings after a match"""
+        expected_winner = self._expected_score(winner.elo_rating, loser.elo_rating)
+        expected_loser = self._expected_score(loser.elo_rating, winner.elo_rating)
+
+        winner.elo_rating += self.K_FACTOR * (1 - expected_winner)
+        loser.elo_rating += self.K_FACTOR * (0 - expected_loser)
+
+        winner.matches_played += 1
+        loser.matches_played += 1
+        winner.wins += 1
+        loser.losses += 1
+
+    def compare_posts(self, post_a: PostVariant, post_b: PostVariant) -> Optional[PostVariant]:
+        """Compare two posts and return the winner"""
+        prompt = f"""You are a LinkedIn viral content expert. Compare these two posts and pick the winner.
+
+POST A:
+{post_a.content}
+
+POST B:
+{post_b.content}
+
+JUDGING CRITERIA (in order of importance):
+1. HOOK: Which has a more scroll-stopping opening? (first 2 lines)
+2. VIRALITY: Which would get more engagement (likes, comments, shares)?
+3. VALUE: Which provides clearer, more actionable insight?
+4. AUTHENTICITY: Which feels more genuine and less generic?
+5. FORMAT: Which is better optimized for mobile reading?
+
+Consider that LinkedIn's algorithm rewards early engagement, so the hook is CRITICAL.
+
+Respond with ONLY "A" or "B" (the letter of the winning post), followed by a brief reason.
+Example: "A - Stronger hook with personal story that creates curiosity"
+
+Winner:"""
+
+        result = self._call_claude_cli(prompt)
+
+        if result:
+            result = result.strip().upper()
+            if result.startswith('A'):
+                return post_a
+            elif result.startswith('B'):
+                return post_b
+
+        # Fallback: use QE scores
+        return post_a if post_a.qe_score >= post_b.qe_score else post_b
+
+    def run_tournament(self, variants: List[PostVariant], rounds: int = 3) -> List[PostVariant]:
+        """Run ELO tournament with multiple rounds of comparisons"""
+        if len(variants) < 2:
+            return variants
+
+        Logger.info(f"Starting ELO tournament with {len(variants)} variants, {rounds} rounds...")
+
+        for round_num in range(rounds):
+            Logger.info(f"Round {round_num + 1}/{rounds}...")
+
+            # Create random pairings
+            shuffled = variants.copy()
+            random.shuffle(shuffled)
+
+            for i in range(0, len(shuffled) - 1, 2):
+                post_a = shuffled[i]
+                post_b = shuffled[i + 1]
+
+                winner = self.compare_posts(post_a, post_b)
+                if winner:
+                    loser = post_b if winner == post_a else post_a
+                    self._update_ratings(winner, loser)
+                    Logger.info(f"  {winner.variant_id} beat {loser.variant_id}")
+
+            time.sleep(0.5)
+
+        # Sort by ELO rating
+        variants.sort(key=lambda x: x.elo_rating, reverse=True)
+
+        Logger.success("Tournament complete!")
+        for i, v in enumerate(variants[:3]):
+            Logger.info(f"  #{i+1}: {v.variant_id} (ELO: {v.elo_rating:.0f}, QE: {v.qe_score})")
+
+        return variants
+
+
+class PostRankingSystem:
+    """Orchestrates the multi-agent post ranking pipeline"""
+
+    def __init__(self, ai_news_db_path: Path = None):
+        self.ai_news_db_path = ai_news_db_path
+        self.variant_generator = PostVariantGenerator()
+        self.qe_agent = QEAgent()
+        self.elo_ranker = ELORanker()
+
+    def get_recent_ai_news(self, limit: int = 10) -> List[Dict]:
+        """Get recent AI news from database"""
+        if not self.ai_news_db_path or not self.ai_news_db_path.exists():
+            Logger.warning("AI news database not found")
+            return []
+
+        conn = sqlite3.connect(str(self.ai_news_db_path))
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+
+        # Get from both tweets and web_articles
+        tweets = []
+        try:
+            cursor.execute('''
+                SELECT text, username, timestamp FROM tweets
+                WHERE is_ai_relevant = TRUE
+                ORDER BY timestamp DESC
+                LIMIT ?
+            ''', (limit,))
+            tweets = [dict(row) for row in cursor.fetchall()]
+        except:
+            pass
+
+        articles = []
+        try:
+            cursor.execute('''
+                SELECT title as text, source_name as username, published_at as timestamp
+                FROM web_articles
+                WHERE is_ai_relevant = TRUE
+                ORDER BY scraped_at DESC
+                LIMIT ?
+            ''', (limit,))
+            articles = [dict(row) for row in cursor.fetchall()]
+        except:
+            pass
+
+        conn.close()
+
+        # Combine and shuffle
+        combined = tweets + articles
+        random.shuffle(combined)
+        return combined[:limit]
+
+    def generate_and_rank_posts(self, num_variants: int = 5, elo_rounds: int = 3) -> List[PostVariant]:
+        """Full pipeline: generate variants, QE evaluate, ELO rank"""
+        Logger.info("="*60)
+        Logger.info("STARTING POST RANKING PIPELINE")
+        Logger.info("="*60)
+
+        # Get news content
+        news_items = self.get_recent_ai_news(limit=10)
+        if not news_items:
+            Logger.error("No AI news available")
+            return []
+
+        Logger.info(f"Found {len(news_items)} news items for content generation")
+
+        # Step 1: Generate variants
+        Logger.info("\n[STEP 1] Generating post variants...")
+        variants = self.variant_generator.generate_variants(news_items, num_variants)
+
+        if len(variants) < 2:
+            Logger.warning("Not enough variants generated for ranking")
+            return variants
+
+        # Step 2: QE Evaluation
+        Logger.info("\n[STEP 2] Running QE Agent evaluation...")
+        variants = self.qe_agent.evaluate_batch(variants)
+
+        # Filter out low-quality posts (QE < 40)
+        qualified = [v for v in variants if v.qe_score >= 40]
+        if len(qualified) < 2:
+            qualified = sorted(variants, key=lambda x: x.qe_score, reverse=True)[:2]
+        variants = qualified
+
+        # Step 3: ELO Tournament
+        Logger.info("\n[STEP 3] Running ELO tournament...")
+        ranked = self.elo_ranker.run_tournament(variants, rounds=elo_rounds)
+
+        # Final results
+        Logger.info("\n" + "="*60)
+        Logger.info("FINAL RANKINGS")
+        Logger.info("="*60)
+        for i, v in enumerate(ranked):
+            Logger.info(f"\n#{i+1} - {v.variant_id}")
+            Logger.info(f"   Style: {v.hook_style}")
+            Logger.info(f"   ELO: {v.elo_rating:.0f} | QE: {v.qe_score}/100")
+            Logger.info(f"   W/L: {v.wins}-{v.losses}")
+            Logger.info(f"   Hook: {v.content[:80]}...")
+
+        return ranked
+
+    def get_best_post(self, num_variants: int = 5) -> Optional[str]:
+        """Generate variants and return the best one"""
+        ranked = self.generate_and_rank_posts(num_variants=num_variants)
+        if ranked:
+            Logger.success(f"\nBest post selected: {ranked[0].variant_id}")
+            return ranked[0].content
+        return None
+
+
+# =============================================================================
+# IMAGE GENERATOR (DEPRECATED - kept for backwards compatibility)
 # =============================================================================
 
 class ImageGenerator:
@@ -1245,15 +1834,17 @@ Only set approved=false for serious issues (offensive content, major errors)."""
             return {"approved": True, "score": 5, "summary": "Review skipped"}
 
     def create_post(self, content: str, image_path: str = None) -> bool:
-        """Create a new LinkedIn post with optional image and QA review"""
+        """Create a new LinkedIn post (text-only, images deprecated)"""
         from selenium.webdriver.common.by import By
         from selenium.webdriver.support.ui import WebDriverWait
         from selenium.webdriver.support import expected_conditions as EC
 
+        # Note: image_path parameter kept for backwards compatibility but not used
+
         try:
             # QA Review first
             Logger.info("Running QA review on post content...")
-            review = self._qa_review_post(content, image_path)
+            review = self._qa_review_post(content)
             Logger.info(f"QA Score: {review.get('score', 'N/A')}/10 - {review.get('summary', '')}")
 
             if review.get('issues'):
@@ -1264,7 +1855,7 @@ Only set approved=false for serious issues (offensive content, major errors)."""
                 Logger.error("Post not approved by QA review. Skipping.")
                 return False
 
-            Logger.info("Creating LinkedIn post...")
+            Logger.info("Creating LinkedIn post (text-only)...")
 
             # Navigate to feed if not there
             if 'feed' not in self.driver.current_url:
@@ -1275,91 +1866,13 @@ Only set approved=false for serious issues (offensive content, major errors)."""
             self.driver.execute_script("window.scrollTo(0, 0)")
             time.sleep(random.uniform(1, 2))
 
-            # If we have an image, click "Photo" button directly (better flow)
-            # Otherwise, click "Start a post"
-            if image_path and os.path.exists(image_path):
-                Logger.info("Clicking 'Photo' button for image post...")
-                try:
-                    photo_btn = WebDriverWait(self.driver, 10).until(
-                        EC.element_to_be_clickable((By.CSS_SELECTOR, "button[aria-label='Add a photo']"))
-                    )
-                    photo_btn.click()
-                    time.sleep(2)
-
-                    # Inject image via JavaScript
-                    Logger.info("Injecting image...")
-                    import base64
-                    abs_image_path = os.path.abspath(image_path)
-                    with open(abs_image_path, 'rb') as f:
-                        image_data = base64.b64encode(f.read()).decode('utf-8')
-                    image_name = os.path.basename(abs_image_path)
-                    image_type = 'image/png' if abs_image_path.lower().endswith('.png') else 'image/jpeg'
-
-                    result = self.driver.execute_script("""
-                        var fileInput = document.getElementById('media-editor-file-selector__file-input');
-                        if (!fileInput) fileInput = document.querySelector('input[type="file"]');
-                        if (!fileInput) {
-                            var container = document.querySelector('.share-creation-state, [class*="share"]');
-                            if (container) {
-                                fileInput = document.createElement('input');
-                                fileInput.type = 'file';
-                                fileInput.id = 'media-editor-file-selector__file-input';
-                                fileInput.accept = 'image/*';
-                                fileInput.style.display = 'none';
-                                container.appendChild(fileInput);
-                            }
-                        }
-                        if (!fileInput) return {success: false, error: 'No file input'};
-
-                        try {
-                            var byteString = atob(arguments[0]);
-                            var ab = new ArrayBuffer(byteString.length);
-                            var ia = new Uint8Array(ab);
-                            for (var i = 0; i < byteString.length; i++) ia[i] = byteString.charCodeAt(i);
-                            var blob = new Blob([ab], {type: arguments[2]});
-                            var file = new File([blob], arguments[1], {type: arguments[2]});
-                            var dt = new DataTransfer();
-                            dt.items.add(file);
-                            fileInput.files = dt.files;
-                            fileInput.dispatchEvent(new Event('change', {bubbles: true}));
-                            return {success: true};
-                        } catch(e) { return {success: false, error: e.toString()}; }
-                    """, image_data, image_name, image_type)
-
-                    if result and result.get('success'):
-                        Logger.success("Image injected successfully")
-                        time.sleep(2)
-
-                        # Handle Next/Done buttons
-                        for step in ["Next", "Done"]:
-                            try:
-                                btn = WebDriverWait(self.driver, 3).until(
-                                    EC.element_to_be_clickable((By.XPATH, f"//button[.//span[text()='{step}']]"))
-                                )
-                                btn.click()
-                                Logger.info(f"Clicked '{step}' button")
-                                time.sleep(2)
-                            except:
-                                pass
-                    else:
-                        Logger.warning(f"Image injection failed: {result}")
-
-                except Exception as e:
-                    Logger.warning(f"Photo button approach failed: {e}, falling back to Start a post")
-                    # Fall back to Start a post
-                    start_btn = WebDriverWait(self.driver, 5).until(
-                        EC.element_to_be_clickable((By.XPATH, "//button[contains(., 'Start a post')]"))
-                    )
-                    start_btn.click()
-                    time.sleep(3)
-            else:
-                # No image - use Start a post
-                Logger.info("Clicking 'Start a post' button...")
-                start_btn = WebDriverWait(self.driver, 10).until(
-                    EC.element_to_be_clickable((By.XPATH, "//button[contains(., 'Start a post')]"))
-                )
-                start_btn.click()
-                time.sleep(3)
+            # Click "Start a post" button
+            Logger.info("Clicking 'Start a post' button...")
+            start_btn = WebDriverWait(self.driver, 10).until(
+                EC.element_to_be_clickable((By.XPATH, "//button[contains(., 'Start a post')]"))
+            )
+            start_btn.click()
+            time.sleep(3)
 
             # Find and fill text area
             text_area = WebDriverWait(self.driver, 10).until(
@@ -1862,13 +2375,15 @@ def main():
     parser = argparse.ArgumentParser(description='LinkedIn Autopilot - AI Content Automation')
     parser.add_argument('--login', action='store_true', help='Login to LinkedIn')
     parser.add_argument('--generate', type=int, default=0, help='Generate N posts for queue')
+    parser.add_argument('--rank', action='store_true', help='Generate, QE evaluate, and ELO rank posts (multi-agent)')
+    parser.add_argument('--variants', type=int, default=5, help='Number of post variants for ranking (default: 5)')
     parser.add_argument('--post', action='store_true', help='Post next item from queue')
+    parser.add_argument('--post-best', action='store_true', help='Generate ranked posts and publish the best one')
     parser.add_argument('--check-comments', action='store_true', help='Check and respond to comments')
     parser.add_argument('--stats', action='store_true', help='Show statistics')
     parser.add_argument('--run', action='store_true', help='Run single autopilot cycle')
     parser.add_argument('--schedule', action='store_true', help='Run scheduled autopilot (1 post/day)')
     parser.add_argument('--google-auth', type=str, help='Google email for OAuth')
-    parser.add_argument('--no-ai-images', action='store_true', help='Disable AI image generation (use simple quote images)')
     parser.add_argument('--posts-per-day', type=int, default=1, help='Posts per day for scheduled mode (default: 1)')
 
     args = parser.parse_args()
@@ -1886,7 +2401,9 @@ def main():
     autopilot = LinkedInAutopilot(output_dir)
 
     try:
-        if args.login or args.post or args.run or args.schedule or args.check_comments:
+        # Commands that require LinkedIn login
+        needs_login = args.login or args.post or args.post_best or args.run or args.schedule or args.check_comments
+        if needs_login:
             if not google_email and (not linkedin_email or not linkedin_password):
                 Logger.error("Set GOOGLE_EMAIL or LINKEDIN_EMAIL/LINKEDIN_PASSWORD in .env")
                 sys.exit(1)
@@ -1897,9 +2414,41 @@ def main():
                 google_email=google_email
             )
 
+        # Generate content (old way - single posts without ranking)
         if args.generate > 0:
-            use_ai_images = not args.no_ai_images
-            autopilot.generate_content_queue(args.generate, use_ai_images=use_ai_images)
+            autopilot.generate_content_queue(args.generate, use_ai_images=False)
+
+        # Multi-agent ELO ranking (new way)
+        if args.rank:
+            ai_news_db = output_dir / 'ai_news.db'
+            ranking_system = PostRankingSystem(ai_news_db_path=ai_news_db)
+            ranked = ranking_system.generate_and_rank_posts(num_variants=args.variants)
+
+            if ranked:
+                # Add top posts to queue
+                for i, variant in enumerate(ranked[:3]):  # Top 3
+                    autopilot.db.add_to_queue(
+                        content=variant.content,
+                        image_path=None,
+                        template_type=f"ranked_{variant.hook_style}",
+                        priority=len(ranked) - i  # Higher priority for better posts
+                    )
+                Logger.success(f"Added top {min(3, len(ranked))} ranked posts to queue")
+
+        # Post the best ranked post directly
+        if args.post_best:
+            ai_news_db = output_dir / 'ai_news.db'
+            ranking_system = PostRankingSystem(ai_news_db_path=ai_news_db)
+            best_content = ranking_system.get_best_post(num_variants=args.variants)
+
+            if best_content:
+                Logger.info("\n" + "="*60)
+                Logger.info("POSTING BEST RANKED CONTENT")
+                Logger.info("="*60)
+                print(f"\n{best_content}\n")
+                autopilot.poster.create_post(best_content)
+            else:
+                Logger.error("Failed to generate ranked content")
 
         if args.post:
             autopilot.post_from_queue()
@@ -1913,8 +2462,8 @@ def main():
         if args.schedule:
             autopilot.run_scheduled(posts_per_day=args.posts_per_day)
 
-        if args.stats or not any([args.login, args.generate, args.post,
-                                   args.check_comments, args.run, args.schedule]):
+        if args.stats or not any([args.login, args.generate, args.rank, args.post,
+                                   args.post_best, args.check_comments, args.run, args.schedule]):
             autopilot.print_stats()
 
     except KeyboardInterrupt:
