@@ -211,7 +211,7 @@ Write ONLY the post text. No intro, no explanation. Start directly with the hook
             Formatted news context string
         """
         formatted = []
-        for i, item in enumerate(news_items[:10], 1):
+        for i, item in enumerate(news_items[:20], 1):
             text = item.get('text', '')
             source = item.get('username', item.get('source_name', 'Unknown'))
             formatted.append(f"[{i}] @{source}: {text}")

@@ -1022,8 +1022,8 @@ class PostRankingSystem:
         # Reset pipeline state
         self.pipeline_state = {k: [] for k in self.pipeline_state}
 
-        # Get news content
-        news_items = self.get_recent_ai_news(limit=15)
+        # Get news content - use more items for better diversity
+        news_items = self.get_recent_ai_news(limit=50)
         if not news_items:
             Logger.error("No AI news available")
             return []
@@ -1032,10 +1032,10 @@ class PostRankingSystem:
         Logger.info(f"Found {len(news_items)} news items for content generation")
         notify(1, "news_loaded", {"count": len(news_items)})
 
-        # Build news context for evolution
+        # Build news context for evolution (use first 20 items)
         news_context = "\n".join([
             f"@{item.get('username', 'Unknown')}: {item.get('text', '')[:200]}"
-            for item in news_items[:10]
+            for item in news_items[:20]
         ])
 
         # ===== STEP 1: GENERATE VARIANTS =====
