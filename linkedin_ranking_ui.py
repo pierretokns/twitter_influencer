@@ -35,14 +35,22 @@ from dotenv import load_dotenv
 
 app = Flask(__name__)
 
-# Global state
+# Global state - Enhanced for Google Co-Scientist inspired pipeline
 ranking_state = {
     "status": "idle",
     "phase": "",
-    "variants": [],
-    "generated_posts": [],  # Full post previews after generation
-    "matches": [],
-    "rankings": [],
+    "current_step": 0,
+    "total_steps": 6,
+    # Pipeline data
+    "news_items": [],           # Source news
+    "variants": [],             # All variants with metadata
+    "generated_posts": [],      # Full post previews
+    "qe_results": [],           # QE evaluation details
+    "proximity_results": [],    # Similarity scores & duplicates
+    "evolution_results": [],    # Which posts were evolved
+    "debates": [],              # All debate results
+    "matches": [],              # Tournament matches
+    "rankings": [],             # Final rankings
     "logs": [],
     "error": None,
 }
@@ -437,19 +445,27 @@ HTML_TEMPLATE = '''
         <div class="phase-indicator">
             <div class="phase" id="phase1">
                 <div class="phase-num">1</div>
-                <div>Generate Variants</div>
+                <div>Generate</div>
             </div>
             <div class="phase" id="phase2">
                 <div class="phase-num">2</div>
-                <div>QE Evaluation</div>
+                <div>QE Score</div>
             </div>
             <div class="phase" id="phase3">
                 <div class="phase-num">3</div>
-                <div>ELO Tournament</div>
+                <div>Proximity</div>
             </div>
             <div class="phase" id="phase4">
                 <div class="phase-num">4</div>
-                <div>Select Winner</div>
+                <div>Evolution</div>
+            </div>
+            <div class="phase" id="phase5">
+                <div class="phase-num">5</div>
+                <div>Tournament</div>
+            </div>
+            <div class="phase" id="phase6">
+                <div class="phase-num">6</div>
+                <div>Results</div>
             </div>
         </div>
 
@@ -555,16 +571,19 @@ HTML_TEMPLATE = '''
             // Update status
             document.getElementById('statusText').textContent = data.phase || data.status;
 
-            // Update phases
+            // Update phases (now 6 phases for Google Co-Scientist pipeline)
             const phaseMap = {
                 'generating': 1,
                 'evaluating': 2,
-                'tournament': 3,
-                'complete': 4
+                'proximity': 3,
+                'evolving': 4,
+                'tournament': 5,
+                'complete': 6
             };
             const currentPhase = phaseMap[data.status] || 0;
-            for (let i = 1; i <= 4; i++) {
+            for (let i = 1; i <= 6; i++) {
                 const el = document.getElementById('phase' + i);
+                if (!el) continue;
                 el.classList.remove('active', 'complete');
                 if (i < currentPhase) el.classList.add('complete');
                 if (i === currentPhase) el.classList.add('active');
@@ -717,36 +736,59 @@ HTML_TEMPLATE = '''
                 `;
             }
 
-            // Post cards
-            const cardsHtml = rankings.map((r, i) => `
-                <div class="post-card ${i === 0 ? 'gold' : ''}">
-                    <div class="post-header">
-                        <div class="post-badge">
-                            <div class="post-rank-badge">${i + 1}</div>
-                            <div>
-                                <div style="font-weight:600">${r.style.replace('_', ' ')}</div>
-                                <div style="font-size:0.75rem;color:var(--muted)">${r.id}</div>
-                            </div>
-                        </div>
-                        <div class="post-meta">
-                            <span class="meta-tag ${r.qe >= 75 ? 'high' : ''}">QE: ${r.qe}/100</span>
-                            <span class="meta-tag">ELO: ${Math.round(r.elo)}</span>
-                            <span class="meta-tag">W${r.wins}-L${r.losses}</span>
-                        </div>
-                    </div>
-                    <div class="post-content"><span class="hook-line">${escapeHtml(r.content.split('\\n')[0])}</span>\\n${escapeHtml(r.content.split('\\n').slice(1).join('\\n'))}</div>
-                    <div class="post-actions">
-                        <button class="btn btn-success" onclick="selectForPublish(${i})">
-                            <svg width="16" height="16" fill="currentColor" viewBox="0 0 24 24"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>
-                            Select & Publish
-                        </button>
-                        <button class="btn" style="background:var(--border)" onclick="copyContent(${i})">
-                            <svg width="16" height="16" fill="currentColor" viewBox="0 0 24 24"><path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/></svg>
-                            Copy
-                        </button>
-                    </div>
-                </div>
-            `).join('');
+            // Post cards with evolution and debate info
+            const cardsHtml = rankings.map((r, i) => {
+                const isEvolved = r.generation && r.generation > 1;
+                const evolutionBadge = isEvolved ?
+                    '<span class="meta-tag" style="background:rgba(245,158,11,0.2);color:var(--yellow);">EVOLVED Gen ' + r.generation + '</span>' : '';
+                const debateCount = r.debate_history ? r.debate_history.length : 0;
+
+                return '<div class="post-card ' + (i === 0 ? 'gold' : '') + '">' +
+                    '<div class="post-header">' +
+                        '<div class="post-badge">' +
+                            '<div class="post-rank-badge">' + (i + 1) + '</div>' +
+                            '<div>' +
+                                '<div style="font-weight:600">' + r.style.replace('_', ' ') + '</div>' +
+                                '<div style="font-size:0.75rem;color:var(--muted)">' + r.id + '</div>' +
+                            '</div>' +
+                        '</div>' +
+                        '<div class="post-meta">' +
+                            '<span class="meta-tag ' + (r.qe_score >= 75 ? 'high' : '') + '">QE: ' + (r.qe_score || r.qe) + '/100</span>' +
+                            '<span class="meta-tag">ELO: ' + Math.round(r.elo) + '</span>' +
+                            '<span class="meta-tag">W' + r.wins + '-L' + r.losses + '</span>' +
+                            '<span class="meta-tag">Debates: ' + debateCount + '</span>' +
+                            evolutionBadge +
+                        '</div>' +
+                    '</div>' +
+                    (isEvolved && r.evolved_from ?
+                        '<div style="padding:0.5rem;background:rgba(245,158,11,0.1);border-radius:4px;margin-bottom:0.5rem;font-size:0.8rem;">' +
+                            'Evolved from ' + r.evolved_from + ': ' + (r.evolution_feedback || 'Improved based on QE feedback') +
+                        '</div>' : '') +
+                    '<div class="post-content"><span class="hook-line">' + escapeHtml(r.content.split('\\n')[0]) + '</span>\\n' + escapeHtml(r.content.split('\\n').slice(1).join('\\n')) + '</div>' +
+                    (r.debate_history && r.debate_history.length > 0 ?
+                        '<details style="margin:0.5rem 0;padding:0.5rem;background:var(--bg);border-radius:4px;">' +
+                            '<summary style="cursor:pointer;font-size:0.85rem;color:var(--accent);">View Debate History (' + r.debate_history.length + ' debates)</summary>' +
+                            '<div style="margin-top:0.5rem;font-size:0.8rem;">' +
+                                r.debate_history.map(d =>
+                                    '<div style="padding:0.25rem 0;border-bottom:1px solid var(--border);">' +
+                                        (d.won ? 'Won' : 'Lost') + ' vs ' + d.opponent +
+                                        (d.reasoning ? ': ' + d.reasoning.substring(0, 100) + '...' : '') +
+                                    '</div>'
+                                ).join('') +
+                            '</div>' +
+                        '</details>' : '') +
+                    '<div class="post-actions">' +
+                        '<button class="btn btn-success" onclick="selectForPublish(' + i + ')">' +
+                            '<svg width="16" height="16" fill="currentColor" viewBox="0 0 24 24"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>' +
+                            ' Select & Publish' +
+                        '</button>' +
+                        '<button class="btn" style="background:var(--border)" onclick="copyContent(' + i + ')">' +
+                            '<svg width="16" height="16" fill="currentColor" viewBox="0 0 24 24"><path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/></svg>' +
+                            ' Copy' +
+                        '</button>' +
+                    '</div>' +
+                '</div>';
+            }).join('');
 
             document.getElementById('postCards').innerHTML = cardsHtml;
             window.rankingsData = rankings;
@@ -834,12 +876,20 @@ def start_tournament():
     num_rounds = data.get('rounds', 3)
 
     def run_tournament(num_variants, num_rounds):
+        """Run the full Google Co-Scientist inspired pipeline"""
         global ranking_state
         ranking_state = {
             "status": "generating",
-            "phase": "Generating post variants...",
+            "phase": "Initializing pipeline...",
+            "current_step": 0,
+            "total_steps": 6,
+            "news_items": [],
             "variants": [],
             "generated_posts": [],
+            "qe_results": [],
+            "proximity_results": [],
+            "evolution_results": [],
+            "debates": [],
             "matches": [],
             "rankings": [],
             "logs": [],
@@ -850,154 +900,121 @@ def start_tournament():
             script_dir = Path(__file__).parent
             ai_news_db = script_dir / 'output_data' / 'ai_news.db'
 
-            log(f"Starting tournament with {num_variants} variants, {num_rounds} rounds...", "step")
+            log(f"Starting Google Co-Scientist Pipeline: {num_variants} variants, {num_rounds} rounds", "step")
 
             # Import here to avoid circular imports
             from linkedin_autopilot import PostRankingSystem
 
             ranking_system = PostRankingSystem(ai_news_db_path=ai_news_db)
 
-            # Step 1: Get news
-            log("Fetching AI news from database...")
-            news_items = ranking_system.get_recent_ai_news(limit=15)
-            log(f"Found {len(news_items)} news items", "success")
+            # Progress callback to update UI state
+            def on_progress(step, phase, data=None):
+                ranking_state["current_step"] = step
+                if phase == "news_loaded":
+                    ranking_state["phase"] = f"Loaded {data['count']} news items"
+                    log(f"Loaded {data['count']} news items from Twitter/X and web sources", "success")
+                elif phase == "generating":
+                    ranking_state["status"] = "generating"
+                    ranking_state["phase"] = f"Generating {data['num_variants']} variants..."
+                    log(f"[STEP 1] Generating {data['num_variants']} post variants...", "step")
+                elif phase == "generated":
+                    log(f"Generated {data['count']} variants", "success")
+                elif phase == "evaluating":
+                    ranking_state["status"] = "evaluating"
+                    ranking_state["phase"] = f"QE evaluating {data['count']} variants..."
+                    log(f"[STEP 2] Running QE Agent evaluation...", "step")
+                elif phase == "evaluated":
+                    ranking_state["qe_results"] = data["variants"]
+                    # Update generated_posts with QE scores
+                    for v in data["variants"]:
+                        ranking_state["generated_posts"].append({
+                            "id": v["id"],
+                            "style": v["hook_style"],
+                            "content": v["content"],
+                            "qe_score": v["qe_score"],
+                            "qe_feedback": v.get("qe_feedback", ""),
+                        })
+                        log(f"  {v['id']}: QE {v['qe_score']}/100", "")
+                elif phase == "proximity_check":
+                    ranking_state["status"] = "proximity"
+                    ranking_state["phase"] = "Checking for duplicates..."
+                    log(f"[STEP 3] Running Proximity Agent...", "step")
+                elif phase == "proximity_done":
+                    log(f"Found {data['duplicates']} duplicates, {data['unique']} unique variants", "success")
+                elif phase == "proximity_skipped":
+                    log("[STEP 3] Proximity check skipped", "")
+                elif phase == "evolving":
+                    ranking_state["status"] = "evolving"
+                    ranking_state["phase"] = f"Evolving {data['count']} low-scoring posts..."
+                    log(f"[STEP 4] Evolution Agent improving {data['count']} posts below QE {data['threshold']}...", "step")
+                elif phase == "evolved":
+                    log(f"Evolved {data['evolved_count']} posts", "success")
+                elif phase == "evolution_skipped":
+                    log("[STEP 4] All posts above threshold, skipping evolution", "")
+                elif phase == "evolution_disabled":
+                    log("[STEP 4] Evolution disabled", "")
+                elif phase == "tournament_start":
+                    ranking_state["status"] = "tournament"
+                    ranking_state["phase"] = f"Tournament: {data['variants']} variants, {data['rounds']} rounds"
+                    log(f"[STEP 5] ELO Tournament with debate-based ranking...", "step")
+                elif phase == "tournament_done":
+                    ranking_state["debates"] = data["debates"]
+                    # Log debate count
+                    log(f"Completed {len(data['debates'])} debates", "success")
 
-            if not news_items:
-                raise Exception("No AI news found in database. Run: uv run ai_news_scraper.py --web")
+            # Run the full pipeline
+            ranked_variants = ranking_system.generate_and_rank_posts(
+                num_variants=num_variants,
+                elo_rounds=num_rounds,
+                evolution_threshold=70,
+                enable_evolution=True,
+                enable_proximity=True,
+                progress_callback=on_progress
+            )
 
-            # Show what news we're working with
-            for i, item in enumerate(news_items[:5], 1):
-                source = item.get('username', item.get('source_name', 'Unknown'))
-                text = item.get('text', '')[:80]
-                log(f"  [{i}] @{source}: {text}...", "")
-
-            # Step 2: Generate variants
-            ranking_state["status"] = "generating"
-            ranking_state["phase"] = f"Generating {num_variants} post variants..."
-            log(f"[STEP 1] Generating {num_variants} post variants...", "step")
-
-            variants = ranking_system.variant_generator.generate_variants(news_items, num_variants=num_variants)
-
+            # Update variants list for UI
             ranking_state["variants"] = [
-                {"id": v.variant_id, "name": v.hook_style[:8], "elo": v.elo_rating, "style": v.hook_style}
-                for v in variants
-            ]
-
-            # Store full post content for preview
-            ranking_state["generated_posts"] = [
                 {
                     "id": v.variant_id,
+                    "name": v.hook_style[:8],
+                    "elo": v.elo_rating,
                     "style": v.hook_style,
-                    "content": v.content,
-                    "preview": v.content[:150] + "..." if len(v.content) > 150 else v.content
+                    "qe": v.qe_score,
+                    "generation": v.generation,
                 }
-                for v in variants
+                for v in ranked_variants
             ]
 
-            for v in variants:
-                log(f"Generated: {v.variant_id} ({v.hook_style}) - {len(v.content)} chars", "success")
-
-            # Step 3: QE Evaluation
-            ranking_state["status"] = "evaluating"
-            ranking_state["phase"] = "Running QE evaluation..."
-            log("[STEP 2] Running QE Agent evaluation...", "step")
-
-            variants = ranking_system.qe_agent.evaluate_batch(variants)
-
-            for v in variants:
-                log(f"{v.variant_id}: QE Score {v.qe_score}/100")
-                # Update variant info
-                for var in ranking_state["variants"]:
-                    if var["id"] == v.variant_id:
-                        var["qe"] = v.qe_score
-
-            # Filter
-            qualified = [v for v in variants if v.qe_score >= 40]
-            if len(qualified) < 2:
-                qualified = sorted(variants, key=lambda x: x.qe_score, reverse=True)[:3]
-            variants = qualified
-            log(f"Qualified {len(variants)} variants for tournament", "success")
-
-            # Step 4: ELO Tournament
-            ranking_state["status"] = "tournament"
-            ranking_state["phase"] = "Running ELO tournament..."
-            log("[STEP 3] Running ELO tournament...", "step")
-
-            # Run tournament with match tracking
-            match_count = 0
-
-            for round_num in range(1, num_rounds + 1):
-                log(f"Round {round_num}/{num_rounds}...", "step")
-
-                import random
-                shuffled = variants.copy()
-                random.shuffle(shuffled)
-
-                for i in range(0, len(shuffled) - 1, 2):
-                    a, b = shuffled[i], shuffled[i + 1]
-                    match_count += 1
-
-                    # Add match to state (active)
-                    match_id = f"m{match_count}"
-                    ranking_state["matches"].append({
-                        "id": match_id,
-                        "round": round_num,
-                        "a": a.variant_id,
-                        "b": b.variant_id,
-                        "winner": None,
-                        "active": True
-                    })
-
-                    # Update variant ELOs in state
-                    for var in ranking_state["variants"]:
-                        if var["id"] == a.variant_id:
-                            var["elo"] = a.elo_rating
-                        if var["id"] == b.variant_id:
-                            var["elo"] = b.elo_rating
-
-                    time.sleep(0.5)  # Visual delay
-
-                    # Run comparison
-                    winner = ranking_system.elo_ranker.compare_posts(a, b)
-                    if winner:
-                        loser = b if winner == a else a
-                        ranking_system.elo_ranker._update_ratings(winner, loser)
-
-                        # Update match
-                        for m in ranking_state["matches"]:
-                            if m["id"] == match_id:
-                                m["winner"] = winner.variant_id
-                                m["active"] = False
-
-                        log(f"  {winner.variant_id} defeats {loser.variant_id}", "success")
-
-                        # Update ELOs
-                        for var in ranking_state["variants"]:
-                            if var["id"] == winner.variant_id:
-                                var["elo"] = winner.elo_rating
-                            if var["id"] == loser.variant_id:
-                                var["elo"] = loser.elo_rating
-
-            # Sort by ELO
-            variants.sort(key=lambda x: x.elo_rating, reverse=True)
-
-            # Final rankings
+            # Final rankings with full data
             ranking_state["rankings"] = [
                 {
                     "id": v.variant_id,
                     "style": v.hook_style,
                     "elo": v.elo_rating,
-                    "qe": v.qe_score,
+                    "qe_score": v.qe_score,
+                    "qe": v.qe_score,  # For backwards compatibility
+                    "qe_feedback": v.qe_feedback,
                     "wins": v.wins,
                     "losses": v.losses,
-                    "content": v.content
+                    "content": v.content,
+                    "generation": v.generation,
+                    "evolved_from": v.evolved_from,
+                    "evolution_feedback": v.evolution_feedback,
+                    "debate_history": v.debate_history,
+                    "is_duplicate": v.is_duplicate,
                 }
-                for v in variants
+                for v in ranked_variants
             ]
 
             ranking_state["status"] = "complete"
-            ranking_state["phase"] = "Tournament complete!"
-            log("Tournament complete! Select a winner to publish.", "success")
+            ranking_state["phase"] = "Pipeline complete!"
+            log("="*50, "step")
+            log("FINAL RANKINGS", "step")
+            for i, v in enumerate(ranked_variants[:3]):
+                gen_tag = f" [EVOLVED Gen {v.generation}]" if v.generation > 1 else ""
+                log(f"#{i+1}: {v.variant_id}{gen_tag} - ELO {v.elo_rating:.0f}, QE {v.qe_score}/100", "success")
+            log("="*50, "step")
+            log("Select a winner to publish!", "success")
 
         except Exception as e:
             ranking_state["status"] = "error"

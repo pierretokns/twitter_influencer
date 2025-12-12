@@ -16,6 +16,7 @@ dependencies = [
     "pyautogui>=0.9.54",
     "schedule>=1.2.0",
     "pillow>=10.0.0",
+    "flask>=3.1.2",
 ]
 
 [tool.uv]
