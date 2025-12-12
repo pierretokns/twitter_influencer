@@ -902,6 +902,7 @@ from agents import (
     DebateAgent,
     ELORanker,
     PostVariantGenerator,
+    NewsSelector,
 )
 
 
@@ -926,6 +927,8 @@ class PostRankingSystem:
         self.evolution_agent = EvolutionAgent()
         self.proximity_agent = ProximityAgent()
         self.elo_ranker = ELORanker()
+        # NewsSelector for vector-based diverse news selection
+        self.news_selector = NewsSelector(ai_news_db_path) if ai_news_db_path else None
         # Track pipeline state for UI
         self.pipeline_state = {
             "news_items": [],
@@ -938,7 +941,18 @@ class PostRankingSystem:
         }
 
     def get_recent_ai_news(self, limit: int = 10) -> List[Dict]:
-        """Get recent AI news from database"""
+        """
+        Get diverse AI news from database using vector-based selection.
+
+        Uses NewsSelector with MMR algorithm to select semantically diverse
+        news items rather than just random/chronological selection.
+        """
+        # Use NewsSelector for vector-based diverse selection
+        if self.news_selector:
+            Logger.info(f"[NewsSelector] Selecting {limit} diverse news items...")
+            return self.news_selector.select_diverse_news(limit=limit)
+
+        # Fallback to basic selection if NewsSelector not available
         if not self.ai_news_db_path or not self.ai_news_db_path.exists():
             Logger.warning("AI news database not found")
             return []

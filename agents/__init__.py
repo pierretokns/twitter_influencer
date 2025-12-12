@@ -53,6 +53,7 @@ from .proximity_agent import ProximityAgent
 from .debate_agent import DebateAgent
 from .elo_ranker import ELORanker
 from .variant_generator import PostVariantGenerator
+from .news_selector import NewsSelector
 
 __all__ = [
     'PostVariant',
@@ -62,4 +63,5 @@ __all__ = [
     'DebateAgent',
     'ELORanker',
     'PostVariantGenerator',
+    'NewsSelector',
 ]
