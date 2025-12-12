@@ -10,14 +10,18 @@
 #     "numpy>=1.24.0",
 #     "scikit-learn>=1.3.0",
 #     "hdbscan>=0.8.33",
+#     "beautifulsoup4>=4.12.0",
 # ]
 # ///
 
 """
-AI News Scraper - Twitter/X AI Content Aggregator with Vector Similarity Search
+AI News Scraper - Multi-Source AI Content Aggregator with Vector Similarity Search
 
-Scrapes AI-related content from curated influencers, stores in SQLite with VSS,
-detects emerging trends, and discovers new high-signal accounts dynamically.
+Scrapes AI-related content from:
+- Twitter/X: Curated influencers and AI researchers
+- Web Sources: RSS feeds and HTML news sites (paddo.dev, ainativedev.io, vectorlab.dev, accenture newsroom)
+
+Stores in SQLite with VSS, detects emerging trends, and discovers new high-signal sources.
 """
 
 import os
@@ -223,6 +227,77 @@ def get_all_seed_influencers() -> List[str]:
             seen.add(h.lower())
             unique.append(h)
     return unique
+
+
+# =============================================================================
+# WEB NEWS SOURCES - RSS/HTML Feeds
+# =============================================================================
+
+WEB_SOURCES = {
+    # -------------------------------------------------------------------------
+    # RSS Sources (most reliable, server-side rendered)
+    # -------------------------------------------------------------------------
+    "paddo_dev": {
+        "name": "Emergent Minds (Paddo.dev)",
+        "url": "https://paddo.dev/",
+        "rss_url": "https://paddo.dev/rss.xml",
+        "type": "rss",
+        "category": "ai_engineering",
+        "description": "AI coding tools, LLM quality, agent design",
+    },
+
+    # -------------------------------------------------------------------------
+    # HTML Sources (server-side rendered, BeautifulSoup compatible)
+    # -------------------------------------------------------------------------
+    "vectorlab": {
+        "name": "Vector Lab",
+        "url": "https://vectorlab.dev/news/",
+        "type": "html",
+        "category": "ai_news",
+        "selectors": {
+            "article": ".blog-article, article, [class*='article']",
+            "title": "h1, h2, h3, .title, [class*='title']",
+            "link": "a[href*='/news/']",
+            "date": ".date, time, [class*='date']",
+            "description": "p, .subtitle, [class*='description']",
+        },
+        "description": "Weekly AI updates, model comparisons",
+    },
+
+    # -------------------------------------------------------------------------
+    # JavaScript-rendered sites (require browser automation - slower)
+    # NOTE: These sites use React/Next.js and require Selenium to scrape
+    # -------------------------------------------------------------------------
+    "ainativedev": {
+        "name": "AI Native Dev",
+        "url": "https://ainativedev.io/news",
+        "type": "js",  # Requires browser automation
+        "category": "ai_news",
+        "selectors": {
+            "article": "article, .article-card, [class*='article'], [class*='post']",
+            "title": "h1, h2, h3, .title, [class*='title'], [class*='headline']",
+            "link": "a[href*='/news/']",
+            "date": "time, .date, [class*='date'], [datetime]",
+            "description": "p, .excerpt, .summary, [class*='excerpt'], [class*='summary']",
+        },
+        "description": "AI development news, coding agents, models",
+    },
+    "accenture_ai": {
+        "name": "Accenture Newsroom",
+        "url": "https://newsroom.accenture.com/news",
+        "type": "js",  # Requires browser automation
+        "category": "enterprise_ai",
+        "filter_keywords": ["ai", "artificial intelligence", "machine learning", "generative", "automation"],
+        "selectors": {
+            "article": ".news-item, article, [class*='news'], [class*='article']",
+            "title": "h1, h2, h3, .title, [class*='title'], [class*='headline']",
+            "link": "a[href*='/news/']",
+            "date": ".date, time, [class*='date']",
+            "description": "p, .excerpt, [class*='excerpt'], [class*='summary']",
+        },
+        "description": "Enterprise AI news and announcements",
+    },
+}
 
 
 # AI-related keywords for content filtering
@@ -445,6 +520,40 @@ class AINewsDatabase:
             )
         ''')
 
+        # Web articles table - for RSS/HTML news sources
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS web_articles (
+                article_id TEXT PRIMARY KEY,
+                source_id TEXT,
+                source_name TEXT,
+                title TEXT,
+                url TEXT UNIQUE,
+                description TEXT,
+                content TEXT,
+                author TEXT,
+                published_at TEXT,
+                category TEXT,
+                is_ai_relevant BOOLEAN DEFAULT FALSE,
+                ai_relevance_score REAL DEFAULT 0.0,
+                scraped_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (source_id) REFERENCES web_sources(source_id)
+            )
+        ''')
+
+        # Web sources table - track configured sources
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS web_sources (
+                source_id TEXT PRIMARY KEY,
+                name TEXT,
+                url TEXT,
+                source_type TEXT,
+                category TEXT,
+                last_scraped TEXT,
+                articles_count INTEGER DEFAULT 0,
+                is_active BOOLEAN DEFAULT TRUE
+            )
+        ''')
+
         # Scrape history
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS scrape_history (
@@ -464,6 +573,9 @@ class AINewsDatabase:
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_tweets_username ON tweets(username)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_tweets_ai_relevant ON tweets(is_ai_relevant)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_influencers_score ON influencers(quality_score DESC)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_web_articles_published ON web_articles(published_at)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_web_articles_source ON web_articles(source_id)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_web_articles_ai_relevant ON web_articles(is_ai_relevant)')
 
         self.conn.commit()
         Logger.success(f"Database initialized: {self.db_path}")
@@ -707,6 +819,89 @@ class AINewsDatabase:
 
         self.conn.commit()
 
+    def save_web_source(self, source_id: str, name: str, url: str,
+                        source_type: str, category: str):
+        """Save or update a web source"""
+        cursor = self.conn.cursor()
+        cursor.execute('''
+            INSERT INTO web_sources (source_id, name, url, source_type, category)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(source_id) DO UPDATE SET
+                name = excluded.name,
+                url = excluded.url
+        ''', (source_id, name, url, source_type, category))
+        self.conn.commit()
+
+    def save_web_article(self, article_data: Dict[str, Any], embedding: np.ndarray = None) -> bool:
+        """Save a web article with optional embedding"""
+        cursor = self.conn.cursor()
+
+        url = article_data.get('url')
+        if not url:
+            return False
+
+        # Generate article_id from URL hash
+        article_id = hashlib.md5(url.encode()).hexdigest()[:16]
+
+        # Check AI relevance
+        text = f"{article_data.get('title', '')} {article_data.get('description', '')}".lower()
+        is_ai_relevant = any(kw.lower() in text for kw in AI_KEYWORDS)
+        relevance_score = sum(1 for kw in AI_KEYWORDS if kw.lower() in text) / len(AI_KEYWORDS)
+
+        try:
+            cursor.execute('''
+                INSERT OR REPLACE INTO web_articles (
+                    article_id, source_id, source_name, title, url,
+                    description, content, author, published_at, category,
+                    is_ai_relevant, ai_relevance_score
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (
+                article_id,
+                article_data.get('source_id'),
+                article_data.get('source_name'),
+                article_data.get('title'),
+                url,
+                article_data.get('description'),
+                article_data.get('content'),
+                article_data.get('author'),
+                article_data.get('published_at'),
+                article_data.get('category'),
+                is_ai_relevant,
+                relevance_score
+            ))
+            self.conn.commit()
+
+            # Update source article count
+            cursor.execute('''
+                UPDATE web_sources SET
+                    articles_count = (SELECT COUNT(*) FROM web_articles WHERE source_id = ?),
+                    last_scraped = CURRENT_TIMESTAMP
+                WHERE source_id = ?
+            ''', (article_data.get('source_id'), article_data.get('source_id')))
+            self.conn.commit()
+
+            return is_ai_relevant
+        except sqlite3.IntegrityError:
+            # Article already exists
+            return False
+
+    def get_recent_web_articles(self, hours: int = 24, ai_only: bool = True) -> List[Dict]:
+        """Get recent web articles for analysis"""
+        cursor = self.conn.cursor()
+
+        cutoff = (datetime.now() - timedelta(hours=hours)).isoformat()
+
+        query = '''
+            SELECT * FROM web_articles
+            WHERE scraped_at > ?
+        '''
+        if ai_only:
+            query += ' AND is_ai_relevant = TRUE'
+        query += ' ORDER BY published_at DESC'
+
+        cursor.execute(query, (cutoff,))
+        return [dict(row) for row in cursor.fetchall()]
+
     def get_stats(self) -> Dict[str, Any]:
         """Get database statistics"""
         cursor = self.conn.cursor()
@@ -729,6 +924,16 @@ class AINewsDatabase:
 
         cursor.execute('SELECT COUNT(*) FROM topics')
         stats['topics_detected'] = cursor.fetchone()[0]
+
+        # Web article stats
+        cursor.execute('SELECT COUNT(*) FROM web_articles')
+        stats['total_web_articles'] = cursor.fetchone()[0]
+
+        cursor.execute('SELECT COUNT(*) FROM web_articles WHERE is_ai_relevant = TRUE')
+        stats['ai_relevant_web_articles'] = cursor.fetchone()[0]
+
+        cursor.execute('SELECT COUNT(*) FROM web_sources WHERE is_active = TRUE')
+        stats['active_web_sources'] = cursor.fetchone()[0]
 
         return stats
 
@@ -902,6 +1107,415 @@ class EmbeddingGenerator:
     def generate_batch(self, texts: List[str], batch_size: int = 32) -> np.ndarray:
         """Generate embeddings for multiple texts"""
         return self.model.encode(texts, batch_size=batch_size, show_progress_bar=True)
+
+
+# =============================================================================
+# WEB SOURCE SCRAPER (RSS/HTML)
+# =============================================================================
+
+class WebSourceScraper:
+    """Scraper for web news sources (RSS and HTML)"""
+
+    def __init__(self, db: AINewsDatabase):
+        self.db = db
+        self.session = None
+        self.articles_scraped = 0
+        self.ai_articles_found = 0
+
+    def _get_session(self):
+        """Get or create requests session"""
+        if self.session is None:
+            import requests
+            self.session = requests.Session()
+            self.session.headers.update({
+                'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                'Accept-Language': 'en-US,en;q=0.5',
+            })
+        return self.session
+
+    def _parse_rss(self, source_id: str, source_config: Dict) -> List[Dict]:
+        """Parse RSS feed and extract articles"""
+        import xml.etree.ElementTree as ET
+
+        articles = []
+        rss_url = source_config.get('rss_url')
+        if not rss_url:
+            Logger.warning(f"No RSS URL for {source_id}")
+            return articles
+
+        try:
+            session = self._get_session()
+            response = session.get(rss_url, timeout=30)
+            response.raise_for_status()
+
+            # Parse XML
+            root = ET.fromstring(response.content)
+
+            # Handle both RSS 2.0 and Atom feeds
+            items = root.findall('.//item') or root.findall('.//{http://www.w3.org/2005/Atom}entry')
+
+            for item in items:
+                try:
+                    # RSS 2.0 format
+                    title = item.findtext('title') or item.findtext('{http://www.w3.org/2005/Atom}title')
+                    link = item.findtext('link') or item.findtext('{http://www.w3.org/2005/Atom}id')
+                    description = item.findtext('description') or item.findtext('{http://www.w3.org/2005/Atom}summary') or ''
+                    pub_date = item.findtext('pubDate') or item.findtext('{http://www.w3.org/2005/Atom}published')
+                    author = item.findtext('author') or item.findtext('{http://purl.org/dc/elements/1.1/}creator')
+
+                    # For Atom, get link from href attribute
+                    if not link:
+                        link_elem = item.find('{http://www.w3.org/2005/Atom}link')
+                        if link_elem is not None:
+                            link = link_elem.get('href')
+
+                    if not title or not link:
+                        continue
+
+                    # Clean HTML from description
+                    description = re.sub(r'<[^>]+>', '', description).strip()
+
+                    articles.append({
+                        'source_id': source_id,
+                        'source_name': source_config.get('name'),
+                        'title': title.strip(),
+                        'url': link.strip(),
+                        'description': description[:500] if description else '',
+                        'author': author,
+                        'published_at': pub_date,
+                        'category': source_config.get('category'),
+                    })
+                except Exception as e:
+                    Logger.debug(f"Error parsing RSS item: {e}")
+                    continue
+
+            Logger.info(f"  Parsed {len(articles)} articles from RSS: {source_config.get('name')}")
+
+        except Exception as e:
+            Logger.error(f"RSS fetch error for {source_id}: {e}")
+
+        return articles
+
+    def _parse_html(self, source_id: str, source_config: Dict) -> List[Dict]:
+        """Parse HTML page and extract articles"""
+        try:
+            from bs4 import BeautifulSoup
+        except ImportError:
+            Logger.warning("BeautifulSoup not installed. Run: pip install beautifulsoup4")
+            return []
+
+        articles = []
+        url = source_config.get('url')
+        selectors = source_config.get('selectors', {})
+        filter_keywords = source_config.get('filter_keywords', [])
+
+        try:
+            session = self._get_session()
+            response = session.get(url, timeout=30)
+            response.raise_for_status()
+
+            soup = BeautifulSoup(response.content, 'html.parser')
+
+            # Find article containers
+            article_selector = selectors.get('article', 'article')
+            article_elements = []
+
+            # Try multiple selectors
+            for selector in article_selector.split(','):
+                selector = selector.strip()
+                found = soup.select(selector)
+                if found:
+                    article_elements.extend(found)
+                    break
+
+            # Deduplicate
+            seen_articles = set()
+
+            for article_elem in article_elements[:50]:  # Limit to 50 articles
+                try:
+                    # Extract title
+                    title = None
+                    for title_sel in selectors.get('title', 'h2, h3').split(','):
+                        title_elem = article_elem.select_one(title_sel.strip())
+                        if title_elem:
+                            title = title_elem.get_text(strip=True)
+                            break
+
+                    # Extract link
+                    link = None
+                    for link_sel in selectors.get('link', 'a').split(','):
+                        link_elem = article_elem.select_one(link_sel.strip())
+                        if link_elem:
+                            href = link_elem.get('href', '')
+                            if href:
+                                # Handle relative URLs
+                                if href.startswith('/'):
+                                    from urllib.parse import urljoin
+                                    link = urljoin(url, href)
+                                else:
+                                    link = href
+                                break
+
+                    # If no link found in selectors, try the title element itself
+                    if not link and title:
+                        title_links = article_elem.select('a')
+                        for a in title_links:
+                            href = a.get('href', '')
+                            if href and '/news/' in href:
+                                if href.startswith('/'):
+                                    from urllib.parse import urljoin
+                                    link = urljoin(url, href)
+                                else:
+                                    link = href
+                                break
+
+                    if not title or not link:
+                        continue
+
+                    # Deduplicate by link
+                    if link in seen_articles:
+                        continue
+                    seen_articles.add(link)
+
+                    # Extract description
+                    description = ''
+                    for desc_sel in selectors.get('description', 'p').split(','):
+                        desc_elem = article_elem.select_one(desc_sel.strip())
+                        if desc_elem:
+                            description = desc_elem.get_text(strip=True)
+                            break
+
+                    # Extract date
+                    published_at = None
+                    for date_sel in selectors.get('date', 'time').split(','):
+                        date_elem = article_elem.select_one(date_sel.strip())
+                        if date_elem:
+                            published_at = date_elem.get('datetime') or date_elem.get_text(strip=True)
+                            break
+
+                    # Apply keyword filter if specified
+                    if filter_keywords:
+                        combined_text = f"{title} {description}".lower()
+                        if not any(kw.lower() in combined_text for kw in filter_keywords):
+                            continue
+
+                    articles.append({
+                        'source_id': source_id,
+                        'source_name': source_config.get('name'),
+                        'title': title,
+                        'url': link,
+                        'description': description[:500] if description else '',
+                        'published_at': published_at,
+                        'category': source_config.get('category'),
+                    })
+
+                except Exception as e:
+                    Logger.debug(f"Error parsing article element: {e}")
+                    continue
+
+            Logger.info(f"  Parsed {len(articles)} articles from HTML: {source_config.get('name')}")
+
+        except Exception as e:
+            Logger.error(f"HTML fetch error for {source_id}: {e}")
+
+        return articles
+
+    def _parse_js(self, source_id: str, source_config: Dict) -> List[Dict]:
+        """Parse JavaScript-rendered page using Selenium"""
+        try:
+            from bs4 import BeautifulSoup
+            import undetected_chromedriver as uc
+            from selenium.webdriver.common.by import By
+            from selenium.webdriver.support.ui import WebDriverWait
+            from selenium.webdriver.support import expected_conditions as EC
+        except ImportError as e:
+            Logger.warning(f"Required package not installed: {e}")
+            return []
+
+        articles = []
+        url = source_config.get('url')
+        selectors = source_config.get('selectors', {})
+        filter_keywords = source_config.get('filter_keywords', [])
+
+        driver = None
+        try:
+            Logger.info(f"  Using browser for JS-rendered site: {url}")
+
+            # Setup headless Chrome
+            options = uc.ChromeOptions()
+            options.add_argument('--headless=new')
+            options.add_argument('--no-sandbox')
+            options.add_argument('--disable-dev-shm-usage')
+            options.add_argument('--disable-gpu')
+
+            driver = uc.Chrome(options=options)
+            driver.get(url)
+
+            # Wait for content to load
+            time.sleep(5)  # Give JS time to render
+
+            # Get page source after JS execution
+            page_source = driver.page_source
+            soup = BeautifulSoup(page_source, 'html.parser')
+
+            # Find article containers (same logic as HTML parser)
+            article_selector = selectors.get('article', 'article')
+            article_elements = []
+
+            for selector in article_selector.split(','):
+                selector = selector.strip()
+                found = soup.select(selector)
+                if found:
+                    article_elements.extend(found)
+                    break
+
+            seen_articles = set()
+
+            for article_elem in article_elements[:50]:
+                try:
+                    # Extract title
+                    title = None
+                    for title_sel in selectors.get('title', 'h2, h3').split(','):
+                        title_elem = article_elem.select_one(title_sel.strip())
+                        if title_elem:
+                            title = title_elem.get_text(strip=True)
+                            break
+
+                    # Extract link
+                    link = None
+                    for link_sel in selectors.get('link', 'a').split(','):
+                        link_elem = article_elem.select_one(link_sel.strip())
+                        if link_elem:
+                            href = link_elem.get('href', '')
+                            if href:
+                                if href.startswith('/'):
+                                    from urllib.parse import urljoin
+                                    link = urljoin(url, href)
+                                else:
+                                    link = href
+                                break
+
+                    if not link and title:
+                        title_links = article_elem.select('a')
+                        for a in title_links:
+                            href = a.get('href', '')
+                            if href and '/news/' in href:
+                                if href.startswith('/'):
+                                    from urllib.parse import urljoin
+                                    link = urljoin(url, href)
+                                else:
+                                    link = href
+                                break
+
+                    if not title or not link:
+                        continue
+
+                    if link in seen_articles:
+                        continue
+                    seen_articles.add(link)
+
+                    # Extract description
+                    description = ''
+                    for desc_sel in selectors.get('description', 'p').split(','):
+                        desc_elem = article_elem.select_one(desc_sel.strip())
+                        if desc_elem:
+                            description = desc_elem.get_text(strip=True)
+                            break
+
+                    # Extract date
+                    published_at = None
+                    for date_sel in selectors.get('date', 'time').split(','):
+                        date_elem = article_elem.select_one(date_sel.strip())
+                        if date_elem:
+                            published_at = date_elem.get('datetime') or date_elem.get_text(strip=True)
+                            break
+
+                    # Apply keyword filter if specified
+                    if filter_keywords:
+                        combined_text = f"{title} {description}".lower()
+                        if not any(kw.lower() in combined_text for kw in filter_keywords):
+                            continue
+
+                    articles.append({
+                        'source_id': source_id,
+                        'source_name': source_config.get('name'),
+                        'title': title,
+                        'url': link,
+                        'description': description[:500] if description else '',
+                        'published_at': published_at,
+                        'category': source_config.get('category'),
+                    })
+
+                except Exception as e:
+                    Logger.debug(f"Error parsing JS article element: {e}")
+                    continue
+
+            Logger.info(f"  Parsed {len(articles)} articles from JS: {source_config.get('name')}")
+
+        except Exception as e:
+            Logger.error(f"JS/Browser fetch error for {source_id}: {e}")
+        finally:
+            if driver:
+                try:
+                    driver.quit()
+                except:
+                    pass
+
+        return articles
+
+    def scrape_source(self, source_id: str, source_config: Dict) -> int:
+        """Scrape a single source and save articles"""
+        Logger.info(f"Scraping: {source_config.get('name')}...")
+
+        # Save source to database
+        self.db.save_web_source(
+            source_id=source_id,
+            name=source_config.get('name'),
+            url=source_config.get('url'),
+            source_type=source_config.get('type'),
+            category=source_config.get('category')
+        )
+
+        # Parse based on type
+        source_type = source_config.get('type', 'html')
+        if source_type == 'rss':
+            articles = self._parse_rss(source_id, source_config)
+        elif source_type == 'js':
+            articles = self._parse_js(source_id, source_config)
+        else:
+            articles = self._parse_html(source_id, source_config)
+
+        # Save articles
+        new_articles = 0
+        for article in articles:
+            is_ai = self.db.save_web_article(article)
+            self.articles_scraped += 1
+            new_articles += 1
+            if is_ai:
+                self.ai_articles_found += 1
+
+        return new_articles
+
+    def scrape_all_sources(self, sources: Dict[str, Dict] = None) -> Tuple[int, int]:
+        """Scrape all configured web sources"""
+        if sources is None:
+            sources = WEB_SOURCES
+
+        Logger.info(f"Scraping {len(sources)} web sources...")
+
+        total_articles = 0
+        for source_id, source_config in sources.items():
+            try:
+                count = self.scrape_source(source_id, source_config)
+                total_articles += count
+                time.sleep(random.uniform(1, 3))  # Be polite
+            except Exception as e:
+                Logger.error(f"Error scraping {source_id}: {e}")
+                continue
+
+        Logger.success(f"Web scrape complete! {self.articles_scraped} articles ({self.ai_articles_found} AI-relevant)")
+        return self.articles_scraped, self.ai_articles_found
 
 
 # =============================================================================
@@ -1601,6 +2215,15 @@ class AINewsOrchestrator:
 
         return scraper.tweets_scraped, scraper.ai_tweets_found
 
+    def run_web_scrape(self, sources: Dict[str, Dict] = None) -> Tuple[int, int]:
+        """Run web source scraping (RSS/HTML)"""
+        Logger.info("Starting web source scraping...")
+
+        scraper = WebSourceScraper(self.db)
+        articles_scraped, ai_articles = scraper.scrape_all_sources(sources)
+
+        return articles_scraped, ai_articles
+
     def analyze_trends(self, hours: int = 48):
         """Analyze trends from recent tweets"""
         detector = TrendDetector(self.db)
@@ -1685,12 +2308,18 @@ class AINewsOrchestrator:
         print("\n" + "=" * 60)
         print("AI NEWS SCRAPER STATISTICS")
         print("=" * 60)
-        print(f"Total tweets:           {stats['total_tweets']}")
-        print(f"AI-relevant tweets:     {stats['ai_relevant_tweets']}")
-        print(f"Tracked influencers:    {stats['total_influencers']}")
-        print(f"  - Seed influencers:   {stats['seed_influencers']}")
-        print(f"Potential new sources:  {stats['potential_influencers']}")
-        print(f"Topics detected:        {stats['topics_detected']}")
+        print("\nTwitter/X:")
+        print(f"  Total tweets:           {stats['total_tweets']}")
+        print(f"  AI-relevant tweets:     {stats['ai_relevant_tweets']}")
+        print(f"  Tracked influencers:    {stats['total_influencers']}")
+        print(f"    - Seed influencers:   {stats['seed_influencers']}")
+        print(f"  Potential new sources:  {stats['potential_influencers']}")
+        print("\nWeb Sources:")
+        print(f"  Total web articles:     {stats.get('total_web_articles', 0)}")
+        print(f"  AI-relevant articles:   {stats.get('ai_relevant_web_articles', 0)}")
+        print(f"  Active web sources:     {stats.get('active_web_sources', 0)}")
+        print("\nAnalysis:")
+        print(f"  Topics detected:        {stats['topics_detected']}")
         print("=" * 60)
 
     def close(self):
@@ -1708,7 +2337,9 @@ def main():
     import argparse
 
     parser = argparse.ArgumentParser(description='AI News Scraper with Vector Search')
-    parser.add_argument('--scrape', action='store_true', help='Run scraping session')
+    parser.add_argument('--scrape', action='store_true', help='Run Twitter/X scraping session')
+    parser.add_argument('--web', action='store_true', help='Scrape web sources (RSS/HTML news sites)')
+    parser.add_argument('--all', action='store_true', help='Scrape both Twitter and web sources')
     parser.add_argument('--trends', action='store_true', help='Analyze trends')
     parser.add_argument('--search', type=str, help='Semantic search query')
     parser.add_argument('--report', action='store_true', help='Generate report')
@@ -1734,7 +2365,11 @@ def main():
     orchestrator.initialize()
 
     try:
-        if args.scrape:
+        # Handle scraping options
+        run_twitter = args.scrape or args.all
+        run_web = args.web or args.all
+
+        if run_twitter:
             # Check we have either Google auth or username/password
             if not google_email and (not username or not password):
                 Logger.error("Set GOOGLE_EMAIL or TWITTER_USERNAME/TWITTER_PASSWORD in .env")
@@ -1748,6 +2383,10 @@ def main():
                 tweets_per_user=args.tweets_per_user
             )
 
+        if run_web:
+            # Web scraping doesn't require authentication
+            orchestrator.run_web_scrape()
+
         if args.trends:
             orchestrator.analyze_trends(hours=args.hours)
 
@@ -1757,7 +2396,7 @@ def main():
         if args.report:
             orchestrator.export_report()
 
-        if args.stats or not any([args.scrape, args.trends, args.search, args.report]):
+        if args.stats or not any([args.scrape, args.web, args.all, args.trends, args.search, args.report]):
             orchestrator.print_stats()
 
     finally:
