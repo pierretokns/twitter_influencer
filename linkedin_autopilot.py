@@ -885,357 +885,57 @@ Be genuine and encourage further discussion."""
 # =============================================================================
 # MULTI-AGENT POST RANKING SYSTEM
 # =============================================================================
-
-@dataclass
-class PostVariant:
-    """A single post variant for ranking"""
-    variant_id: str
-    content: str
-    hook_style: str
-    elo_rating: float = 1000.0
-    qe_score: float = 0.0
-    qe_feedback: str = ""
-    matches_played: int = 0
-    wins: int = 0
-    losses: int = 0
-
-
-class PostVariantGenerator:
-    """Generate multiple post variants for ELO ranking"""
-
-    def __init__(self):
-        self.hook_styles = list(VIRAL_HOOKS.keys())
-
-    def _call_claude_cli(self, prompt: str, timeout: int = 60) -> Optional[str]:
-        """Call Claude CLI and return response"""
-        try:
-            result = subprocess.run(
-                ['claude', '-p', prompt],
-                capture_output=True,
-                text=True,
-                timeout=timeout
-            )
-            if result.returncode == 0 and result.stdout.strip():
-                return result.stdout.strip()
-            return None
-        except Exception as e:
-            Logger.warning(f"Claude CLI call failed: {e}")
-            return None
-
-    def _clean_post(self, content: str) -> str:
-        """Clean generated post content"""
-        if not content:
-            return ""
-
-        lines = content.split('\n')
-        cleaned_lines = []
-        skip_patterns = [
-            "here's", "here is", "---", "character count", "word count",
-            "linkedin post", "post:", "output:", "```", "variant", "option"
-        ]
-
-        for line in lines:
-            line_lower = line.lower().strip()
-            if any(pattern in line_lower for pattern in skip_patterns):
-                continue
-            if line.strip() == '---' or line.strip() == '—':
-                continue
-            cleaned_lines.append(line)
-
-        content = '\n'.join(cleaned_lines).strip()
-        content = re.sub(r'^[-—]+\s*', '', content)
-        content = re.sub(r'\s*[-—]+$', '', content)
-        content = re.sub(r'\*\*([^*]+)\*\*', lambda m: m.group(1).upper(), content)
-        content = re.sub(r'#{1,6}\s*', '', content)
-        content = re.sub(r'\*([^*]+)\*', r'\1', content)
-
-        return content.strip()[:1300]
-
-    def generate_variants(self, news_items: List[Dict], num_variants: int = 5) -> List[PostVariant]:
-        """Generate multiple post variants with different hook styles, each focusing on specific news"""
-        variants = []
-
-        # Format news items with full context and source
-        formatted_news = []
-        for i, item in enumerate(news_items[:10], 1):
-            text = item.get('text', '')
-            source = item.get('username', item.get('source_name', 'Unknown'))
-            formatted_news.append(f"[{i}] @{source}: {text}")
-
-        news_context = "\n\n".join(formatted_news)
-
-        # Select hook styles for variants
-        selected_styles = random.sample(self.hook_styles, min(num_variants, len(self.hook_styles)))
-        if len(selected_styles) < num_variants:
-            selected_styles = selected_styles * (num_variants // len(selected_styles) + 1)
-        selected_styles = selected_styles[:num_variants]
-
-        Logger.info(f"Generating {num_variants} post variants from {len(news_items)} news items...")
-
-        for i, hook_style in enumerate(selected_styles):
-            hook_examples = VIRAL_HOOKS.get(hook_style, VIRAL_HOOKS["curiosity_gap"])
-            example_hook = random.choice(hook_examples)
-
-            # Each variant focuses on a different news item
-            focus_item_idx = (i % len(news_items)) + 1
-
-            prompt = f"""You are a LinkedIn content creator with 100K+ followers. Write a viral post about TODAY'S AI NEWS.
-
-===== TODAY'S AI NEWS (from Twitter/X and tech blogs) =====
-{news_context}
-
-===== YOUR TASK =====
-Write a LinkedIn post that:
-1. MUST reference specific news from above (mention the actual development, company, or finding)
-2. FOCUS primarily on news item [{focus_item_idx}] but can reference others
-3. Add YOUR unique insight, opinion, or takeaway - don't just summarize
-4. Make it feel timely and current ("Just saw that...", "This week...", "Breaking:")
-
-===== HOOK STYLE: {hook_style.replace('_', ' ').upper()} =====
-Example: "{example_hook}"
-
-===== FORMAT REQUIREMENTS =====
-- First 2 lines = scroll-stopping hook (this shows before "see more")
-- Short paragraphs (1-3 lines each) for mobile
-- Include specific details from the news (names, numbers, companies)
-- End with thought-provoking question
-- 3-5 hashtags at the very end
-- Max 1300 characters total
-- NO markdown symbols (no ** or #)
-- Max 2 emojis
-
-===== OUTPUT =====
-Write ONLY the post text. No intro, no explanation. Start directly with the hook:"""
-
-            result = self._call_claude_cli(prompt, timeout=90)
-            if result:
-                content = self._clean_post(result)
-                if content and len(content) > 100:
-                    variant = PostVariant(
-                        variant_id=f"v{i+1}_{hashlib.md5(content[:50].encode()).hexdigest()[:8]}",
-                        content=content,
-                        hook_style=hook_style,
-                    )
-                    variants.append(variant)
-                    Logger.info(f"  Generated variant {i+1}/{num_variants} ({hook_style}) - {len(content)} chars")
-
-            time.sleep(1)  # Rate limiting
-
-        Logger.success(f"Generated {len(variants)} post variants")
-        return variants
-
-
-class QEAgent:
-    """Quality Evaluation Agent - scores posts against LinkedIn best practices"""
-
-    def __init__(self):
-        self.criteria = {
-            "hook_strength": 25,      # First 2-3 lines compelling?
-            "single_focus": 15,       # One clear idea?
-            "mobile_format": 15,      # Short paragraphs, scannable?
-            "authenticity": 15,       # Personal, genuine voice?
-            "engagement_cta": 10,     # Good question at end?
-            "hashtag_usage": 5,       # 3-5 relevant hashtags?
-            "clarity": 10,            # Easy to understand?
-            "grammar": 5,             # No errors?
-        }
-
-    def _call_claude_cli(self, prompt: str) -> Optional[str]:
-        """Call Claude CLI"""
-        try:
-            result = subprocess.run(
-                ['claude', '-p', prompt],
-                capture_output=True,
-                text=True,
-                timeout=45
-            )
-            if result.returncode == 0:
-                return result.stdout.strip()
-            return None
-        except Exception as e:
-            Logger.warning(f"QE Agent Claude call failed: {e}")
-            return None
-
-    def evaluate_post(self, variant: PostVariant) -> PostVariant:
-        """Evaluate a post variant and assign QE score"""
-        prompt = f"""You are a LinkedIn content QA expert. Evaluate this post against best practices.
-
-POST:
-{variant.content}
-
-SCORING CRITERIA (total 100 points):
-1. HOOK STRENGTH (25pts): First 2-3 lines compelling? Would it stop scrolling?
-2. SINGLE FOCUS (15pts): One clear idea, not cramming multiple tips?
-3. MOBILE FORMAT (15pts): Short paragraphs (1-3 lines), scannable?
-4. AUTHENTICITY (15pts): Personal, genuine voice, not generic?
-5. ENGAGEMENT CTA (10pts): Ends with thought-provoking question (not engagement bait)?
-6. HASHTAG USAGE (5pts): 3-5 relevant hashtags at end?
-7. CLARITY (10pts): Easy to understand, clear takeaway?
-8. GRAMMAR (5pts): No spelling/grammar errors?
-
-THINGS TO PENALIZE:
-- Generic intros ("Here's my thoughts on...")
-- Engagement bait ("Comment YES if you agree!")
-- Dense paragraphs
-- Too many emojis (>3)
-- Markdown symbols (** or #)
-- Multiple topics crammed in
-
-Respond in JSON format ONLY:
-{{"score": 0-100, "breakdown": {{"hook": 0-25, "focus": 0-15, "format": 0-15, "authenticity": 0-15, "cta": 0-10, "hashtags": 0-5, "clarity": 0-10, "grammar": 0-5}}, "feedback": "brief specific feedback", "strengths": ["strength1"], "issues": ["issue1"]}}"""
-
-        result = self._call_claude_cli(prompt)
-
-        if result:
-            try:
-                start = result.find('{')
-                end = result.rfind('}') + 1
-                if start >= 0 and end > start:
-                    data = json.loads(result[start:end])
-                    variant.qe_score = data.get('score', 50)
-                    variant.qe_feedback = data.get('feedback', '')
-                    Logger.info(f"  QE Score: {variant.qe_score}/100 - {variant.qe_feedback[:60]}...")
-                    return variant
-            except json.JSONDecodeError:
-                pass
-
-        # Fallback: basic scoring
-        variant.qe_score = 60
-        variant.qe_feedback = "Evaluation completed with default score"
-        return variant
-
-    def evaluate_batch(self, variants: List[PostVariant]) -> List[PostVariant]:
-        """Evaluate all variants"""
-        Logger.info(f"Running QE evaluation on {len(variants)} variants...")
-        evaluated = []
-        for i, variant in enumerate(variants):
-            Logger.info(f"Evaluating variant {i+1}/{len(variants)} ({variant.hook_style})...")
-            evaluated.append(self.evaluate_post(variant))
-            time.sleep(0.5)
-        return evaluated
-
-
-class ELORanker:
-    """ELO-based ranking system for comparing post variants"""
-
-    K_FACTOR = 32  # Standard ELO K-factor
-
-    def __init__(self):
-        pass
-
-    def _call_claude_cli(self, prompt: str) -> Optional[str]:
-        """Call Claude CLI"""
-        try:
-            result = subprocess.run(
-                ['claude', '-p', prompt],
-                capture_output=True,
-                text=True,
-                timeout=30
-            )
-            if result.returncode == 0:
-                return result.stdout.strip()
-            return None
-        except Exception as e:
-            Logger.warning(f"ELO comparison failed: {e}")
-            return None
-
-    def _expected_score(self, rating_a: float, rating_b: float) -> float:
-        """Calculate expected score for player A"""
-        return 1 / (1 + 10 ** ((rating_b - rating_a) / 400))
-
-    def _update_ratings(self, winner: PostVariant, loser: PostVariant):
-        """Update ELO ratings after a match"""
-        expected_winner = self._expected_score(winner.elo_rating, loser.elo_rating)
-        expected_loser = self._expected_score(loser.elo_rating, winner.elo_rating)
-
-        winner.elo_rating += self.K_FACTOR * (1 - expected_winner)
-        loser.elo_rating += self.K_FACTOR * (0 - expected_loser)
-
-        winner.matches_played += 1
-        loser.matches_played += 1
-        winner.wins += 1
-        loser.losses += 1
-
-    def compare_posts(self, post_a: PostVariant, post_b: PostVariant) -> Optional[PostVariant]:
-        """Compare two posts and return the winner"""
-        prompt = f"""You are a LinkedIn viral content expert. Compare these two posts and pick the winner.
-
-POST A:
-{post_a.content}
-
-POST B:
-{post_b.content}
-
-JUDGING CRITERIA (in order of importance):
-1. HOOK: Which has a more scroll-stopping opening? (first 2 lines)
-2. VIRALITY: Which would get more engagement (likes, comments, shares)?
-3. VALUE: Which provides clearer, more actionable insight?
-4. AUTHENTICITY: Which feels more genuine and less generic?
-5. FORMAT: Which is better optimized for mobile reading?
-
-Consider that LinkedIn's algorithm rewards early engagement, so the hook is CRITICAL.
-
-Respond with ONLY "A" or "B" (the letter of the winning post), followed by a brief reason.
-Example: "A - Stronger hook with personal story that creates curiosity"
-
-Winner:"""
-
-        result = self._call_claude_cli(prompt)
-
-        if result:
-            result = result.strip().upper()
-            if result.startswith('A'):
-                return post_a
-            elif result.startswith('B'):
-                return post_b
-
-        # Fallback: use QE scores
-        return post_a if post_a.qe_score >= post_b.qe_score else post_b
-
-    def run_tournament(self, variants: List[PostVariant], rounds: int = 3) -> List[PostVariant]:
-        """Run ELO tournament with multiple rounds of comparisons"""
-        if len(variants) < 2:
-            return variants
-
-        Logger.info(f"Starting ELO tournament with {len(variants)} variants, {rounds} rounds...")
-
-        for round_num in range(rounds):
-            Logger.info(f"Round {round_num + 1}/{rounds}...")
-
-            # Create random pairings
-            shuffled = variants.copy()
-            random.shuffle(shuffled)
-
-            for i in range(0, len(shuffled) - 1, 2):
-                post_a = shuffled[i]
-                post_b = shuffled[i + 1]
-
-                winner = self.compare_posts(post_a, post_b)
-                if winner:
-                    loser = post_b if winner == post_a else post_a
-                    self._update_ratings(winner, loser)
-                    Logger.info(f"  {winner.variant_id} beat {loser.variant_id}")
-
-            time.sleep(0.5)
-
-        # Sort by ELO rating
-        variants.sort(key=lambda x: x.elo_rating, reverse=True)
-
-        Logger.success("Tournament complete!")
-        for i, v in enumerate(variants[:3]):
-            Logger.info(f"  #{i+1}: {v.variant_id} (ELO: {v.elo_rating:.0f}, QE: {v.qe_score})")
-
-        return variants
+# Agents are now modular - see agents/ directory for implementation details:
+#   - agents/qe_agent.py: Quality Evaluation (scores against best practices)
+#   - agents/evolution_agent.py: Recursive self-improvement (Google Co-Scientist)
+#   - agents/proximity_agent.py: Semantic similarity detection
+#   - agents/debate_agent.py: Self-play argumentative debates
+#   - agents/elo_ranker.py: Tournament management with ELO ratings
+#   - agents/variant_generator.py: Multi-variant content generation
+# =============================================================================
+
+from agents import (
+    PostVariant,
+    QEAgent,
+    EvolutionAgent,
+    ProximityAgent,
+    DebateAgent,
+    ELORanker,
+    PostVariantGenerator,
+)
 
 
 class PostRankingSystem:
-    """Orchestrates the multi-agent post ranking pipeline"""
+    """
+    Orchestrates the multi-agent post ranking pipeline.
+
+    Pipeline inspired by Google's AI Co-Scientist:
+    1. Generate: Create multiple post variants with different hooks
+    2. Evaluate: QE Agent scores against LinkedIn best practices
+    3. Proximity: Detect and filter duplicate content
+    4. Evolve: Improve low-scoring posts using QE feedback
+    5. Re-evaluate: Score evolved posts
+    6. Tournament: ELO ranking with debate-based comparisons
+    """
 
     def __init__(self, ai_news_db_path: Path = None):
         self.ai_news_db_path = ai_news_db_path
+        # Initialize all agents
         self.variant_generator = PostVariantGenerator()
         self.qe_agent = QEAgent()
+        self.evolution_agent = EvolutionAgent()
+        self.proximity_agent = ProximityAgent()
         self.elo_ranker = ELORanker()
+        # Track pipeline state for UI
+        self.pipeline_state = {
+            "news_items": [],
+            "generated_variants": [],
+            "after_qe": [],
+            "after_proximity": [],
+            "evolved_variants": [],
+            "final_rankings": [],
+            "all_debates": [],
+        }
 
     def get_recent_ai_news(self, limit: int = 10) -> List[Dict]:
         """Get recent AI news from database"""
@@ -1280,51 +980,165 @@ class PostRankingSystem:
         random.shuffle(combined)
         return combined[:limit]
 
-    def generate_and_rank_posts(self, num_variants: int = 5, elo_rounds: int = 3) -> List[PostVariant]:
-        """Full pipeline: generate variants, QE evaluate, ELO rank"""
+    def generate_and_rank_posts(
+        self,
+        num_variants: int = 5,
+        elo_rounds: int = 3,
+        evolution_threshold: int = 70,
+        enable_evolution: bool = True,
+        enable_proximity: bool = True,
+        progress_callback=None
+    ) -> List[PostVariant]:
+        """
+        Full multi-agent pipeline: Generate, Evaluate, Evolve, Rank.
+
+        Pipeline steps (Google Co-Scientist inspired):
+        1. Generate: Create variants with different hook styles
+        2. QE Evaluate: Score against LinkedIn best practices
+        3. Proximity Check: Detect and filter duplicates
+        4. Evolution: Improve low-scoring posts using feedback
+        5. Re-evaluate: Score evolved posts
+        6. ELO Tournament: Debate-based ranking
+
+        Args:
+            num_variants: Number of post variants to generate
+            elo_rounds: Number of tournament rounds
+            evolution_threshold: QE score below which posts get evolved
+            enable_evolution: Whether to evolve low-scoring posts
+            enable_proximity: Whether to check for duplicates
+            progress_callback: Optional callback(step, phase, data) for UI updates
+
+        Returns:
+            List of PostVariant sorted by ELO rating (best first)
+        """
+        def notify(step, phase, data=None):
+            if progress_callback:
+                progress_callback(step, phase, data)
+
         Logger.info("="*60)
-        Logger.info("STARTING POST RANKING PIPELINE")
+        Logger.info("MULTI-AGENT POST RANKING PIPELINE")
         Logger.info("="*60)
 
+        # Reset pipeline state
+        self.pipeline_state = {k: [] for k in self.pipeline_state}
+
         # Get news content
-        news_items = self.get_recent_ai_news(limit=10)
+        news_items = self.get_recent_ai_news(limit=15)
         if not news_items:
             Logger.error("No AI news available")
             return []
 
+        self.pipeline_state["news_items"] = news_items
         Logger.info(f"Found {len(news_items)} news items for content generation")
+        notify(1, "news_loaded", {"count": len(news_items)})
 
-        # Step 1: Generate variants
+        # Build news context for evolution
+        news_context = "\n".join([
+            f"@{item.get('username', 'Unknown')}: {item.get('text', '')[:200]}"
+            for item in news_items[:10]
+        ])
+
+        # ===== STEP 1: GENERATE VARIANTS =====
         Logger.info("\n[STEP 1] Generating post variants...")
+        notify(1, "generating", {"num_variants": num_variants})
         variants = self.variant_generator.generate_variants(news_items, num_variants)
+        self.pipeline_state["generated_variants"] = [v.to_dict() for v in variants]
 
         if len(variants) < 2:
             Logger.warning("Not enough variants generated for ranking")
             return variants
 
-        # Step 2: QE Evaluation
-        Logger.info("\n[STEP 2] Running QE Agent evaluation...")
-        variants = self.qe_agent.evaluate_batch(variants)
+        Logger.success(f"Generated {len(variants)} variants")
+        notify(1, "generated", {"count": len(variants)})
 
-        # Filter out low-quality posts (QE < 40)
+        # ===== STEP 2: QE EVALUATION =====
+        Logger.info("\n[STEP 2] Running QE Agent evaluation...")
+        notify(2, "evaluating", {"count": len(variants)})
+        variants = self.qe_agent.evaluate_batch(variants)
+        self.pipeline_state["after_qe"] = [v.to_dict() for v in variants]
+
+        # Log QE results
+        for v in variants:
+            Logger.info(f"  {v.variant_id}: QE {v.qe_score}/100 - {v.qe_feedback[:50]}...")
+        notify(2, "evaluated", {"variants": [v.to_dict() for v in variants]})
+
+        # ===== STEP 3: PROXIMITY CHECK =====
+        if enable_proximity and len(variants) > 2:
+            Logger.info("\n[STEP 3] Running Proximity Agent (duplicate detection)...")
+            notify(3, "proximity_check", {"count": len(variants)})
+            variants = self.proximity_agent.find_duplicates(variants)
+            unique_variants = self.proximity_agent.filter_duplicates(variants)
+            self.pipeline_state["after_proximity"] = [v.to_dict() for v in unique_variants]
+
+            duplicates = len(variants) - len(unique_variants)
+            if duplicates > 0:
+                Logger.info(f"  Filtered {duplicates} duplicate posts")
+            variants = unique_variants
+            notify(3, "proximity_done", {"unique": len(variants), "duplicates": duplicates})
+        else:
+            Logger.info("\n[STEP 3] Skipping proximity check")
+            notify(3, "proximity_skipped", {})
+
+        # ===== STEP 4: EVOLUTION =====
+        if enable_evolution:
+            low_scoring = [v for v in variants if v.qe_score < evolution_threshold]
+            if low_scoring:
+                Logger.info(f"\n[STEP 4] Evolving {len(low_scoring)} posts below QE {evolution_threshold}...")
+                notify(4, "evolving", {"count": len(low_scoring), "threshold": evolution_threshold})
+
+                variants = self.evolution_agent.evolve_batch(
+                    variants,
+                    news_context,
+                    threshold=evolution_threshold
+                )
+
+                # Re-evaluate evolved posts
+                evolved = [v for v in variants if v.generation > 1 and v.qe_score == 0]
+                if evolved:
+                    Logger.info(f"  Re-evaluating {len(evolved)} evolved posts...")
+                    for v in evolved:
+                        self.qe_agent.evaluate_post(v)
+
+                self.pipeline_state["evolved_variants"] = [v.to_dict() for v in variants]
+                evolved_count = sum(1 for v in variants if v.generation > 1)
+                Logger.success(f"Evolution complete: {evolved_count} posts evolved")
+                notify(4, "evolved", {"evolved_count": evolved_count})
+            else:
+                Logger.info(f"\n[STEP 4] No posts below QE {evolution_threshold}, skipping evolution")
+                notify(4, "evolution_skipped", {})
+        else:
+            Logger.info("\n[STEP 4] Evolution disabled")
+            notify(4, "evolution_disabled", {})
+
+        # Filter out any remaining low-quality posts
         qualified = [v for v in variants if v.qe_score >= 40]
         if len(qualified) < 2:
-            qualified = sorted(variants, key=lambda x: x.qe_score, reverse=True)[:2]
+            qualified = sorted(variants, key=lambda x: x.qe_score, reverse=True)[:3]
         variants = qualified
 
-        # Step 3: ELO Tournament
-        Logger.info("\n[STEP 3] Running ELO tournament...")
-        ranked = self.elo_ranker.run_tournament(variants, rounds=elo_rounds)
+        # ===== STEP 5: ELO TOURNAMENT =====
+        Logger.info(f"\n[STEP 5] Running ELO Tournament ({elo_rounds} rounds)...")
+        notify(5, "tournament_start", {"variants": len(variants), "rounds": elo_rounds})
 
-        # Final results
+        ranked, all_debates = self.elo_ranker.run_tournament(variants, rounds=elo_rounds)
+        self.pipeline_state["final_rankings"] = [v.to_dict() for v in ranked]
+        self.pipeline_state["all_debates"] = all_debates
+
+        notify(5, "tournament_done", {
+            "rankings": [v.to_dict() for v in ranked],
+            "debates": all_debates
+        })
+
+        # ===== FINAL RESULTS =====
         Logger.info("\n" + "="*60)
         Logger.info("FINAL RANKINGS")
         Logger.info("="*60)
         for i, v in enumerate(ranked):
-            Logger.info(f"\n#{i+1} - {v.variant_id}")
+            gen_tag = f" [GEN {v.generation}]" if v.generation > 1 else ""
+            Logger.info(f"\n#{i+1} - {v.variant_id}{gen_tag}")
             Logger.info(f"   Style: {v.hook_style}")
             Logger.info(f"   ELO: {v.elo_rating:.0f} | QE: {v.qe_score}/100")
-            Logger.info(f"   W/L: {v.wins}-{v.losses}")
+            Logger.info(f"   W/L: {v.wins}-{v.losses} | Debates: {len(v.debate_history)}")
             Logger.info(f"   Hook: {v.content[:80]}...")
 
         return ranked
