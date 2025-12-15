@@ -176,10 +176,17 @@ class DiscordLinksDatabase:
         self._init_database()
 
     def _init_database(self):
-        """Initialize database with VSS support"""
+        """Initialize database with migrations and VSS support"""
+        from db_migrations import migrate_discord_db
+
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self.conn = sqlite3.connect(str(self.db_path))
         self.conn.row_factory = sqlite3.Row
+
+        # Run schema migrations
+        migrations_applied = migrate_discord_db(self.conn)
+        if migrations_applied > 0:
+            Logger.success(f"Applied {migrations_applied} migration(s)")
 
         # Load sqlite-vec extension
         try:
@@ -193,143 +200,19 @@ class DiscordLinksDatabase:
             Logger.warning(f"sqlite-vec not available: {e}")
             self._has_vec = False
 
-        cursor = self.conn.cursor()
-
-        # Discord servers table
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS discord_servers (
-                server_id TEXT PRIMARY KEY,
-                server_name TEXT,
-                first_scraped TEXT DEFAULT CURRENT_TIMESTAMP,
-                last_scraped TEXT
-            )
-        ''')
-
-        # Discord channels table
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS discord_channels (
-                channel_id TEXT PRIMARY KEY,
-                server_id TEXT,
-                channel_name TEXT,
-                channel_type TEXT,
-                first_scraped TEXT DEFAULT CURRENT_TIMESTAMP,
-                last_scraped TEXT,
-                FOREIGN KEY (server_id) REFERENCES discord_servers(server_id)
-            )
-        ''')
-
-        # Discord users being tracked
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS discord_users (
-                user_id TEXT PRIMARY KEY,
-                username TEXT UNIQUE,
-                display_name TEXT,
-                discriminator TEXT,
-                messages_scraped INTEGER DEFAULT 0,
-                links_found INTEGER DEFAULT 0,
-                first_seen TEXT DEFAULT CURRENT_TIMESTAMP,
-                last_seen TEXT
-            )
-        ''')
-
-        # Discord messages table
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS discord_messages (
-                message_id TEXT PRIMARY KEY,
-                channel_id TEXT,
-                server_id TEXT,
-                user_id TEXT,
-                username TEXT,
-                content TEXT,
-                timestamp TEXT,
-                has_links BOOLEAN DEFAULT FALSE,
-                link_count INTEGER DEFAULT 0,
-                scraped_at TEXT DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (channel_id) REFERENCES discord_channels(channel_id),
-                FOREIGN KEY (server_id) REFERENCES discord_servers(server_id)
-            )
-        ''')
-
-        # Links extracted from messages
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS discord_links (
-                link_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                message_id TEXT,
-                url TEXT,
-                domain TEXT,
-                username TEXT,
-                server_id TEXT,
-                channel_id TEXT,
-                found_at TEXT DEFAULT CURRENT_TIMESTAMP,
-                -- Scraped content fields
-                is_scraped BOOLEAN DEFAULT FALSE,
-                scraped_at TEXT,
-                page_title TEXT,
-                page_description TEXT,
-                page_content TEXT,
-                content_type TEXT,
-                scrape_error TEXT,
-                -- Temporal metadata
-                published_at TEXT,
-                author_name TEXT,
-                -- Content-specific metadata
-                link_type TEXT,  -- 'youtube', 'github', 'article', 'social', 'other'
-                duration_seconds INTEGER,  -- for video content
-                FOREIGN KEY (message_id) REFERENCES discord_messages(message_id),
-                UNIQUE(url, message_id)
-            )
-        ''')
-
-        # Add columns if they don't exist (for existing databases)
-        try:
-            cursor.execute('ALTER TABLE discord_links ADD COLUMN published_at TEXT')
-        except: pass
-        try:
-            cursor.execute('ALTER TABLE discord_links ADD COLUMN author_name TEXT')
-        except: pass
-        try:
-            cursor.execute('ALTER TABLE discord_links ADD COLUMN link_type TEXT')
-        except: pass
-        try:
-            cursor.execute('ALTER TABLE discord_links ADD COLUMN duration_seconds INTEGER')
-        except: pass
-
-        # Vector embeddings for scraped content
+        # Vector embeddings table (handled separately - not in migrations due to extension dependency)
         if self._has_vec:
             try:
-                cursor.execute(f'''
+                self.conn.execute(f'''
                     CREATE VIRTUAL TABLE IF NOT EXISTS link_embeddings USING vec0(
                         link_id INTEGER PRIMARY KEY,
                         embedding float[{self.EMBEDDING_DIM}]
                     )
                 ''')
-                Logger.success("Vector embeddings table created")
+                Logger.success("Vector embeddings table ready")
             except Exception as e:
                 Logger.warning(f"Could not create vector table: {e}")
                 self._has_vec = False
-
-        # Scrape history
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS discord_scrape_history (
-                scrape_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                server_id TEXT,
-                usernames TEXT,
-                started_at TEXT,
-                completed_at TEXT,
-                messages_found INTEGER DEFAULT 0,
-                links_found INTEGER DEFAULT 0,
-                links_scraped INTEGER DEFAULT 0,
-                status TEXT DEFAULT 'running'
-            )
-        ''')
-
-        # Create indexes
-        cursor.execute('CREATE INDEX IF NOT EXISTS idx_discord_links_url ON discord_links(url)')
-        cursor.execute('CREATE INDEX IF NOT EXISTS idx_discord_links_domain ON discord_links(domain)')
-        cursor.execute('CREATE INDEX IF NOT EXISTS idx_discord_links_username ON discord_links(username)')
-        cursor.execute('CREATE INDEX IF NOT EXISTS idx_discord_links_scraped ON discord_links(is_scraped)')
-        cursor.execute('CREATE INDEX IF NOT EXISTS idx_discord_messages_username ON discord_messages(username)')
-        cursor.execute('CREATE INDEX IF NOT EXISTS idx_discord_messages_timestamp ON discord_messages(timestamp)')
 
         self.conn.commit()
         Logger.success(f"Database initialized: {self.db_path}")

@@ -401,13 +401,21 @@ class AINewsDatabase:
     def __init__(self, db_path: Path):
         self.db_path = db_path
         self.conn = None
+        self._has_vec = False
         self._init_database()
 
     def _init_database(self):
-        """Initialize database with VSS support"""
+        """Initialize database with migrations and VSS support"""
+        from db_migrations import migrate_ai_news_db
+
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self.conn = sqlite3.connect(str(self.db_path))
         self.conn.row_factory = sqlite3.Row
+
+        # Run schema migrations
+        migrations_applied = migrate_ai_news_db(self.conn)
+        if migrations_applied > 0:
+            Logger.success(f"Applied {migrations_applied} migration(s)")
 
         # Load sqlite-vec extension
         try:
@@ -422,160 +430,19 @@ class AINewsDatabase:
             Logger.info("Falling back to basic storage without VSS")
             self._has_vec = False
 
-        cursor = self.conn.cursor()
-
-        # Influencers table - track sources
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS influencers (
-                username TEXT PRIMARY KEY,
-                display_name TEXT,
-                category TEXT,
-                is_seed BOOLEAN DEFAULT FALSE,
-                discovery_source TEXT,
-                total_tweets INTEGER DEFAULT 0,
-                ai_relevant_tweets INTEGER DEFAULT 0,
-                total_engagement INTEGER DEFAULT 0,
-                avg_engagement REAL DEFAULT 0.0,
-                mention_count INTEGER DEFAULT 0,
-                quality_score REAL DEFAULT 0.0,
-                last_scraped TEXT,
-                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-                is_active BOOLEAN DEFAULT TRUE
-            )
-        ''')
-
-        # Tweets table - main content storage
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS tweets (
-                tweet_id TEXT PRIMARY KEY,
-                username TEXT,
-                display_name TEXT,
-                text TEXT,
-                timestamp TEXT,
-                url TEXT,
-                replies_count INTEGER DEFAULT 0,
-                retweets_count INTEGER DEFAULT 0,
-                likes_count INTEGER DEFAULT 0,
-                has_media BOOLEAN DEFAULT FALSE,
-                media_type TEXT DEFAULT 'none',
-                is_reply BOOLEAN DEFAULT FALSE,
-                is_ai_relevant BOOLEAN DEFAULT FALSE,
-                ai_relevance_score REAL DEFAULT 0.0,
-                scraped_at TEXT DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (username) REFERENCES influencers(username)
-            )
-        ''')
-
-        # Tweet embeddings - for vector search (if sqlite-vec available)
+        # Vector embeddings table (handled separately - not in migrations due to extension dependency)
         if self._has_vec:
             try:
-                cursor.execute(f'''
+                self.conn.execute(f'''
                     CREATE VIRTUAL TABLE IF NOT EXISTS tweet_embeddings USING vec0(
                         tweet_id TEXT PRIMARY KEY,
                         embedding float[{self.EMBEDDING_DIM}]
                     )
                 ''')
-                Logger.success("Vector embeddings table created")
+                Logger.success("Vector embeddings table ready")
             except Exception as e:
                 Logger.warning(f"Could not create vector table: {e}")
                 self._has_vec = False
-
-        # Topics/Themes table - for trend detection
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS topics (
-                topic_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                name TEXT,
-                keywords TEXT,  -- JSON array of keywords
-                tweet_count INTEGER DEFAULT 0,
-                avg_engagement REAL DEFAULT 0.0,
-                first_seen TEXT,
-                last_seen TEXT,
-                trend_direction TEXT DEFAULT 'stable',  -- rising, stable, declining
-                is_emerging BOOLEAN DEFAULT FALSE,
-                centroid_embedding BLOB  -- Average embedding for the cluster
-            )
-        ''')
-
-        # Topic-Tweet mapping
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS topic_tweets (
-                topic_id INTEGER,
-                tweet_id TEXT,
-                similarity_score REAL,
-                PRIMARY KEY (topic_id, tweet_id),
-                FOREIGN KEY (topic_id) REFERENCES topics(topic_id),
-                FOREIGN KEY (tweet_id) REFERENCES tweets(tweet_id)
-            )
-        ''')
-
-        # Mentioned accounts - for influencer discovery
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS mentioned_accounts (
-                username TEXT PRIMARY KEY,
-                mention_count INTEGER DEFAULT 1,
-                mentioned_by TEXT,  -- JSON array of who mentioned them
-                first_seen TEXT,
-                last_seen TEXT,
-                is_promoted BOOLEAN DEFAULT FALSE  -- Promoted to influencer?
-            )
-        ''')
-
-        # Web articles table - for RSS/HTML news sources
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS web_articles (
-                article_id TEXT PRIMARY KEY,
-                source_id TEXT,
-                source_name TEXT,
-                title TEXT,
-                url TEXT UNIQUE,
-                description TEXT,
-                content TEXT,
-                author TEXT,
-                published_at TEXT,
-                category TEXT,
-                is_ai_relevant BOOLEAN DEFAULT FALSE,
-                ai_relevance_score REAL DEFAULT 0.0,
-                scraped_at TEXT DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (source_id) REFERENCES web_sources(source_id)
-            )
-        ''')
-
-        # Web sources table - track configured sources
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS web_sources (
-                source_id TEXT PRIMARY KEY,
-                name TEXT,
-                url TEXT,
-                source_type TEXT,
-                category TEXT,
-                last_scraped TEXT,
-                articles_count INTEGER DEFAULT 0,
-                is_active BOOLEAN DEFAULT TRUE
-            )
-        ''')
-
-        # Scrape history
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS scrape_history (
-                scrape_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                started_at TEXT,
-                completed_at TEXT,
-                tweets_scraped INTEGER DEFAULT 0,
-                influencers_scraped INTEGER DEFAULT 0,
-                new_influencers_discovered INTEGER DEFAULT 0,
-                topics_detected INTEGER DEFAULT 0,
-                status TEXT DEFAULT 'running'
-            )
-        ''')
-
-        # Create indexes
-        cursor.execute('CREATE INDEX IF NOT EXISTS idx_tweets_timestamp ON tweets(timestamp)')
-        cursor.execute('CREATE INDEX IF NOT EXISTS idx_tweets_username ON tweets(username)')
-        cursor.execute('CREATE INDEX IF NOT EXISTS idx_tweets_ai_relevant ON tweets(is_ai_relevant)')
-        cursor.execute('CREATE INDEX IF NOT EXISTS idx_influencers_score ON influencers(quality_score DESC)')
-        cursor.execute('CREATE INDEX IF NOT EXISTS idx_web_articles_published ON web_articles(published_at)')
-        cursor.execute('CREATE INDEX IF NOT EXISTS idx_web_articles_source ON web_articles(source_id)')
-        cursor.execute('CREATE INDEX IF NOT EXISTS idx_web_articles_ai_relevant ON web_articles(is_ai_relevant)')
 
         self.conn.commit()
         Logger.success(f"Database initialized: {self.db_path}")
