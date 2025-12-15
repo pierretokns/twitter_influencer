@@ -1,4 +1,6 @@
-output_data 
-.uv_cache
-
+output_data/
+.uv_cache/
+__pycache__/
+*.pyc
 .env
+deploy/connection_info.txt
