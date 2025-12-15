@@ -4,15 +4,59 @@
 # ///
 """
 Database Migration System for SQLite
+=====================================
 
 Simple version-based migrations using SQLite's PRAGMA user_version.
 Supports multiple databases with separate migration tracks.
 
-Usage:
-    from db_migrations import migrate_discord_db, migrate_ai_news_db
+CRITICAL: READ BEFORE MODIFYING SCHEMA
+--------------------------------------
+1. NEVER modify existing migrations - only add new ones
+2. ALWAYS bump the version number when adding migrations
+3. TEST migrations on a copy before deploying
 
-    conn = sqlite3.connect('discord_links.db')
+HOW TO ADD A NEW MIGRATION
+--------------------------
+1. Increment the version constant:
+
+   DISCORD_DB_VERSION = 3  # was 2
+
+2. Add SQL statements to the migrations dict:
+
+   DISCORD_MIGRATIONS[3] = [
+       "ALTER TABLE discord_links ADD COLUMN new_field TEXT",
+       "CREATE INDEX IF NOT EXISTS idx_new ON discord_links(new_field)",
+   ]
+
+3. Test:
+
+   python db_migrations.py --check  # verify pending
+   python db_migrations.py          # apply migrations
+
+SQLITE ALTER TABLE LIMITATIONS
+------------------------------
+- CAN: ADD COLUMN, RENAME COLUMN/TABLE
+- CANNOT: DROP COLUMN, CHANGE TYPE, ADD CONSTRAINT
+
+For complex changes, use the copy-and-replace pattern:
+    CREATE TABLE new_table AS SELECT ... FROM old_table;
+    DROP TABLE old_table;
+    ALTER TABLE new_table RENAME TO old_table;
+
+CURRENT VERSIONS
+----------------
+- discord_links: v2 (base schema + temporal metadata)
+- ai_news: v2 (base schema + enhanced web_articles)
+
+USAGE
+-----
+    # In code (auto-runs on class init):
+    from db_migrations import migrate_discord_db
     migrate_discord_db(conn)
+
+    # CLI:
+    python db_migrations.py --check   # status
+    python db_migrations.py           # migrate
 """
 
 import sqlite3
