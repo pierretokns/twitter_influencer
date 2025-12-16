@@ -1,0 +1,474 @@
+# /// script
+# requires-python = ">=3.10"
+# dependencies = [
+#     "requests>=2.31.0",
+#     "python-dotenv>=0.19.0",
+#     "feedparser>=6.0.0",
+# ]
+# ///
+"""
+YouTube Channel RSS Scraper
+===========================
+
+Monitors YouTube channels via RSS feeds for new AI-related videos.
+No API key required - uses free RSS feeds.
+
+Usage:
+    uv run python youtube_channel_scraper.py              # Scrape all channels
+    uv run python youtube_channel_scraper.py --add-channel "UCxxxxxx" "Channel Name"
+    uv run python youtube_channel_scraper.py --list       # List monitored channels
+    uv run python youtube_channel_scraper.py --recent 24  # Videos from last 24 hours
+
+RSS Feed Format:
+    https://www.youtube.com/feeds/videos.xml?channel_id=CHANNEL_ID
+"""
+
+import os
+import sys
+import sqlite3
+import hashlib
+import re
+from datetime import datetime, timedelta
+from pathlib import Path
+from typing import List, Dict, Any, Optional
+from dataclasses import dataclass
+from urllib.parse import urlparse, parse_qs
+
+import feedparser
+import requests
+from dotenv import load_dotenv
+
+load_dotenv()
+
+
+# =============================================================================
+# CONFIGURATION
+# =============================================================================
+
+OUTPUT_DIR = Path("output_data")
+DB_PATH = OUTPUT_DIR / "ai_news.db"
+
+# Seed YouTube channels for AI news monitoring
+# Format: (channel_id, channel_name, category)
+SEED_CHANNELS = [
+    # Official Company Channels
+    ("UCXZCJLdBC09xxGZ6gcdrc6A", "OpenAI", "official"),
+    ("UCP7jMXSY2xbc3KCAE0MHQ-A", "Google DeepMind", "official"),
+    ("UCLXo7UDZvByw2ixzpQCufnA", "Anthropic", "official"),
+    ("UCnUYZLuoy1rq1aVMwx4aTzw", "Google Chrome", "official"),  # For Disco/GenTabs
+
+    # AI News & Updates
+    ("UCuK2Mf5As9OKfWU7XV6yzCg", "Matt Wolfe", "news"),  # @mreflow
+    ("UCNJ1Ymd5yFuUPtn21xtRbbw", "AI Explained", "news"),
+    ("UCbfYPyITQ-7l4upoX8nvctg", "Two Minute Papers", "research"),
+    ("UCZHmQk67mSJgfCCTn7xBfew", "Yannic Kilcher", "research"),
+
+    # Tech News with AI Focus
+    ("UCddiUEpeqJcYeBxX1IVBKvQ", "The Verge", "tech"),
+    ("UC0RhatS1pyxInC00YKjjBqQ", "Fireship", "tech"),  # Popular dev/AI channel
+]
+
+# Keywords to identify AI-relevant videos
+AI_KEYWORDS = [
+    'ai', 'artificial intelligence', 'machine learning', 'ml', 'gpt', 'chatgpt',
+    'llm', 'large language model', 'claude', 'gemini', 'openai', 'anthropic',
+    'deepmind', 'neural', 'deep learning', 'transformer', 'diffusion',
+    'stable diffusion', 'midjourney', 'dall-e', 'sora', 'copilot',
+    'agent', 'agi', 'generative', 'gen ai', 'foundation model',
+    'disco', 'gentabs',  # Google's new product
+]
+
+
+# =============================================================================
+# DATABASE
+# =============================================================================
+
+@dataclass
+class YouTubeVideo:
+    video_id: str
+    channel_id: str
+    channel_name: str
+    title: str
+    description: str
+    url: str
+    published_at: str
+    thumbnail_url: str
+    is_ai_relevant: bool = False
+    ai_relevance_score: float = 0.0
+    scraped_at: str = ""
+
+
+class YouTubeDatabase:
+    def __init__(self, db_path: Path = DB_PATH):
+        self.db_path = db_path
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        self.conn = sqlite3.connect(str(db_path))
+        self.conn.row_factory = sqlite3.Row
+        self._init_tables()
+
+    def _init_tables(self):
+        """Create YouTube-specific tables"""
+        cursor = self.conn.cursor()
+
+        # YouTube channels table
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS youtube_channels (
+                channel_id TEXT PRIMARY KEY,
+                channel_name TEXT,
+                channel_url TEXT,
+                category TEXT,
+                subscriber_count INTEGER,
+                video_count INTEGER DEFAULT 0,
+                ai_relevant_count INTEGER DEFAULT 0,
+                last_scraped TEXT,
+                first_scraped TEXT DEFAULT CURRENT_TIMESTAMP,
+                is_active BOOLEAN DEFAULT TRUE
+            )
+        """)
+
+        # YouTube videos table
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS youtube_videos (
+                video_id TEXT PRIMARY KEY,
+                channel_id TEXT,
+                channel_name TEXT,
+                title TEXT,
+                description TEXT,
+                url TEXT,
+                published_at TEXT,
+                thumbnail_url TEXT,
+                duration_seconds INTEGER,
+                view_count INTEGER,
+                like_count INTEGER,
+                comment_count INTEGER,
+                is_ai_relevant BOOLEAN DEFAULT FALSE,
+                ai_relevance_score REAL DEFAULT 0.0,
+                scraped_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                content_scraped BOOLEAN DEFAULT FALSE,
+                transcript TEXT,
+                FOREIGN KEY (channel_id) REFERENCES youtube_channels(channel_id)
+            )
+        """)
+
+        # Indexes
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_yt_videos_channel ON youtube_videos(channel_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_yt_videos_published ON youtube_videos(published_at)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_yt_videos_ai_relevant ON youtube_videos(is_ai_relevant)")
+
+        self.conn.commit()
+
+    def add_channel(self, channel_id: str, name: str, category: str = "news"):
+        """Add a channel to monitor"""
+        cursor = self.conn.cursor()
+        cursor.execute("""
+            INSERT OR REPLACE INTO youtube_channels (channel_id, channel_name, channel_url, category)
+            VALUES (?, ?, ?, ?)
+        """, (channel_id, name, f"https://www.youtube.com/channel/{channel_id}", category))
+        self.conn.commit()
+        print(f"[+] Added channel: {name} ({channel_id})")
+
+    def get_channels(self, active_only: bool = True) -> List[Dict]:
+        """Get all monitored channels"""
+        cursor = self.conn.cursor()
+        query = "SELECT * FROM youtube_channels"
+        if active_only:
+            query += " WHERE is_active = TRUE"
+        cursor.execute(query)
+        return [dict(row) for row in cursor.fetchall()]
+
+    def save_video(self, video: YouTubeVideo) -> bool:
+        """Save a video, returns True if new"""
+        cursor = self.conn.cursor()
+
+        # Check if exists
+        cursor.execute("SELECT video_id FROM youtube_videos WHERE video_id = ?", (video.video_id,))
+        exists = cursor.fetchone() is not None
+
+        if not exists:
+            cursor.execute("""
+                INSERT INTO youtube_videos (
+                    video_id, channel_id, channel_name, title, description,
+                    url, published_at, thumbnail_url, is_ai_relevant,
+                    ai_relevance_score, scraped_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                video.video_id, video.channel_id, video.channel_name,
+                video.title, video.description, video.url, video.published_at,
+                video.thumbnail_url, video.is_ai_relevant, video.ai_relevance_score,
+                video.scraped_at or datetime.now().isoformat()
+            ))
+            self.conn.commit()
+            return True
+        return False
+
+    def update_channel_stats(self, channel_id: str):
+        """Update channel video counts"""
+        cursor = self.conn.cursor()
+        cursor.execute("""
+            UPDATE youtube_channels SET
+                video_count = (SELECT COUNT(*) FROM youtube_videos WHERE channel_id = ?),
+                ai_relevant_count = (SELECT COUNT(*) FROM youtube_videos WHERE channel_id = ? AND is_ai_relevant = TRUE),
+                last_scraped = ?
+            WHERE channel_id = ?
+        """, (channel_id, channel_id, datetime.now().isoformat(), channel_id))
+        self.conn.commit()
+
+    def get_recent_videos(self, hours: int = 24, ai_only: bool = False) -> List[Dict]:
+        """Get videos from the last N hours"""
+        cursor = self.conn.cursor()
+        cutoff = (datetime.now() - timedelta(hours=hours)).isoformat()
+
+        query = """
+            SELECT * FROM youtube_videos
+            WHERE scraped_at > ?
+        """
+        if ai_only:
+            query += " AND is_ai_relevant = TRUE"
+        query += " ORDER BY published_at DESC"
+
+        cursor.execute(query, (cutoff,))
+        return [dict(row) for row in cursor.fetchall()]
+
+    def close(self):
+        self.conn.close()
+
+
+# =============================================================================
+# RSS SCRAPER
+# =============================================================================
+
+class YouTubeRSSScraper:
+    """Scrape YouTube channels via RSS feeds (no API key needed)"""
+
+    RSS_URL_TEMPLATE = "https://www.youtube.com/feeds/videos.xml?channel_id={channel_id}"
+
+    def __init__(self, db: YouTubeDatabase):
+        self.db = db
+
+    def _calculate_ai_relevance(self, title: str, description: str) -> tuple[bool, float]:
+        """Calculate AI relevance score based on keywords"""
+        text = f"{title} {description}".lower()
+
+        matches = 0
+        for keyword in AI_KEYWORDS:
+            if keyword.lower() in text:
+                matches += 1
+
+        # Score is percentage of keywords found (capped at 1.0)
+        score = min(matches / 5, 1.0)  # 5+ keywords = 100%
+        is_relevant = score >= 0.2 or matches >= 1
+
+        return is_relevant, score
+
+    def _parse_video_id(self, url: str) -> Optional[str]:
+        """Extract video ID from YouTube URL"""
+        parsed = urlparse(url)
+        if 'youtube.com' in parsed.netloc:
+            query = parse_qs(parsed.query)
+            return query.get('v', [None])[0]
+        elif 'youtu.be' in parsed.netloc:
+            return parsed.path.lstrip('/')
+        return None
+
+    def scrape_channel(self, channel_id: str, channel_name: str = "") -> List[YouTubeVideo]:
+        """Scrape videos from a channel's RSS feed"""
+        url = self.RSS_URL_TEMPLATE.format(channel_id=channel_id)
+
+        try:
+            feed = feedparser.parse(url)
+
+            if feed.bozo and not feed.entries:
+                print(f"[!] Failed to parse feed for {channel_name or channel_id}")
+                return []
+
+            videos = []
+            for entry in feed.entries:
+                video_id = entry.get('yt_videoid', self._parse_video_id(entry.link))
+                if not video_id:
+                    continue
+
+                title = entry.get('title', '')
+                description = entry.get('summary', '')
+
+                is_relevant, score = self._calculate_ai_relevance(title, description)
+
+                # Get thumbnail
+                thumbnail = ""
+                if 'media_thumbnail' in entry:
+                    thumbnail = entry.media_thumbnail[0].get('url', '')
+
+                video = YouTubeVideo(
+                    video_id=video_id,
+                    channel_id=channel_id,
+                    channel_name=channel_name or feed.feed.get('title', ''),
+                    title=title,
+                    description=description[:1000] if description else "",
+                    url=entry.link,
+                    published_at=entry.get('published', ''),
+                    thumbnail_url=thumbnail,
+                    is_ai_relevant=is_relevant,
+                    ai_relevance_score=score,
+                    scraped_at=datetime.now().isoformat()
+                )
+                videos.append(video)
+
+            return videos
+
+        except Exception as e:
+            print(f"[!] Error scraping {channel_name or channel_id}: {e}")
+            return []
+
+    def scrape_all_channels(self) -> Dict[str, int]:
+        """Scrape all monitored channels"""
+        channels = self.db.get_channels()
+
+        if not channels:
+            print("[!] No channels to scrape. Adding seed channels...")
+            for channel_id, name, category in SEED_CHANNELS:
+                self.db.add_channel(channel_id, name, category)
+            channels = self.db.get_channels()
+
+        results = {"total": 0, "new": 0, "ai_relevant": 0}
+
+        for channel in channels:
+            channel_id = channel['channel_id']
+            channel_name = channel['channel_name']
+
+            print(f"[*] Scraping {channel_name}...")
+            videos = self.scrape_channel(channel_id, channel_name)
+
+            new_count = 0
+            ai_count = 0
+            for video in videos:
+                if self.db.save_video(video):
+                    new_count += 1
+                    if video.is_ai_relevant:
+                        ai_count += 1
+                        print(f"    [AI] {video.title[:60]}...")
+
+            self.db.update_channel_stats(channel_id)
+
+            results["total"] += len(videos)
+            results["new"] += new_count
+            results["ai_relevant"] += ai_count
+
+            if new_count > 0:
+                print(f"    Found {new_count} new videos ({ai_count} AI-relevant)")
+
+        return results
+
+
+# =============================================================================
+# CHANNEL DISCOVERY
+# =============================================================================
+
+def extract_channel_id_from_url(url: str) -> Optional[str]:
+    """Extract channel ID from various YouTube URL formats"""
+    # Direct channel ID URL
+    match = re.search(r'youtube\.com/channel/([a-zA-Z0-9_-]{24})', url)
+    if match:
+        return match.group(1)
+
+    # Handle URL - need to fetch page to get channel ID
+    if '/c/' in url or '/@' in url or '/user/' in url:
+        try:
+            resp = requests.get(url, timeout=10)
+            match = re.search(r'"channelId":"([a-zA-Z0-9_-]{24})"', resp.text)
+            if match:
+                return match.group(1)
+        except:
+            pass
+
+    return None
+
+
+# =============================================================================
+# CLI
+# =============================================================================
+
+def main():
+    import argparse
+
+    parser = argparse.ArgumentParser(description='YouTube Channel RSS Scraper')
+    parser.add_argument('--add-channel', nargs=2, metavar=('ID', 'NAME'),
+                       help='Add a channel to monitor')
+    parser.add_argument('--add-url', type=str,
+                       help='Add channel by URL (auto-extracts ID)')
+    parser.add_argument('--list', action='store_true',
+                       help='List monitored channels')
+    parser.add_argument('--recent', type=int, metavar='HOURS',
+                       help='Show videos from last N hours')
+    parser.add_argument('--ai-only', action='store_true',
+                       help='Only show AI-relevant videos')
+    parser.add_argument('--seed', action='store_true',
+                       help='Add seed channels')
+
+    args = parser.parse_args()
+
+    db = YouTubeDatabase()
+
+    try:
+        if args.add_channel:
+            channel_id, name = args.add_channel
+            db.add_channel(channel_id, name)
+            return
+
+        if args.add_url:
+            channel_id = extract_channel_id_from_url(args.add_url)
+            if channel_id:
+                name = input("Channel name: ").strip() or "Unknown"
+                db.add_channel(channel_id, name)
+            else:
+                print("[!] Could not extract channel ID from URL")
+            return
+
+        if args.list:
+            channels = db.get_channels(active_only=False)
+            print(f"\nMonitored Channels ({len(channels)}):")
+            print("-" * 60)
+            for ch in channels:
+                status = "active" if ch['is_active'] else "inactive"
+                print(f"  {ch['channel_name']:<30} {ch['category']:<10} [{status}]")
+                print(f"    ID: {ch['channel_id']}")
+                print(f"    Videos: {ch['video_count']} total, {ch['ai_relevant_count']} AI-relevant")
+            return
+
+        if args.recent:
+            videos = db.get_recent_videos(hours=args.recent, ai_only=args.ai_only)
+            print(f"\nVideos from last {args.recent} hours ({len(videos)} found):")
+            print("-" * 60)
+            for v in videos:
+                ai_tag = "[AI] " if v['is_ai_relevant'] else ""
+                print(f"  {ai_tag}{v['title'][:50]}...")
+                print(f"    Channel: {v['channel_name']}")
+                print(f"    URL: {v['url']}")
+                print()
+            return
+
+        if args.seed:
+            print("Adding seed channels...")
+            for channel_id, name, category in SEED_CHANNELS:
+                db.add_channel(channel_id, name, category)
+            return
+
+        # Default: scrape all channels
+        print("=" * 60)
+        print(f"YouTube RSS Scraper - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        print("=" * 60)
+
+        scraper = YouTubeRSSScraper(db)
+        results = scraper.scrape_all_channels()
+
+        print("\n" + "=" * 60)
+        print("SUMMARY")
+        print("=" * 60)
+        print(f"  Total videos checked: {results['total']}")
+        print(f"  New videos found: {results['new']}")
+        print(f"  AI-relevant: {results['ai_relevant']}")
+
+    finally:
+        db.close()
+
+
+if __name__ == "__main__":
+    main()

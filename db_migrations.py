@@ -272,7 +272,7 @@ def migrate_discord_db(conn: sqlite3.Connection) -> int:
 # AI NEWS DATABASE MIGRATIONS
 # =============================================================================
 
-AI_NEWS_DB_VERSION = 2
+AI_NEWS_DB_VERSION = 3
 
 AI_NEWS_MIGRATIONS: Dict[int, List[str]] = {
     # Version 1: Initial schema
@@ -422,6 +422,70 @@ AI_NEWS_MIGRATIONS: Dict[int, List[str]] = {
         "ALTER TABLE web_articles ADD COLUMN link_type TEXT",
         "ALTER TABLE web_articles ADD COLUMN author_name TEXT",
         "ALTER TABLE web_articles ADD COLUMN duration_seconds INTEGER",
+    ],
+
+    # Version 3: Tournament results tracking
+    3: [
+        # Tournament runs table - one row per tournament execution
+        """
+        CREATE TABLE IF NOT EXISTS tournament_runs (
+            run_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            started_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            completed_at TEXT,
+            num_variants INTEGER,
+            num_rounds INTEGER,
+            total_debates INTEGER DEFAULT 0,
+            winner_variant_id TEXT,
+            winner_content TEXT,
+            winner_elo REAL,
+            winner_qe_score INTEGER,
+            was_published BOOLEAN DEFAULT FALSE,
+            published_at TEXT,
+            status TEXT DEFAULT 'running'
+        )
+        """,
+
+        # Tournament variants - all posts generated for a tournament
+        """
+        CREATE TABLE IF NOT EXISTS tournament_variants (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_id INTEGER,
+            variant_id TEXT,
+            hook_style TEXT,
+            content TEXT,
+            elo_rating REAL DEFAULT 1000,
+            qe_score INTEGER,
+            qe_feedback TEXT,
+            wins INTEGER DEFAULT 0,
+            losses INTEGER DEFAULT 0,
+            generation INTEGER DEFAULT 1,
+            evolved_from TEXT,
+            evolution_feedback TEXT,
+            is_duplicate BOOLEAN DEFAULT FALSE,
+            final_rank INTEGER,
+            FOREIGN KEY (run_id) REFERENCES tournament_runs(run_id)
+        )
+        """,
+
+        # Tournament debates - individual matchups
+        """
+        CREATE TABLE IF NOT EXISTS tournament_debates (
+            debate_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_id INTEGER,
+            round_num INTEGER,
+            variant_a_id TEXT,
+            variant_b_id TEXT,
+            winner_id TEXT,
+            reasoning TEXT,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (run_id) REFERENCES tournament_runs(run_id)
+        )
+        """,
+
+        # Indexes for tournament tables
+        "CREATE INDEX IF NOT EXISTS idx_tournament_variants_run ON tournament_variants(run_id)",
+        "CREATE INDEX IF NOT EXISTS idx_tournament_debates_run ON tournament_debates(run_id)",
+        "CREATE INDEX IF NOT EXISTS idx_tournament_runs_status ON tournament_runs(status)",
     ],
 }
 

@@ -388,6 +388,7 @@ def find_high_value_content() -> List[Dict]:
 def run_all_scrapers(
     run_discord: bool = True,
     run_twitter: bool = True,
+    run_youtube: bool = True,
     dry_run: bool = False
 ) -> List[ScrapeResult]:
     """Run all scrapers and return results"""
@@ -398,6 +399,8 @@ def run_all_scrapers(
         scrapers.append(("Discord Links", ["uv", "run", "python", "discord_link_scraper.py"]))
     if run_twitter:
         scrapers.append(("AI News (Twitter)", ["uv", "run", "python", "ai_news_scraper.py"]))
+    if run_youtube:
+        scrapers.append(("YouTube Channels", ["uv", "run", "python", "youtube_channel_scraper.py"]))
 
     if dry_run:
         Logger.info("DRY RUN - would execute:")
@@ -418,6 +421,7 @@ def main():
     parser = argparse.ArgumentParser(description="Unified Scraper Runner")
     parser.add_argument("--discord", action="store_true", help="Run Discord scraper only")
     parser.add_argument("--twitter", action="store_true", help="Run Twitter/news scraper only")
+    parser.add_argument("--youtube", action="store_true", help="Run YouTube channel scraper only")
     parser.add_argument("--dedup", action="store_true", help="Run deduplication only")
     parser.add_argument("--dry-run", action="store_true", help="Show what would run")
     parser.add_argument("--no-alert", action="store_true", help="Disable alerts")
@@ -432,13 +436,15 @@ def main():
     print("="*60)
 
     # Determine what to run
-    run_discord = args.discord or (not args.discord and not args.twitter and not args.dedup)
-    run_twitter = args.twitter or (not args.discord and not args.twitter and not args.dedup)
+    any_specific = args.discord or args.twitter or args.youtube or args.dedup
+    run_discord = args.discord or not any_specific
+    run_twitter = args.twitter or not any_specific
+    run_youtube = args.youtube or not any_specific
 
     # Run scrapers
     results = []
     if not args.dedup:
-        results = run_all_scrapers(run_discord, run_twitter, args.dry_run)
+        results = run_all_scrapers(run_discord, run_twitter, run_youtube, args.dry_run)
 
         # Generate alerts for failures
         for r in results:

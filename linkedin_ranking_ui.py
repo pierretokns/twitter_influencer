@@ -35,6 +35,125 @@ from dotenv import load_dotenv
 
 app = Flask(__name__)
 
+
+# =============================================================================
+# TOURNAMENT PERSISTENCE
+# =============================================================================
+
+def save_tournament_to_db(
+    db_path: Path,
+    num_variants: int,
+    num_rounds: int,
+    ranked_variants: list,
+    debates: list = None
+) -> int:
+    """
+    Save tournament results to database.
+
+    Returns the run_id of the saved tournament.
+    """
+    from db_migrations import migrate_ai_news_db
+
+    conn = sqlite3.connect(str(db_path))
+    conn.row_factory = sqlite3.Row
+
+    # Ensure tables exist (run migrations)
+    migrate_ai_news_db(conn)
+
+    cursor = conn.cursor()
+
+    try:
+        # Get winner info
+        winner = ranked_variants[0] if ranked_variants else None
+
+        # Insert tournament run
+        cursor.execute("""
+            INSERT INTO tournament_runs (
+                started_at, completed_at, num_variants, num_rounds,
+                total_debates, winner_variant_id, winner_content,
+                winner_elo, winner_qe_score, status
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            datetime.now().isoformat(),
+            datetime.now().isoformat(),
+            num_variants,
+            num_rounds,
+            len(debates) if debates else 0,
+            winner.variant_id if winner else None,
+            winner.content if winner else None,
+            winner.elo_rating if winner else None,
+            winner.qe_score if winner else None,
+            'complete'
+        ))
+
+        run_id = cursor.lastrowid
+
+        # Insert all variants with their final rankings
+        for rank, v in enumerate(ranked_variants, 1):
+            cursor.execute("""
+                INSERT INTO tournament_variants (
+                    run_id, variant_id, hook_style, content, elo_rating,
+                    qe_score, qe_feedback, wins, losses, generation,
+                    evolved_from, evolution_feedback, is_duplicate, final_rank
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                run_id,
+                v.variant_id,
+                v.hook_style,
+                v.content,
+                v.elo_rating,
+                v.qe_score,
+                v.qe_feedback,
+                v.wins,
+                v.losses,
+                v.generation,
+                v.evolved_from,
+                v.evolution_feedback,
+                v.is_duplicate,
+                rank
+            ))
+
+        # Insert debates
+        if debates:
+            for debate in debates:
+                cursor.execute("""
+                    INSERT INTO tournament_debates (
+                        run_id, round_num, variant_a_id, variant_b_id,
+                        winner_id, reasoning
+                    ) VALUES (?, ?, ?, ?, ?, ?)
+                """, (
+                    run_id,
+                    debate.get('round', 1),
+                    debate.get('a'),
+                    debate.get('b'),
+                    debate.get('winner'),
+                    debate.get('reasoning', '')
+                ))
+
+        conn.commit()
+        print(f"[DB] Saved tournament run #{run_id} with {len(ranked_variants)} variants")
+        return run_id
+
+    except Exception as e:
+        conn.rollback()
+        print(f"[DB ERROR] Failed to save tournament: {e}")
+        raise
+    finally:
+        conn.close()
+
+
+def mark_tournament_published(db_path: Path, run_id: int):
+    """Mark a tournament run as published"""
+    conn = sqlite3.connect(str(db_path))
+    cursor = conn.cursor()
+    cursor.execute("""
+        UPDATE tournament_runs
+        SET was_published = TRUE, published_at = ?
+        WHERE run_id = ?
+    """, (datetime.now().isoformat(), run_id))
+    conn.commit()
+    conn.close()
+
 # Global state - Enhanced for Google Co-Scientist inspired pipeline
 ranking_state = {
     "status": "idle",
@@ -426,6 +545,8 @@ HTML_TEMPLATE = '''
                     <option value="3">3</option>
                     <option value="5" selected>5</option>
                     <option value="7">7</option>
+                    <option value="10">10</option>
+                    <option value="15">15</option>
                 </select>
             </div>
             <div style="display:flex;gap:0.5rem;align-items:center;">
@@ -434,6 +555,8 @@ HTML_TEMPLATE = '''
                     <option value="2">2</option>
                     <option value="3" selected>3</option>
                     <option value="5">5</option>
+                    <option value="7">7</option>
+                    <option value="10">10</option>
                 </select>
             </div>
             <div class="status-badge">
@@ -1008,6 +1131,21 @@ def start_tournament():
 
             ranking_state["status"] = "complete"
             ranking_state["phase"] = "Pipeline complete!"
+
+            # Save tournament results to database
+            try:
+                run_id = save_tournament_to_db(
+                    db_path=ai_news_db,
+                    num_variants=num_variants,
+                    num_rounds=num_rounds,
+                    ranked_variants=ranked_variants,
+                    debates=ranking_state.get("debates", [])
+                )
+                ranking_state["run_id"] = run_id
+                log(f"Tournament saved to database (run #{run_id})", "success")
+            except Exception as db_err:
+                log(f"Warning: Could not save to database: {db_err}", "error")
+
             log("="*50, "step")
             log("FINAL RANKINGS", "step")
             for i, v in enumerate(ranked_variants[:3]):
@@ -1069,6 +1207,15 @@ def publish():
         autopilot.close()
 
         if success:
+            # Mark tournament as published in database
+            run_id = ranking_state.get("run_id")
+            if run_id:
+                try:
+                    ai_news_db = script_dir / 'output_data' / 'ai_news.db'
+                    mark_tournament_published(ai_news_db, run_id)
+                    log(f"Tournament #{run_id} marked as published", "success")
+                except Exception as e:
+                    log(f"Warning: Could not update publish status: {e}", "error")
             return jsonify({"success": True, "message": "Posted successfully to LinkedIn!"})
         else:
             return jsonify({"success": False, "message": "Failed to publish"})
