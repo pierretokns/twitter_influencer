@@ -18,3 +18,10 @@ fi
 
 cd /home/appuser/twitter_influencer
 /home/appuser/.local/bin/uv run python run_scrapers.py --no-alert >> /home/appuser/logs/scrape.log 2>&1
+
+# Trigger tournament generation after scraping (15 variants, 10 rounds)
+echo "[$(date)] Starting tournament..." >> /home/appuser/logs/scrape.log
+curl -s -X POST "http://localhost:5001/api/start" \
+    -H "Content-Type: application/json" \
+    -d '{"variants": 15, "rounds": 10}' >> /home/appuser/logs/scrape.log 2>&1
+echo "" >> /home/appuser/logs/scrape.log
