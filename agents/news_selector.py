@@ -130,11 +130,28 @@ class NewsSelector:
         except Exception as e:
             print(f"[NewsSelector] Error fetching articles: {e}")
 
+        # Get YouTube videos
+        youtube = []
+        try:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT video_id as id, title as text, channel_name as username,
+                       published_at as timestamp, COALESCE(view_count, 0) as likes_count,
+                       'youtube' as source_type, url
+                FROM youtube_videos
+                WHERE is_ai_relevant = TRUE
+                ORDER BY published_at DESC
+                LIMIT ?
+            ''', (limit,))
+            youtube = [dict(row) for row in cursor.fetchall()]
+        except Exception as e:
+            print(f"[NewsSelector] Error fetching YouTube videos: {e}")
+
         conn.close()
 
-        # Combine
-        combined = tweets + articles
-        print(f"[NewsSelector] Fetched {len(tweets)} tweets + {len(articles)} articles = {len(combined)} total")
+        # Combine all sources (Discord links excluded - they're just pointers to web content)
+        combined = tweets + articles + youtube
+        print(f"[NewsSelector] Fetched {len(tweets)} tweets + {len(articles)} articles + {len(youtube)} YouTube = {len(combined)} total")
         return combined
 
     def _cosine_similarity_matrix(self, embeddings: np.ndarray) -> np.ndarray:
@@ -261,19 +278,26 @@ class NewsSelector:
 
         # Fallback: simple interleaving of sources
         print("[NewsSelector] Falling back to source-based selection")
-        tweets = [n for n in all_news if n.get('source_type') == 'twitter']
-        articles = [n for n in all_news if n.get('source_type') == 'web']
+        by_source = {
+            'twitter': [n for n in all_news if n.get('source_type') == 'twitter'],
+            'web': [n for n in all_news if n.get('source_type') == 'web'],
+            'youtube': [n for n in all_news if n.get('source_type') == 'youtube'],
+        }
 
         selected = []
-        t_idx, a_idx = 0, 0
+        indices = {k: 0 for k in by_source}
+        source_order = ['twitter', 'youtube', 'web']
+
         while len(selected) < limit:
-            if t_idx < len(tweets):
-                selected.append(tweets[t_idx])
-                t_idx += 1
-            if len(selected) < limit and a_idx < len(articles):
-                selected.append(articles[a_idx])
-                a_idx += 1
-            if t_idx >= len(tweets) and a_idx >= len(articles):
+            added = False
+            for source in source_order:
+                items = by_source[source]
+                idx = indices[source]
+                if idx < len(items) and len(selected) < limit:
+                    selected.append(items[idx])
+                    indices[source] += 1
+                    added = True
+            if not added:
                 break
 
         return selected[:limit]

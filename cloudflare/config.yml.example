@@ -1,0 +1,18 @@
+# Cloudflare Tunnel Configuration
+# Copy this to ~/.cloudflared/config.yml on the server
+# Replace YOUR_TUNNEL_ID with actual tunnel ID from `cloudflared tunnel create`
+
+tunnel: YOUR_TUNNEL_ID
+credentials-file: /home/appuser/.cloudflared/YOUR_TUNNEL_ID.json
+
+ingress:
+  # Tournament Dashboard (post generation & ranking)
+  - hostname: tournament.yourdomain.com
+    service: http://localhost:5001
+
+  # LinkedIn Feed (daily winning posts viewer)
+  - hostname: feed.yourdomain.com
+    service: http://localhost:5002
+
+  # Catch-all rule (required)
+  - service: http_status:404

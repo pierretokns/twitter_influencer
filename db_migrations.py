@@ -272,7 +272,7 @@ def migrate_discord_db(conn: sqlite3.Connection) -> int:
 # AI NEWS DATABASE MIGRATIONS
 # =============================================================================
 
-AI_NEWS_DB_VERSION = 3
+AI_NEWS_DB_VERSION = 5
 
 AI_NEWS_MIGRATIONS: Dict[int, List[str]] = {
     # Version 1: Initial schema
@@ -486,6 +486,51 @@ AI_NEWS_MIGRATIONS: Dict[int, List[str]] = {
         "CREATE INDEX IF NOT EXISTS idx_tournament_variants_run ON tournament_variants(run_id)",
         "CREATE INDEX IF NOT EXISTS idx_tournament_debates_run ON tournament_debates(run_id)",
         "CREATE INDEX IF NOT EXISTS idx_tournament_runs_status ON tournament_runs(status)",
+    ],
+
+    # Version 4: Post likes and user engagement tracking
+    4: [
+        # Post likes table - tracks user likes on tournament winners
+        """
+        CREATE TABLE IF NOT EXISTS post_likes (
+            like_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_id INTEGER,
+            user_id TEXT DEFAULT 'anonymous',
+            user_name TEXT,
+            liked_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (run_id) REFERENCES tournament_runs(run_id),
+            UNIQUE(run_id, user_id)
+        )
+        """,
+
+        # Add like_count to tournament_runs for quick access
+        "ALTER TABLE tournament_runs ADD COLUMN like_count INTEGER DEFAULT 0",
+
+        # Index for quick like lookups
+        "CREATE INDEX IF NOT EXISTS idx_post_likes_run ON post_likes(run_id)",
+    ],
+
+    # Version 5: Source traceability - track which news items were used for each post
+    5: [
+        # Tournament sources table - links posts to source news items
+        """
+        CREATE TABLE IF NOT EXISTS tournament_sources (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_id INTEGER,
+            source_type TEXT,
+            source_id TEXT,
+            source_text TEXT,
+            source_url TEXT,
+            source_author TEXT,
+            source_timestamp TEXT,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (run_id) REFERENCES tournament_runs(run_id)
+        )
+        """,
+
+        # Index for quick source lookups by run
+        "CREATE INDEX IF NOT EXISTS idx_tournament_sources_run ON tournament_sources(run_id)",
+        "CREATE INDEX IF NOT EXISTS idx_tournament_sources_type ON tournament_sources(source_type)",
     ],
 }
 

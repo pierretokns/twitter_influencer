@@ -4,3 +4,5 @@ __pycache__/
 *.pyc
 .env
 deploy/connection_info.txt
+cloudflare/*.json
+cloudflare/config.yml

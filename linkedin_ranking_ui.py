@@ -45,10 +45,17 @@ def save_tournament_to_db(
     num_variants: int,
     num_rounds: int,
     ranked_variants: list,
-    debates: list = None
+    debates: list = None,
+    news_sources: list = None
 ) -> int:
     """
     Save tournament results to database.
+
+    Saves:
+    - Tournament run metadata
+    - All variants with rankings
+    - Debate history
+    - Source news items used (for traceability)
 
     Returns the run_id of the saved tournament.
     """
@@ -130,8 +137,38 @@ def save_tournament_to_db(
                     debate.get('reasoning', '')
                 ))
 
+        # Insert source news items for traceability
+        if news_sources:
+            for item in news_sources:
+                source_type = item.get('source_type', 'unknown')
+                source_id = item.get('id', '')
+
+                # Build URL based on source type
+                source_url = item.get('url', '')
+                if not source_url:
+                    if source_type == 'twitter':
+                        source_url = f"https://x.com/{item.get('username', '')}/status/{source_id}"
+                    elif source_type == 'youtube':
+                        source_url = f"https://youtube.com/watch?v={source_id}"
+
+                cursor.execute("""
+                    INSERT INTO tournament_sources (
+                        run_id, source_type, source_id, source_text,
+                        source_url, source_author, source_timestamp
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    run_id,
+                    source_type,
+                    str(source_id),
+                    item.get('text', '')[:500],  # Truncate long text
+                    source_url,
+                    item.get('username', ''),
+                    item.get('timestamp', '')
+                ))
+
         conn.commit()
-        print(f"[DB] Saved tournament run #{run_id} with {len(ranked_variants)} variants")
+        sources_count = len(news_sources) if news_sources else 0
+        print(f"[DB] Saved tournament run #{run_id} with {len(ranked_variants)} variants and {sources_count} sources")
         return run_id
 
     except Exception as e:
@@ -1134,15 +1171,20 @@ def start_tournament():
 
             # Save tournament results to database
             try:
+                # Get news items used from ranking system
+                news_items_used = ranking_system.pipeline_state.get("news_items", [])
+
                 run_id = save_tournament_to_db(
                     db_path=ai_news_db,
                     num_variants=num_variants,
                     num_rounds=num_rounds,
                     ranked_variants=ranked_variants,
-                    debates=ranking_state.get("debates", [])
+                    debates=ranking_state.get("debates", []),
+                    news_sources=news_items_used
                 )
                 ranking_state["run_id"] = run_id
-                log(f"Tournament saved to database (run #{run_id})", "success")
+                ranking_state["news_items"] = news_items_used  # Store for UI
+                log(f"Tournament saved to database (run #{run_id}) with {len(news_items_used)} source links", "success")
             except Exception as db_err:
                 log(f"Warning: Could not save to database: {db_err}", "error")
 
