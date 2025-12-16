@@ -65,7 +65,44 @@ echo "appuser:YOUR_SECURE_PASSWORD" | chpasswd
 usermod -aG sudo appuser
 ```
 
-## Step 3: Setup VNC for Remote Desktop Access
+## Step 3: Setup Remote Desktop Access
+
+You have two options for remote desktop access:
+
+### Option A: Chrome Remote Desktop (Recommended)
+
+Chrome Remote Desktop is easier to setup and more reliable:
+
+```bash
+# Switch to appuser
+su - appuser
+
+# Download and install Chrome Remote Desktop
+wget https://dl.google.com/linux/direct/chrome-remote-desktop_current_amd64.deb
+sudo dpkg -i chrome-remote-desktop_current_amd64.deb
+sudo apt --fix-broken install -y
+
+# Configure Chrome Remote Desktop session
+cat > ~/.chrome-remote-desktop-session << 'EOF'
+#!/bin/bash
+exec /usr/bin/xfce4-session
+EOF
+chmod +x ~/.chrome-remote-desktop-session
+
+# Add user to chrome-remote-desktop group
+sudo usermod -aG chrome-remote-desktop appuser
+```
+
+Then on your local machine:
+1. Go to https://remotedesktop.google.com/headless
+2. Click "Set up via SSH"
+3. Copy the Debian Linux command
+4. Run it on the server
+5. Access via https://remotedesktop.google.com
+
+**Note:** Chrome Remote Desktop uses DISPLAY=:20
+
+### Option B: VNC Server
 
 ```bash
 # Switch to appuser
@@ -91,22 +128,16 @@ vncserver :1 -geometry 1920x1080 -depth 24
 # VNC will be available on port 5901
 ```
 
+**Note:** VNC uses DISPLAY=:1
+
 ### Connect to VNC
 
-**Option A: SSH Tunnel (Secure - Recommended)**
+**SSH Tunnel (Secure - Recommended)**
 ```bash
 # On your LOCAL machine, create SSH tunnel:
 ssh -L 5901:localhost:5901 appuser@YOUR_SERVER_IP
 
 # Then connect VNC client to: localhost:5901
-```
-
-**Option B: Direct Connection (Less secure)**
-```bash
-# On server, allow VNC port through firewall
-sudo ufw allow 5901/tcp
-
-# Connect VNC client to: YOUR_SERVER_IP:5901
 ```
 
 **VNC Clients:**
