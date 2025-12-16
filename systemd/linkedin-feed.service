@@ -1,0 +1,17 @@
+[Unit]
+Description=LinkedIn Feed Clone - Daily Winners
+After=network.target
+
+[Service]
+Type=simple
+User=appuser
+Group=appuser
+WorkingDirectory=/home/appuser/twitter_influencer
+Environment=PATH=/home/appuser/.local/bin:/usr/bin:/usr/local/bin
+Environment=HOME=/home/appuser
+ExecStart=/home/appuser/.local/bin/uv run python linkedin_feed.py
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
