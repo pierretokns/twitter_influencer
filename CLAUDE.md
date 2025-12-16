@@ -19,12 +19,37 @@
 ## Architecture
 
 ```
+run_scrapers.py         # Unified runner: all scrapers + dedup + alerts
 ai_news_scraper.py      # Twitter/X scraping + web articles → ai_news.db
 discord_link_scraper.py # Discord links → content scraping → discord_links.db
 db_migrations.py        # Schema versioning (PRAGMA user_version)
 linkedin_autopilot.py   # LinkedIn posting automation
 query_news.py           # Vector similarity search CLI
 ```
+
+## Running Scrapers
+
+```bash
+uv run python run_scrapers.py              # All scrapers + dedup + alerts
+uv run python run_scrapers.py --discord    # Discord only
+uv run python run_scrapers.py --twitter    # Twitter only
+uv run python run_scrapers.py --dedup      # Just deduplication
+uv run python run_scrapers.py --dry-run    # Preview what would run
+```
+
+Set `ALERT_WEBHOOK_URL` in `.env` for Discord/Slack notifications.
+
+## Remote Server (Hetzner)
+
+Server: `157.90.125.102` (port 49222) - requires VPN or whitelisted IP
+
+Cron schedule (should be in appuser crontab):
+```
+0 8 * * *  ~/run_scraper.sh   # 8am UTC
+0 20 * * * ~/run_scraper.sh   # 8pm UTC
+```
+
+Access via Hetzner Console if SSH blocked: https://console.hetzner.cloud/
 
 ## Content Scraping Pipeline
 
