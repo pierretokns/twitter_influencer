@@ -433,11 +433,21 @@ HTML_TEMPLATE = '''
             margin: 0;
         }
         .source-item {
+            display: block;
             padding: 10px 12px;
             margin-bottom: 8px;
             background: white;
             border-radius: 8px;
             border: 1px solid var(--border);
+            text-decoration: none;
+            color: inherit;
+            transition: all 0.15s ease;
+            cursor: pointer;
+        }
+        .source-item:hover {
+            border-color: var(--linkedin-blue);
+            box-shadow: 0 2px 8px rgba(0, 102, 194, 0.15);
+            transform: translateY(-1px);
         }
         .source-item:last-child { margin-bottom: 0; }
         .source-header {
@@ -458,16 +468,25 @@ HTML_TEMPLATE = '''
         .source-type.twitter { background: #1DA1F2; }
         .source-type.youtube { background: #FF0000; }
         .source-type.web { background: #34A853; }
+        .source-type.discord { background: #5865F2; }
         .source-author {
             font-weight: 600;
             font-size: 13px;
             color: var(--text-primary);
         }
+        .source-url {
+            font-size: 11px;
+            color: var(--text-tertiary);
+            margin-left: auto;
+            max-width: 200px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
         .source-text {
             font-size: 13px;
             color: var(--text-secondary);
             line-height: 1.4;
-            margin-bottom: 6px;
             display: -webkit-box;
             -webkit-line-clamp: 2;
             -webkit-box-orient: vertical;
@@ -984,14 +1003,14 @@ HTML_TEMPLATE = '''
                             panel.innerHTML = `
                                 <ul class="source-list">
                                     ${data.sources.map(s => `
-                                        <li class="source-item">
+                                        <a href="${s.source_url || '#'}" target="_blank" class="source-item" ${!s.source_url ? 'style="pointer-events:none"' : ''}>
                                             <div class="source-header">
                                                 <span class="source-type ${s.source_type}">${s.source_type}</span>
                                                 <span class="source-author">@${s.source_author || 'unknown'}</span>
+                                                <span class="source-url">${s.source_url ? new URL(s.source_url).hostname : ''}</span>
                                             </div>
                                             <div class="source-text">${escapeHtml(s.source_text || '')}</div>
-                                            ${s.source_url ? `<a href="${s.source_url}" target="_blank" class="source-link">View source</a>` : ''}
-                                        </li>
+                                        </a>
                                     `).join('')}
                                 </ul>
                             `;

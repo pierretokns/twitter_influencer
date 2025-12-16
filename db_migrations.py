@@ -46,7 +46,7 @@ For complex changes, use the copy-and-replace pattern:
 CURRENT VERSIONS
 ----------------
 - discord_links: v2 (base schema + temporal metadata)
-- ai_news: v2 (base schema + enhanced web_articles)
+- ai_news: v6 (base + web_articles + tournaments + likes + sources + youtube)
 
 USAGE
 -----
@@ -272,7 +272,7 @@ def migrate_discord_db(conn: sqlite3.Connection) -> int:
 # AI NEWS DATABASE MIGRATIONS
 # =============================================================================
 
-AI_NEWS_DB_VERSION = 5
+AI_NEWS_DB_VERSION = 6
 
 AI_NEWS_MIGRATIONS: Dict[int, List[str]] = {
     # Version 1: Initial schema
@@ -531,6 +531,57 @@ AI_NEWS_MIGRATIONS: Dict[int, List[str]] = {
         # Index for quick source lookups by run
         "CREATE INDEX IF NOT EXISTS idx_tournament_sources_run ON tournament_sources(run_id)",
         "CREATE INDEX IF NOT EXISTS idx_tournament_sources_type ON tournament_sources(source_type)",
+    ],
+
+    # Version 6: YouTube channel/video tracking + source relevance
+    6: [
+        # YouTube channels table
+        """
+        CREATE TABLE IF NOT EXISTS youtube_channels (
+            channel_id TEXT PRIMARY KEY,
+            channel_name TEXT,
+            channel_url TEXT,
+            category TEXT,
+            subscriber_count INTEGER,
+            video_count INTEGER DEFAULT 0,
+            ai_relevant_count INTEGER DEFAULT 0,
+            last_scraped TEXT,
+            first_scraped TEXT DEFAULT CURRENT_TIMESTAMP,
+            is_active BOOLEAN DEFAULT TRUE
+        )
+        """,
+
+        # YouTube videos table
+        """
+        CREATE TABLE IF NOT EXISTS youtube_videos (
+            video_id TEXT PRIMARY KEY,
+            channel_id TEXT,
+            channel_name TEXT,
+            title TEXT,
+            description TEXT,
+            url TEXT,
+            published_at TEXT,
+            thumbnail_url TEXT,
+            duration_seconds INTEGER,
+            view_count INTEGER,
+            like_count INTEGER,
+            comment_count INTEGER,
+            is_ai_relevant BOOLEAN DEFAULT FALSE,
+            ai_relevance_score REAL DEFAULT 0.0,
+            scraped_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            content_scraped BOOLEAN DEFAULT FALSE,
+            transcript TEXT,
+            FOREIGN KEY (channel_id) REFERENCES youtube_channels(channel_id)
+        )
+        """,
+
+        # Add is_referenced flag to track which sources were actually used in the post
+        "ALTER TABLE tournament_sources ADD COLUMN is_referenced BOOLEAN DEFAULT FALSE",
+
+        # Indexes for YouTube tables
+        "CREATE INDEX IF NOT EXISTS idx_yt_videos_channel ON youtube_videos(channel_id)",
+        "CREATE INDEX IF NOT EXISTS idx_yt_videos_published ON youtube_videos(published_at)",
+        "CREATE INDEX IF NOT EXISTS idx_yt_videos_ai_relevant ON youtube_videos(is_ai_relevant)",
     ],
 }
 

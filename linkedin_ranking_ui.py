@@ -138,8 +138,27 @@ def save_tournament_to_db(
                 ))
 
         # Insert source news items for traceability
-        if news_sources:
-            for item in news_sources:
+        # Only save sources that are actually referenced in the winning post
+        if news_sources and winner:
+            import re
+            # Parse "(item N)" references from winner content
+            item_refs = set(int(m) for m in re.findall(r'\(item\s*(\d+)\)', winner.content, re.IGNORECASE))
+
+            # Also look for @mentions that match source authors
+            mentions = set(m.lower() for m in re.findall(r'@(\w+)', winner.content))
+
+            saved_count = 0
+            for idx, item in enumerate(news_sources, 1):
+                # Check if this source is referenced by item number or @mention
+                is_referenced = (
+                    idx in item_refs or
+                    item.get('username', '').lower() in mentions
+                )
+
+                # Only save referenced sources
+                if not is_referenced:
+                    continue
+
                 source_type = item.get('source_type', 'unknown')
                 source_id = item.get('id', '')
 
@@ -165,9 +184,10 @@ def save_tournament_to_db(
                     item.get('username', ''),
                     item.get('timestamp', '')
                 ))
+                saved_count += 1
 
         conn.commit()
-        sources_count = len(news_sources) if news_sources else 0
+        sources_count = saved_count if news_sources and winner else 0
         print(f"[DB] Saved tournament run #{run_id} with {len(ranked_variants)} variants and {sources_count} sources")
         return run_id
 
