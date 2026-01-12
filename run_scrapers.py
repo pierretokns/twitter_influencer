@@ -185,11 +185,13 @@ def run_scraper(name: str, command: List[str], timeout: int = 600) -> ScrapeResu
 
         if result.returncode == 0:
             Logger.success(f"{name} completed in {duration:.1f}s")
-            # Try to parse item counts from output
+            # Try to parse item counts from output (check both stdout and stderr)
             items = 0
-            for line in result.stdout.split('\n'):
-                if 'scraped' in line.lower() or 'found' in line.lower():
-                    import re
+            import re
+            all_output = result.stdout + '\n' + result.stderr
+            for line in all_output.split('\n'):
+                # Look for patterns like "X tweets" or "X articles" or "scraped X" or "found X"
+                if 'scrape complete' in line.lower() or 'new videos found' in line.lower():
                     nums = re.findall(r'\d+', line)
                     if nums:
                         items = max(items, int(nums[0]))
@@ -398,7 +400,7 @@ def run_all_scrapers(
     if run_discord:
         scrapers.append(("Discord Links", ["uv", "run", "python", "discord_link_scraper.py"]))
     if run_twitter:
-        scrapers.append(("AI News (Twitter)", ["uv", "run", "python", "ai_news_scraper.py"]))
+        scrapers.append(("AI News (Twitter + Web)", ["uv", "run", "python", "ai_news_scraper.py", "--all"]))
     if run_youtube:
         scrapers.append(("YouTube Channels", ["uv", "run", "python", "youtube_channel_scraper.py"]))
 
@@ -437,7 +439,7 @@ def main():
 
     # Determine what to run
     any_specific = args.discord or args.twitter or args.youtube or args.dedup
-    run_discord = args.discord or not any_specific
+    run_discord = args.discord  # Disabled by default - token expired
     run_twitter = args.twitter or not any_specific
     run_youtube = args.youtube or not any_specific
 
