@@ -387,7 +387,109 @@ sudo systemctl start linkedin-ui
 sudo systemctl status linkedin-ui
 ```
 
-## Step 11: Firewall Setup (Optional)
+## Step 11: Cloudflare Tunnel Setup (Recommended)
+
+Use Cloudflare Tunnel to expose services securely without opening firewall ports.
+
+### Install cloudflared
+
+```bash
+# Download and install cloudflared
+curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb -o cloudflared.deb
+sudo dpkg -i cloudflared.deb
+rm cloudflared.deb
+```
+
+### Create Tunnel
+
+```bash
+# Login to Cloudflare (opens browser or provides URL)
+cloudflared tunnel login
+
+# Create a tunnel
+cloudflared tunnel create ai-feed
+
+# Note the tunnel ID (e.g., aae2877f-af6b-4b18-b489-3b9bcaf43d16)
+```
+
+### Configure Tunnel
+
+```bash
+# Create config directory
+sudo mkdir -p /etc/cloudflared
+
+# Move credentials
+sudo mv ~/.cloudflared/*.json /etc/cloudflared/
+
+# Create config file
+sudo tee /etc/cloudflared/config.yml << 'EOF'
+tunnel: YOUR_TUNNEL_ID
+credentials-file: /etc/cloudflared/YOUR_TUNNEL_ID.json
+
+ingress:
+  - hostname: news.yourdomain.com
+    service: http://localhost:5002
+  - hostname: agents.yourdomain.com
+    service: http://localhost:5001
+  - service: http_status:404
+EOF
+```
+
+### Add DNS Routes
+
+```bash
+# Route domains through tunnel
+cloudflared tunnel route dns YOUR_TUNNEL_ID news.yourdomain.com
+cloudflared tunnel route dns YOUR_TUNNEL_ID agents.yourdomain.com
+```
+
+### Install as Service
+
+```bash
+# Install systemd service
+sudo cloudflared service install
+
+# Enable and start
+sudo systemctl enable cloudflared
+sudo systemctl start cloudflared
+
+# Check status
+sudo systemctl status cloudflared
+```
+
+## Step 12: Firewall Setup (Hetzner Cloud)
+
+With Cloudflare Tunnel, you only need SSH access. Use Hetzner Cloud firewall:
+
+```bash
+# Install hcloud CLI (if not already)
+# macOS: brew install hcloud
+# Linux: snap install hcloud
+
+# Login
+hcloud context create linkedin
+
+# Create firewall (SSH only to Mullvad VPN IPs)
+hcloud firewall create --name linkedin-influencer-fw
+
+# Add SSH rules for your VPN IPs
+hcloud firewall add-rule linkedin-influencer-fw \
+    --direction in --protocol tcp --port 49222 \
+    --source-ips "YOUR_IP/32" --description "SSH"
+
+# Allow ICMP ping
+hcloud firewall add-rule linkedin-influencer-fw \
+    --direction in --protocol icmp \
+    --source-ips 0.0.0.0/0 --description "ICMP ping"
+
+# Apply to server
+hcloud firewall apply-to-resource linkedin-influencer-fw \
+    --type server --server linkedin-influencer
+```
+
+**Note:** Do NOT open ports 5001/5002 publicly - Cloudflare Tunnel handles access.
+
+## Step 13: Firewall Setup (Local - Optional)
 
 ```bash
 # Allow SSH and UI port

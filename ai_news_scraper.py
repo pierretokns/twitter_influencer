@@ -6,6 +6,7 @@
 #     "setuptools>=65.0.0",
 #     "requests>=2.31.0",
 #     "sentence-transformers>=2.2.0",
+#     "FlagEmbedding>=1.2.0",
 #     "sqlite-vec>=0.1.0",
 #     "numpy>=1.24.0",
 #     "scikit-learn>=1.3.0",
@@ -45,6 +46,7 @@ import numpy as np
 
 # Lazy imports for heavy ML libraries
 _sentence_transformer = None
+_hybrid_embedder = None
 _hdbscan = None
 _sklearn_umap = None
 
@@ -68,6 +70,81 @@ def get_sentence_transformer():
             print("[INFO] Using fallback TF-IDF based embeddings")
             _sentence_transformer = FallbackEmbedder()
     return _sentence_transformer
+
+
+def get_hybrid_embedder():
+    """Lazy load BGE-M3 hybrid embedder with fallback to sentence-transformers"""
+    global _hybrid_embedder
+    if _hybrid_embedder is None:
+        try:
+            from FlagEmbedding import BGEM3FlagModel
+            import torch
+
+            device = 'cuda' if torch.cuda.is_available() else 'cpu'
+            print(f"[INFO] Loading BGE-M3 model on {device} (first time may download ~2GB)...")
+
+            _hybrid_embedder = BGEM3FlagModel(
+                'BAAI/bge-m3',
+                use_fp16=True,
+                device=device
+            )
+            print("[INFO] BGE-M3 model loaded successfully")
+        except ImportError:
+            print("[WARN] FlagEmbedding not available, using sentence-transformers fallback")
+            _hybrid_embedder = None
+        except Exception as e:
+            print(f"[WARN] Could not load BGE-M3: {e}")
+            _hybrid_embedder = None
+    return _hybrid_embedder
+
+
+def encode_texts_hybrid(texts: List[str], max_length: int = 512) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Encode texts using BGE-M3 hybrid embeddings (dense + sparse).
+
+    Returns:
+        Tuple of (dense_embeddings, sparse_embeddings) as numpy arrays.
+        - dense_embeddings: (N, 1024)
+        - sparse_embeddings: (N, 256) - top-K representation
+
+        Falls back to (384 dim, None) if BGE-M3 not available.
+    """
+    embedder = get_hybrid_embedder()
+
+    if embedder is not None:
+        try:
+            # Use BGE-M3 for hybrid embeddings
+            embedding_results = embedder.encode(
+                texts,
+                batch_size=32,
+                max_length=max_length,
+                return_dense=True,
+                return_sparse=True,
+                return_colbert_vecs=False
+            )
+
+            dense_embeddings = np.array(embedding_results['dense_vecs'], dtype=np.float32)
+
+            # Convert sparse embeddings to fixed-size dense
+            sparse_list = []
+            for sparse_dict in embedding_results['lexical_weights']:
+                # Sort by weight, take top-256
+                sorted_items = sorted(sparse_dict.items(), key=lambda x: x[1], reverse=True)[:256]
+                sparse_dense = np.zeros(256, dtype=np.float32)
+                for i, (token_id, weight) in enumerate(sorted_items):
+                    sparse_dense[i] = weight
+                sparse_list.append(sparse_dense)
+
+            sparse_embeddings = np.array(sparse_list, dtype=np.float32)
+            return dense_embeddings, sparse_embeddings
+
+        except Exception as e:
+            print(f"[WARN] BGE-M3 encoding failed: {e}, falling back to sentence-transformers")
+
+    # Fallback to sentence-transformers (384 dim, no sparse)
+    embedder = get_sentence_transformer()
+    dense_embeddings = embedder.encode(texts, show_progress_bar=False)
+    return np.array(dense_embeddings, dtype=np.float32), None
 
 
 class FallbackEmbedder:
@@ -396,7 +473,9 @@ class Logger:
 class AINewsDatabase:
     """SQLite database with sqlite-vec for vector similarity search"""
 
-    EMBEDDING_DIM = 384  # all-MiniLM-L6-v2 dimension
+    EMBEDDING_DIM_DENSE = 1024  # BGE-M3 dense dimension
+    EMBEDDING_DIM_SPARSE = 256  # BGE-M3 sparse (top-K) dimension
+    EMBEDDING_DIM = 384  # Fallback all-MiniLM-L6-v2 dimension
 
     def __init__(self, db_path: Path):
         self.db_path = db_path
@@ -430,16 +509,36 @@ class AINewsDatabase:
             Logger.info("Falling back to basic storage without VSS")
             self._has_vec = False
 
-        # Vector embeddings table (handled separately - not in migrations due to extension dependency)
+        # Vector embeddings tables (handled separately - not in migrations due to extension dependency)
+        # We create both legacy (384-dim) and new hybrid tables (1024-dim dense + 256-dim sparse)
         if self._has_vec:
             try:
+                # Legacy table for backward compatibility
                 self.conn.execute(f'''
                     CREATE VIRTUAL TABLE IF NOT EXISTS tweet_embeddings USING vec0(
                         tweet_id TEXT PRIMARY KEY,
                         embedding float[{self.EMBEDDING_DIM}]
                     )
                 ''')
-                Logger.success("Vector embeddings table ready")
+
+                # New hybrid embedding tables for BGE-M3
+                for source_type in ['tweet', 'web_article', 'youtube_video']:
+                    # Dense embeddings (1024 dimensions)
+                    self.conn.execute(f'''
+                        CREATE VIRTUAL TABLE IF NOT EXISTS {source_type}_embeddings_dense USING vec0(
+                            id TEXT PRIMARY KEY,
+                            embedding float[{self.EMBEDDING_DIM_DENSE}]
+                        )
+                    ''')
+                    # Sparse embeddings (256 dimensions - top-K representation)
+                    self.conn.execute(f'''
+                        CREATE VIRTUAL TABLE IF NOT EXISTS {source_type}_embeddings_sparse USING vec0(
+                            id TEXT PRIMARY KEY,
+                            embedding float[{self.EMBEDDING_DIM_SPARSE}]
+                        )
+                    ''')
+
+                Logger.success("Vector embeddings tables ready (legacy + hybrid)")
             except Exception as e:
                 Logger.warning(f"Could not create vector table: {e}")
                 self._has_vec = False
@@ -461,8 +560,9 @@ class AINewsDatabase:
         ''', (username.lower(), display_name, category, is_seed, discovery_source))
         self.conn.commit()
 
-    def save_tweet(self, tweet_data: Dict[str, Any], embedding: np.ndarray = None):
-        """Save a tweet with optional embedding"""
+    def save_tweet(self, tweet_data: Dict[str, Any], embedding: np.ndarray = None,
+                   dense_embedding: np.ndarray = None, sparse_embedding: np.ndarray = None):
+        """Save a tweet with optional embeddings (legacy or hybrid)"""
         cursor = self.conn.cursor()
 
         tweet_id = tweet_data.get('tweet_id')
@@ -498,17 +598,36 @@ class AINewsDatabase:
             relevance_score
         ))
 
-        # Save embedding if available
+        # Save legacy embedding if available (384 dim)
         if embedding is not None and self._has_vec:
             try:
-                # Convert numpy array to bytes for sqlite-vec
                 embedding_list = embedding.tolist()
                 cursor.execute('''
                     INSERT OR REPLACE INTO tweet_embeddings (tweet_id, embedding)
                     VALUES (?, ?)
                 ''', (tweet_id, json.dumps(embedding_list)))
             except Exception as e:
-                Logger.debug(f"Could not save embedding: {e}")
+                Logger.debug(f"Could not save legacy embedding: {e}")
+
+        # Save hybrid embeddings if available (BGE-M3)
+        if self._has_vec and dense_embedding is not None:
+            try:
+                # Save dense embedding (1024 dim)
+                dense_list = dense_embedding.tolist()
+                cursor.execute('''
+                    INSERT OR REPLACE INTO tweet_embeddings_dense (id, embedding)
+                    VALUES (?, ?)
+                ''', (tweet_id, json.dumps(dense_list)))
+
+                # Save sparse embedding if available (256 dim)
+                if sparse_embedding is not None:
+                    sparse_list = sparse_embedding.tolist()
+                    cursor.execute('''
+                        INSERT OR REPLACE INTO tweet_embeddings_sparse (id, embedding)
+                        VALUES (?, ?)
+                    ''', (tweet_id, json.dumps(sparse_list)))
+            except Exception as e:
+                Logger.debug(f"Could not save hybrid embeddings: {e}")
 
         self.conn.commit()
 
@@ -699,8 +818,9 @@ class AINewsDatabase:
         ''', (source_id, name, url, source_type, category))
         self.conn.commit()
 
-    def save_web_article(self, article_data: Dict[str, Any], embedding: np.ndarray = None) -> bool:
-        """Save a web article with optional embedding"""
+    def save_web_article(self, article_data: Dict[str, Any], embedding: np.ndarray = None,
+                         dense_embedding: np.ndarray = None, sparse_embedding: np.ndarray = None) -> bool:
+        """Save a web article with optional embeddings (legacy or hybrid)"""
         cursor = self.conn.cursor()
 
         url = article_data.get('url')
@@ -737,6 +857,27 @@ class AINewsDatabase:
                 relevance_score
             ))
             self.conn.commit()
+
+            # Save hybrid embeddings if available (BGE-M3)
+            if self._has_vec and dense_embedding is not None:
+                try:
+                    # Save dense embedding (1024 dim)
+                    dense_list = dense_embedding.tolist()
+                    cursor.execute('''
+                        INSERT OR REPLACE INTO web_article_embeddings_dense (id, embedding)
+                        VALUES (?, ?)
+                    ''', (article_id, json.dumps(dense_list)))
+
+                    # Save sparse embedding if available (256 dim)
+                    if sparse_embedding is not None:
+                        sparse_list = sparse_embedding.tolist()
+                        cursor.execute('''
+                            INSERT OR REPLACE INTO web_article_embeddings_sparse (id, embedding)
+                            VALUES (?, ?)
+                        ''', (article_id, json.dumps(sparse_list)))
+                    self.conn.commit()
+                except Exception as e:
+                    Logger.debug(f"Could not save web article embeddings: {e}")
 
             # Update source article count
             cursor.execute('''

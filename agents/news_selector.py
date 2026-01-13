@@ -240,6 +240,9 @@ class NewsSelector:
         """
         Select diverse news items using vector embeddings.
 
+        Tries to use stored hybrid embeddings first (BGE-M3 dense + sparse),
+        falls back to regenerating embeddings if not available.
+
         Args:
             limit: Number of diverse items to select
             lambda_param: Balance between relevance (1.0) and diversity (0.0)
@@ -253,11 +256,33 @@ class NewsSelector:
         if not all_news:
             return []
 
-        # Try vector-based selection
+        # Try to use stored hybrid embeddings first (most efficient)
+        dense_embeddings, sparse_embeddings = self._fetch_stored_embeddings(all_news)
+
+        if dense_embeddings is not None and sparse_embeddings is not None:
+            try:
+                from agents.hybrid_retriever import HybridRetriever
+
+                print(f"[NewsSelector] Using stored hybrid embeddings for {len(all_news)} items...")
+                retriever = HybridRetriever(alpha=0.5)
+
+                # Select using hybrid MMR
+                selected_indices = self._mmr_select_hybrid(
+                    dense_embeddings, sparse_embeddings, all_news, limit, lambda_param, retriever
+                )
+
+                selected = [all_news[i] for i in selected_indices]
+                print(f"[NewsSelector] Selected {len(selected)} diverse items via hybrid MMR")
+                return selected
+
+            except Exception as e:
+                print(f"[NewsSelector] Hybrid selection failed: {e}")
+
+        # Fallback: regenerate embeddings with sentence-transformers
         embedder = self._get_embedder()
         if embedder is not None:
             try:
-                print(f"[NewsSelector] Encoding {len(all_news)} items for diversity selection...")
+                print(f"[NewsSelector] Regenerating embeddings for {len(all_news)} items...")
 
                 # Encode all items
                 texts = [item.get('text', '')[:500] for item in all_news]
@@ -277,6 +302,145 @@ class NewsSelector:
                 print(f"[NewsSelector] Vector selection failed: {e}")
 
         # Fallback: simple interleaving of sources
+        return self._fallback_source_interleaving(all_news, limit)
+
+    def _fetch_stored_embeddings(self, items: List[Dict]):
+        """
+        Fetch stored hybrid embeddings (dense + sparse) from database.
+
+        Returns:
+            Tuple of (dense_embeddings, sparse_embeddings) as numpy arrays,
+            or (None, None) if embeddings are not available.
+        """
+        if not self.db_path or not self.db_path.exists():
+            return None, None
+
+        try:
+            import json
+            conn = sqlite3.connect(str(self.db_path))
+            cursor = conn.cursor()
+
+            dense_list = []
+            sparse_list = []
+
+            for item in items:
+                item_id = str(item.get('id', ''))
+                source_type = item.get('source_type', '')
+
+                # Map source_type to table names
+                if source_type == 'twitter':
+                    table_prefix = 'tweet'
+                elif source_type == 'web':
+                    table_prefix = 'web_article'
+                elif source_type == 'youtube':
+                    table_prefix = 'youtube_video'
+                else:
+                    conn.close()
+                    return None, None
+
+                try:
+                    # Fetch dense embedding
+                    cursor.execute(
+                        f"SELECT embedding FROM {table_prefix}_embeddings_dense WHERE id = ?",
+                        (item_id,)
+                    )
+                    dense_row = cursor.fetchone()
+
+                    # Fetch sparse embedding
+                    cursor.execute(
+                        f"SELECT embedding FROM {table_prefix}_embeddings_sparse WHERE id = ?",
+                        (item_id,)
+                    )
+                    sparse_row = cursor.fetchone()
+
+                    if dense_row and sparse_row:
+                        # Parse JSON-stored embeddings
+                        dense_list.append(np.array(json.loads(dense_row[0]), dtype=np.float32))
+                        sparse_list.append(np.array(json.loads(sparse_row[0]), dtype=np.float32))
+                    else:
+                        # Missing embedding for this item
+                        conn.close()
+                        return None, None
+
+                except Exception:
+                    conn.close()
+                    return None, None
+
+            conn.close()
+
+            if not dense_list:
+                return None, None
+
+            return np.array(dense_list), np.array(sparse_list)
+
+        except Exception as e:
+            print(f"[NewsSelector] Error fetching embeddings: {e}")
+            return None, None
+
+    def _mmr_select_hybrid(
+        self,
+        dense: np.ndarray,
+        sparse: np.ndarray,
+        items: List[Dict],
+        k: int,
+        lambda_param: float,
+        retriever
+    ) -> List[int]:
+        """
+        MMR selection using hybrid similarity.
+        Same algorithm as _mmr_select but uses hybrid scores.
+        """
+        n = len(items)
+        if n <= k:
+            return list(range(n))
+
+        # Compute relevance scores (recency + engagement)
+        relevance = np.zeros(n)
+        for i, item in enumerate(items):
+            recency_score = 1.0 - (i / n)
+            likes = item.get('likes_count', 0) or 0
+            engagement_score = min(1.0, likes / 1000)
+            relevance[i] = 0.7 * recency_score + 0.3 * engagement_score
+
+        selected = []
+        remaining = set(range(n))
+
+        # Start with most relevant item
+        first_idx = int(np.argmax(relevance))
+        selected.append(first_idx)
+        remaining.remove(first_idx)
+
+        # Iteratively select using MMR with hybrid similarity
+        while len(selected) < k and remaining:
+            mmr_scores = []
+
+            for idx in remaining:
+                # Relevance component
+                rel = relevance[idx]
+
+                # Diversity component: max hybrid similarity to any selected item
+                max_sim = 0
+                for sel_idx in selected:
+                    # Compute hybrid similarity
+                    sim = retriever.compute_hybrid_score(
+                        dense[idx:idx+1], sparse[idx:idx+1],
+                        dense[sel_idx:sel_idx+1], sparse[sel_idx:sel_idx+1]
+                    )[0]
+                    max_sim = max(max_sim, sim)
+
+                # MMR score
+                mmr = lambda_param * rel - (1 - lambda_param) * max_sim
+                mmr_scores.append((idx, mmr))
+
+            # Select item with highest MMR score
+            best_idx = max(mmr_scores, key=lambda x: x[1])[0]
+            selected.append(best_idx)
+            remaining.remove(best_idx)
+
+        return selected
+
+    def _fallback_source_interleaving(self, all_news: List[Dict], limit: int) -> List[Dict]:
+        """Fallback: simple interleaving of sources"""
         print("[NewsSelector] Falling back to source-based selection")
         by_source = {
             'twitter': [n for n in all_news if n.get('source_type') == 'twitter'],

@@ -309,3 +309,65 @@ Write ONLY the post text. No intro, no explanation. Start directly with the hook
 
         print(f"[Generator] Generated {len(variants)} variants")
         return variants
+
+    def annotate_sources_with_attribution(
+        self,
+        content: str,
+        news_items: List[Dict],
+        threshold: float = 0.2
+    ) -> List[Dict]:
+        """
+        Annotate news items with attribution scores based on generated content.
+
+        Uses Document Page Finder (TF-IDF similarity) to identify which sources
+        were actually referenced in the generated post.
+
+        Args:
+            content: The generated post content
+            news_items: List of news item dicts used for generation
+            threshold: Minimum similarity score to mark as referenced
+
+        Returns:
+            List of news items with added 'is_referenced' and 'attribution_score' keys
+        """
+        try:
+            from agents.hybrid_retriever import find_supporting_sources
+
+            # Get source texts for TF-IDF matching
+            source_texts = [item.get('text', '')[:500] for item in news_items]
+
+            # Find which sources are referenced
+            citations = find_supporting_sources(content, source_texts, threshold=threshold)
+
+            # Create a map of source index to score
+            citation_scores = {idx: score for idx, score in citations}
+
+            # Annotate each item
+            annotated = []
+            for i, item in enumerate(news_items):
+                item_copy = dict(item)
+                if i in citation_scores:
+                    item_copy['is_referenced'] = True
+                    item_copy['attribution_score'] = citation_scores[i]
+                else:
+                    item_copy['is_referenced'] = False
+                    item_copy['attribution_score'] = 0.0
+                annotated.append(item_copy)
+
+            # Log attribution results
+            referenced_count = len(citations)
+            print(f"[Generator] Source attribution: {referenced_count}/{len(news_items)} sources referenced")
+            if referenced_count > 0:
+                top_sources = sorted(citations, key=lambda x: x[1], reverse=True)[:3]
+                for idx, score in top_sources:
+                    source = news_items[idx].get('username', news_items[idx].get('source_name', 'Unknown'))
+                    print(f"  - @{source}: {score:.2f} similarity")
+
+            return annotated
+
+        except ImportError:
+            print("[Generator] hybrid_retriever not available, skipping attribution")
+            return news_items
+        except Exception as e:
+            print(f"[Generator] Attribution failed: {e}")
+            return news_items
