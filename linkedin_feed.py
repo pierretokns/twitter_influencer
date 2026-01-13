@@ -867,10 +867,7 @@ HTML_TEMPLATE = '''
                         <svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><path d="M14 12a2 2 0 11-4 0 2 2 0 014 0zm6 0a2 2 0 11-4 0 2 2 0 014 0zM6 12a2 2 0 11-4 0 2 2 0 014 0z"/></svg>
                     </button>
                 </div>
-
-                <div class="post-content ${isLong ? 'collapsed' : ''}" id="content-${post.run_id}">
-                    <span class="hook">${escapeHtml(hook)}</span>${rest ? '\\n' + escapeHtml(rest) : ''}
-                </div>
+<div class="post-content ${isLong ? 'collapsed' : ''}" id="content-${post.run_id}"><span class="hook">${escapeHtml(hook)}</span>${rest ? '\\n' + escapeHtml(rest) : ''}</div>
                 ${isLong ? `<span class="see-more" onclick="expandPost(${post.run_id})">...see more</span>` : ''}
 
                 <div class="post-metrics">
