@@ -308,7 +308,7 @@ HTML_TEMPLATE = '''
             padding: 0 16px 12px;
             font-size: 14px;
             line-height: 1.5;
-            white-space: pre-wrap;
+            white-space: pre-line;
             word-wrap: break-word;
         }
         .post-content .hook {
