@@ -139,7 +139,7 @@ def save_tournament_to_db(
 
         # Insert source news items for traceability
         # Save the top sources used for generation (limit to avoid bloat)
-        # TODO: Implement better source tracking in generator to identify exact sources used
+        # Now includes is_referenced and attribution_score from Document Page Finder
         MAX_SOURCES = 20  # Save top 20 most relevant sources
         if news_sources and winner:
             saved_count = 0
@@ -155,11 +155,16 @@ def save_tournament_to_db(
                     elif source_type == 'youtube':
                         source_url = f"https://youtube.com/watch?v={source_id}"
 
+                # Get attribution info (added by variant_generator.annotate_sources_with_attribution)
+                is_referenced = item.get('is_referenced', False)
+                attribution_score = item.get('attribution_score', 0.0)
+
                 cursor.execute("""
                     INSERT INTO tournament_sources (
                         run_id, source_type, source_id, source_text,
-                        source_url, source_author, source_timestamp
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                        source_url, source_author, source_timestamp,
+                        is_referenced, attribution_score
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
                     run_id,
                     source_type,
@@ -167,7 +172,9 @@ def save_tournament_to_db(
                     item.get('text', '')[:500],  # Truncate long text
                     source_url,
                     item.get('username', ''),
-                    item.get('timestamp', '')
+                    item.get('timestamp', ''),
+                    is_referenced,
+                    attribution_score
                 ))
                 saved_count += 1
 

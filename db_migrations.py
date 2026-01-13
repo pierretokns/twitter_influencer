@@ -46,7 +46,7 @@ For complex changes, use the copy-and-replace pattern:
 CURRENT VERSIONS
 ----------------
 - discord_links: v2 (base schema + temporal metadata)
-- ai_news: v6 (base + web_articles + tournaments + likes + sources + youtube)
+- ai_news: v7 (base + web_articles + tournaments + likes + sources + youtube + hybrid embeddings)
 
 USAGE
 -----
@@ -272,7 +272,7 @@ def migrate_discord_db(conn: sqlite3.Connection) -> int:
 # AI NEWS DATABASE MIGRATIONS
 # =============================================================================
 
-AI_NEWS_DB_VERSION = 6
+AI_NEWS_DB_VERSION = 7
 
 AI_NEWS_MIGRATIONS: Dict[int, List[str]] = {
     # Version 1: Initial schema
@@ -582,6 +582,19 @@ AI_NEWS_MIGRATIONS: Dict[int, List[str]] = {
         "CREATE INDEX IF NOT EXISTS idx_yt_videos_channel ON youtube_videos(channel_id)",
         "CREATE INDEX IF NOT EXISTS idx_yt_videos_published ON youtube_videos(published_at)",
         "CREATE INDEX IF NOT EXISTS idx_yt_videos_ai_relevant ON youtube_videos(is_ai_relevant)",
+    ],
+
+    # Version 7: Hybrid embeddings + source attribution scoring
+    # NOTE: Vector embedding tables (tweet_embeddings_dense, tweet_embeddings_sparse, etc.)
+    # are created by sqlite-vec extension in AINewsDatabase._init_database()
+    # This migration only adds the attribution_score column for source tracking
+    7: [
+        # Add attribution_score to track how strongly each source influenced the generated post
+        # Score ranges from 0.0 to 1.0 based on TF-IDF similarity (Document Page Finder)
+        "ALTER TABLE tournament_sources ADD COLUMN attribution_score REAL DEFAULT 0.0",
+
+        # Index for finding referenced sources by attribution score
+        "CREATE INDEX IF NOT EXISTS idx_tournament_sources_referenced ON tournament_sources(is_referenced, attribution_score DESC)",
     ],
 }
 

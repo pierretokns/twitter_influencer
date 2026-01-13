@@ -504,6 +504,39 @@ HTML_TEMPLATE = '''
             font-style: italic;
         }
 
+        /* Cited source styling */
+        .source-item.cited {
+            border-left: 3px solid var(--linkedin-blue);
+            background: linear-gradient(90deg, rgba(10, 102, 194, 0.05), white);
+        }
+        .source-item.cited .source-header::before {
+            content: '✓';
+            color: var(--linkedin-blue);
+            font-weight: bold;
+            margin-right: 6px;
+        }
+        .source-score {
+            font-size: 11px;
+            font-weight: 600;
+            padding: 2px 6px;
+            border-radius: 4px;
+            background: var(--linkedin-blue);
+            color: white;
+            margin-left: 8px;
+        }
+        .source-score.low { background: var(--text-tertiary); }
+        .sources-section-header {
+            font-size: 12px;
+            font-weight: 600;
+            color: var(--text-secondary);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin: 12px 0 8px 0;
+            padding-bottom: 4px;
+            border-bottom: 1px solid var(--border);
+        }
+        .sources-section-header:first-child { margin-top: 0; }
+
         /* Date separator */
         .date-separator {
             display: flex;
@@ -911,7 +944,7 @@ HTML_TEMPLATE = '''
                             <path d="M10 13a5 5 0 007.54.54l3-3a5 5 0 00-7.07-7.07l-1.72 1.71"/>
                             <path d="M14 11a5 5 0 00-7.54-.54l-3 3a5 5 0 007.07 7.07l1.71-1.71"/>
                         </svg>
-                        Sources ${post.source_count ? '(' + post.source_count + ')' : ''}
+                        Sources ${post.source_count ? '(' + (post.cited_count ? post.cited_count + '/' : '') + post.source_count + ')' : ''}
                     </button>
                 </div>
 
@@ -996,20 +1029,26 @@ HTML_TEMPLATE = '''
                         const data = await response.json();
 
                         if (data.sources && data.sources.length > 0) {
-                            panel.innerHTML = `
-                                <ul class="source-list">
-                                    ${data.sources.map(s => `
-                                        <a href="${s.source_url || '#'}" target="_blank" class="source-item" ${!s.source_url ? 'style="pointer-events:none"' : ''}>
-                                            <div class="source-header">
-                                                <span class="source-type ${s.source_type}">${s.source_type}</span>
-                                                <span class="source-author">@${s.source_author || 'unknown'}</span>
-                                                <span class="source-url">${s.source_url ? new URL(s.source_url).hostname : ''}</span>
-                                            </div>
-                                            <div class="source-text">${escapeHtml(s.source_text || '')}</div>
-                                        </a>
-                                    `).join('')}
-                                </ul>
-                            `;
+                            // Split into cited and available sources
+                            const citedSources = data.sources.filter(s => s.is_referenced);
+                            const availableSources = data.sources.filter(s => !s.is_referenced);
+
+                            let html = '<ul class="source-list">';
+
+                            // Render cited sources first
+                            if (citedSources.length > 0) {
+                                html += `<div class="sources-section-header">Cited Sources (${citedSources.length})</div>`;
+                                html += citedSources.map(s => renderSourceItem(s, true)).join('');
+                            }
+
+                            // Render available sources
+                            if (availableSources.length > 0) {
+                                html += `<div class="sources-section-header">Available Sources (${availableSources.length})</div>`;
+                                html += availableSources.map(s => renderSourceItem(s, false)).join('');
+                            }
+
+                            html += '</ul>';
+                            panel.innerHTML = html;
                         } else {
                             panel.innerHTML = '<div class="no-sources">No sources tracked for this post</div>';
                         }
@@ -1020,6 +1059,23 @@ HTML_TEMPLATE = '''
             } else {
                 panel.style.display = 'none';
             }
+        }
+
+        function renderSourceItem(s, isCited) {
+            const scorePercent = Math.round((s.attribution_score || 0) * 100);
+            const scoreClass = scorePercent < 30 ? 'low' : '';
+
+            return `
+                <a href="${s.source_url || '#'}" target="_blank" class="source-item ${isCited ? 'cited' : ''}" ${!s.source_url ? 'style="pointer-events:none"' : ''}>
+                    <div class="source-header">
+                        <span class="source-type ${s.source_type}">${s.source_type}</span>
+                        <span class="source-author">@${s.source_author || 'unknown'}</span>
+                        ${isCited ? `<span class="source-score ${scoreClass}">${scorePercent}%</span>` : ''}
+                        <span class="source-url">${s.source_url ? new URL(s.source_url).hostname : ''}</span>
+                    </div>
+                    <div class="source-text">${escapeHtml(s.source_text || '')}</div>
+                </a>
+            `;
         }
 
         function openPublish(runId) {
@@ -1105,17 +1161,22 @@ def get_feed():
     cursor.execute(query, params)
     posts = [dict(row) for row in cursor.fetchall()]
 
-    # Get source counts for each post
+    # Get source counts for each post (including cited count)
     for post in posts:
         try:
-            cursor.execute(
-                "SELECT COUNT(*) as count FROM tournament_sources WHERE run_id = ?",
-                (post['run_id'],)
-            )
+            cursor.execute("""
+                SELECT
+                    COUNT(*) as total_count,
+                    SUM(CASE WHEN is_referenced = 1 THEN 1 ELSE 0 END) as cited_count
+                FROM tournament_sources
+                WHERE run_id = ?
+            """, (post['run_id'],))
             result = cursor.fetchone()
-            post['source_count'] = result['count'] if result else 0
+            post['source_count'] = result['total_count'] if result else 0
+            post['cited_count'] = result['cited_count'] if result and result['cited_count'] else 0
         except:
             post['source_count'] = 0
+            post['cited_count'] = 0
 
     # Get user's likes
     try:
@@ -1149,16 +1210,18 @@ def get_feed():
 
 @app.route('/api/sources/<int:run_id>')
 def get_sources(run_id):
-    """Get source news items used to generate a post"""
+    """Get source news items used to generate a post with attribution info"""
     conn = get_db()
     cursor = conn.cursor()
 
     try:
         cursor.execute("""
-            SELECT source_type, source_text, source_url, source_author, source_timestamp
+            SELECT source_type, source_text, source_url, source_author, source_timestamp,
+                   COALESCE(is_referenced, 0) as is_referenced,
+                   COALESCE(attribution_score, 0.0) as attribution_score
             FROM tournament_sources
             WHERE run_id = ?
-            ORDER BY source_type, source_timestamp DESC
+            ORDER BY is_referenced DESC, attribution_score DESC, source_type, source_timestamp DESC
         """, (run_id,))
         sources = [dict(row) for row in cursor.fetchall()]
     except Exception as e:
@@ -1167,10 +1230,14 @@ def get_sources(run_id):
 
     conn.close()
 
+    # Count cited vs available sources
+    cited_count = sum(1 for s in sources if s.get('is_referenced'))
+
     return jsonify({
         "run_id": run_id,
         "sources": sources,
-        "count": len(sources)
+        "count": len(sources),
+        "cited_count": cited_count
     })
 
 
