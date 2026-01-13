@@ -139,11 +139,26 @@ def save_tournament_to_db(
 
         # Insert source news items for traceability
         # Save the top sources used for generation (limit to avoid bloat)
-        # Now includes is_referenced and attribution_score from Document Page Finder
+        # IMPORTANT: Citation numbers come from the WINNER's source_attributions only,
+        # not from the merged news_sources (which has conflicting citation numbers from all variants)
         MAX_SOURCES = 20  # Save top 20 most relevant sources
         saved_count = 0
+
+        # Build a map of source index -> citation info from the WINNER only
+        winner_citations = {}
+        if winner and hasattr(winner, 'source_attributions') and winner.source_attributions:
+            for attr in winner.source_attributions:
+                idx = attr.get('idx')
+                if idx is not None and attr.get('citation_num'):
+                    winner_citations[idx] = {
+                        'citation_number': attr.get('citation_num'),
+                        'cited_quote': attr.get('cited_quote'),
+                        'start_time': attr.get('start_time'),
+                        'source_url': attr.get('url', '')
+                    }
+
         if news_sources:
-            for idx, item in enumerate(news_sources[:MAX_SOURCES], 1):
+            for idx, item in enumerate(news_sources[:MAX_SOURCES]):
                 source_type = item.get('source_type', 'unknown')
                 source_id = item.get('id', '')
 
@@ -155,15 +170,18 @@ def save_tournament_to_db(
                     elif source_type == 'youtube':
                         source_url = f"https://youtube.com/watch?v={source_id}"
 
-                # Get attribution info (added by variant_generator.annotate_sources_with_attribution)
+                # Get attribution info - use winner's citations ONLY for citation_number
                 is_referenced = item.get('is_referenced', False)
                 attribution_score = item.get('attribution_score', 0.0)
-                citation_number = item.get('citation_number')  # Perplexity-style [N] marker
-                cited_quote = item.get('cited_quote')  # Best matching quote for popover
-                start_time = item.get('start_time')  # YouTube timestamp for deep-linking
+
+                # Citation info from winner only (not from merged news_sources)
+                winner_cite = winner_citations.get(idx, {})
+                citation_number = winner_cite.get('citation_number')  # Only from winner
+                cited_quote = winner_cite.get('cited_quote') or item.get('cited_quote')
+                start_time = winner_cite.get('start_time') or item.get('start_time')
 
                 # Use source URL with timestamp if available
-                final_url = item.get('source_url', source_url)
+                final_url = winner_cite.get('source_url') or item.get('source_url', source_url)
 
                 cursor.execute("""
                     INSERT INTO tournament_sources (

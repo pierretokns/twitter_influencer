@@ -408,12 +408,30 @@ Write ONLY the post text. No intro, no explanation. Start directly with the hook
         cited.sort(key=lambda x: x[1].get('attribution_score', 0), reverse=True)
         cited = cited[:max_citations]
 
-        # Split content into sentences
-        sentence_pattern = r'(?<=[.!?])\s+'
-        sentences = re.split(sentence_pattern, content)
-        sentences = [s.strip() for s in sentences if s.strip()]
+        # Split content into paragraphs first (preserve structure)
+        # Use regex to split on 2+ newlines OR single newlines
+        paragraphs = re.split(r'(\n\n+|\n)', content)
 
-        if not sentences:
+        # Build flat list of sentences with paragraph boundary info
+        # Each entry: (sentence_text, is_paragraph_end)
+        all_sentences = []
+        paragraph_breaks = []  # Track where paragraph breaks occur
+
+        for part in paragraphs:
+            if not part:
+                continue
+            if re.match(r'^\n+$', part):
+                # This is a paragraph separator - mark the last sentence
+                paragraph_breaks.append(len(all_sentences) - 1 if all_sentences else -1)
+                continue
+
+            # Split paragraph into sentences
+            sentence_pattern = r'(?<=[.!?])\s+'
+            sentences = re.split(sentence_pattern, part)
+            sentences = [s.strip() for s in sentences if s.strip()]
+            all_sentences.extend(sentences)
+
+        if not all_sentences:
             return content, annotated_sources
 
         # Get source texts for matching
@@ -422,12 +440,12 @@ Write ONLY the post text. No intro, no explanation. Start directly with the hook
         # Find which sentence best matches which source
         # Returns: {sentence_idx: cited_source_idx}
         # Uses entity overlap validation to ensure citations are relevant
-        mapping = find_sentence_source_mapping(sentences, source_texts, threshold=0.25)
+        mapping = find_sentence_source_mapping(all_sentences, source_texts, threshold=0.25)
 
         # First pass: find order of appearance in text
         # Track which sources appear and in what sentence order
         appearance_order = []  # List of (sentence_idx, cited_source_idx)
-        for sent_idx in range(len(sentences)):
+        for sent_idx in range(len(all_sentences)):
             if sent_idx in mapping:
                 cited_source_idx = mapping[sent_idx]
                 if cited_source_idx not in [x[1] for x in appearance_order]:
@@ -445,14 +463,14 @@ Write ONLY the post text. No intro, no explanation. Start directly with the hook
                 src['source_url'] = self._build_source_url(src)
 
             # Extract best matching quote from source content
-            sentence = sentences[sent_idx] if sent_idx < len(sentences) else ''
+            sentence = all_sentences[sent_idx] if sent_idx < len(all_sentences) else ''
             self._extract_citation_quote(src, sentence)
 
         # Insert markers into sentences
         marked_sentences = []
         used_citations = set()
 
-        for sent_idx, sentence in enumerate(sentences):
+        for sent_idx, sentence in enumerate(all_sentences):
             if sent_idx in mapping:
                 cited_source_idx = mapping[sent_idx]
                 citation_num = cited_idx_to_citation.get(cited_source_idx)
@@ -465,8 +483,18 @@ Write ONLY the post text. No intro, no explanation. Start directly with the hook
                     used_citations.add(citation_num)
             marked_sentences.append(sentence)
 
-        # Reconstruct content
-        marked_content = ' '.join(marked_sentences)
+        # Reconstruct content preserving paragraph breaks
+        result_parts = []
+        current_para = []
+        for sent_idx, sentence in enumerate(marked_sentences):
+            current_para.append(sentence)
+            if sent_idx in paragraph_breaks:
+                result_parts.append(' '.join(current_para))
+                current_para = []
+        if current_para:
+            result_parts.append(' '.join(current_para))
+
+        marked_content = '\n\n'.join(result_parts)
 
         cited_count = len(used_citations)
         print(f"[Generator] Inserted {cited_count} citation markers")
