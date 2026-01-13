@@ -117,6 +117,8 @@ class NewsSelector:
         articles = []
         try:
             cursor = conn.cursor()
+            # Note: published_at may be human-readable (e.g., "December 11, 2025")
+            # We order by scraped_at as fallback, but global sort uses published_at
             cursor.execute('''
                 SELECT article_id as id, title as text, source_name as username,
                        published_at as timestamp, 0 as likes_count,
