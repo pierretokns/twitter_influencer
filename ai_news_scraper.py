@@ -269,14 +269,14 @@ WEB_SOURCES = {
     # NOTE: These sites use React/Next.js and require Selenium to scrape
     # -------------------------------------------------------------------------
     "ainativedev": {
-        "name": "AI Native Dev",
-        "url": "https://ainativedev.io/news",
-        "type": "js",  # Requires browser automation
+        "name": "AI Native Dev (Tessl)",
+        "url": "https://tessl.io/blog/",
+        "type": "html",  # Can parse statically now
         "category": "ai_news",
         "selectors": {
-            "article": "article, .article-card, [class*='article'], [class*='post']",
+            "article": "article, .article-card, [class*='article'], [class*='post'], [class*='card']",
             "title": "h1, h2, h3, .title, [class*='title'], [class*='headline']",
-            "link": "a[href*='/news/']",
+            "link": "a[href*='/blog/']",
             "date": "time, .date, [class*='date'], [datetime]",
             "description": "p, .excerpt, .summary, [class*='excerpt'], [class*='summary']",
         },
@@ -1096,6 +1096,19 @@ class WebSourceScraper:
                     article_elements.extend(found)
                     break
 
+            # Fallback: if no article containers found, try link elements directly
+            # This handles sites where <a> tags are the article containers (e.g., tessl.io)
+            if not article_elements:
+                link_selector = selectors.get('link', 'a')
+                for sel in link_selector.split(','):
+                    sel = sel.strip()
+                    found = soup.select(sel)
+                    if found:
+                        # Filter to only links with headings inside (actual articles)
+                        article_elements = [a for a in found if a.select_one('h1, h2, h3, h4')]
+                        if article_elements:
+                            break
+
             # Deduplicate
             seen_articles = set()
 
@@ -1111,25 +1124,37 @@ class WebSourceScraper:
 
                     # Extract link
                     link = None
-                    for link_sel in selectors.get('link', 'a').split(','):
-                        link_elem = article_elem.select_one(link_sel.strip())
-                        if link_elem:
-                            href = link_elem.get('href', '')
-                            if href:
-                                # Handle relative URLs
-                                if href.startswith('/'):
-                                    from urllib.parse import urljoin
-                                    link = urljoin(url, href)
-                                else:
-                                    link = href
-                                break
+                    # First check if the article element itself is a link
+                    if article_elem.name == 'a' and article_elem.get('href'):
+                        href = article_elem.get('href', '')
+                        if href:
+                            if href.startswith('/'):
+                                from urllib.parse import urljoin
+                                link = urljoin(url, href)
+                            else:
+                                link = href
+
+                    # Otherwise look for link inside the article
+                    if not link:
+                        for link_sel in selectors.get('link', 'a').split(','):
+                            link_elem = article_elem.select_one(link_sel.strip())
+                            if link_elem:
+                                href = link_elem.get('href', '')
+                                if href:
+                                    # Handle relative URLs
+                                    if href.startswith('/'):
+                                        from urllib.parse import urljoin
+                                        link = urljoin(url, href)
+                                    else:
+                                        link = href
+                                    break
 
                     # If no link found in selectors, try the title element itself
                     if not link and title:
                         title_links = article_elem.select('a')
                         for a in title_links:
                             href = a.get('href', '')
-                            if href and '/news/' in href:
+                            if href and any(p in href for p in ['/news/', '/blog/', '/post/', '/article/']):
                                 if href.startswith('/'):
                                     from urllib.parse import urljoin
                                     link = urljoin(url, href)
@@ -1267,7 +1292,7 @@ class WebSourceScraper:
                         title_links = article_elem.select('a')
                         for a in title_links:
                             href = a.get('href', '')
-                            if href and '/news/' in href:
+                            if href and any(p in href for p in ['/news/', '/blog/', '/post/', '/article/']):
                                 if href.startswith('/'):
                                     from urllib.parse import urljoin
                                     link = urljoin(url, href)
