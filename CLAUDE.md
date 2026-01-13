@@ -5,7 +5,7 @@
 ### Database Migrations
 - Schema changes MUST go through `db_migrations.py` - see file header for instructions
 - Never modify inline schema in database classes
-- Current versions: discord_links=v2, ai_news=v2
+- Current versions: discord_links=v2, ai_news=v7
 
 ### Scripts Are Self-Contained
 - Each `.py` file runs standalone via `uv run script.py`
@@ -62,6 +62,18 @@ Access via Hetzner Console if SSH blocked: https://console.hetzner.cloud/
 ## Vector Search
 
 Both databases use `sqlite-vec` for embeddings:
+
+**ai_news.db - Hybrid Retrieval (BGE-M3)**:
+- Primary model: `BAAI/bge-m3` via FlagEmbedding (1024-dim dense + 256-dim sparse)
+- Fallback model: `all-MiniLM-L6-v2` (384 dimensions) if BGE-M3 unavailable
+- Virtual tables: `tweet_embeddings_dense`, `tweet_embeddings_sparse`,
+  `web_article_embeddings_dense`, `web_article_embeddings_sparse`,
+  `youtube_video_embeddings_dense`, `youtube_video_embeddings_sparse`
+- Hybrid scoring: `α * dense_score + (1-α) * sparse_score` (default α=0.5)
+- Source attribution via TF-IDF Document Page Finder
+
+**discord_links.db**:
 - Model: `all-MiniLM-L6-v2` (384 dimensions)
-- Virtual tables: `link_embeddings`, `tweet_embeddings`
-- Extension loaded at runtime (graceful fallback if unavailable)
+- Virtual tables: `link_embeddings`
+
+Extension loaded at runtime (graceful fallback if unavailable)

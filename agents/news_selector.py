@@ -315,8 +315,9 @@ class NewsSelector:
         if not self.db_path or not self.db_path.exists():
             return None, None
 
+        import json
+        conn = None
         try:
-            import json
             conn = sqlite3.connect(str(self.db_path))
             cursor = conn.cursor()
 
@@ -335,7 +336,6 @@ class NewsSelector:
                 elif source_type == 'youtube':
                     table_prefix = 'youtube_video'
                 else:
-                    conn.close()
                     return None, None
 
                 try:
@@ -359,14 +359,10 @@ class NewsSelector:
                         sparse_list.append(np.array(json.loads(sparse_row[0]), dtype=np.float32))
                     else:
                         # Missing embedding for this item
-                        conn.close()
                         return None, None
 
                 except Exception:
-                    conn.close()
                     return None, None
-
-            conn.close()
 
             if not dense_list:
                 return None, None
@@ -376,6 +372,9 @@ class NewsSelector:
         except Exception as e:
             print(f"[NewsSelector] Error fetching embeddings: {e}")
             return None, None
+        finally:
+            if conn:
+                conn.close()
 
     def _mmr_select_hybrid(
         self,
