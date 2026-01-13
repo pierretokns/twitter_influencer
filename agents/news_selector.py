@@ -109,6 +109,7 @@ class NewsSelector:
                   AND tweet_id NOT IN (
                     SELECT source_id FROM tournament_sources
                     WHERE source_type = 'twitter'
+                      AND citation_number IS NOT NULL
                       AND run_id IN (
                         SELECT run_id FROM tournament_runs
                         WHERE status = 'complete'
@@ -138,6 +139,7 @@ class NewsSelector:
                   AND article_id NOT IN (
                     SELECT source_id FROM tournament_sources
                     WHERE source_type = 'web'
+                      AND citation_number IS NOT NULL
                       AND run_id IN (
                         SELECT run_id FROM tournament_runs
                         WHERE status = 'complete'
@@ -165,6 +167,7 @@ class NewsSelector:
                   AND video_id NOT IN (
                     SELECT source_id FROM tournament_sources
                     WHERE source_type = 'youtube'
+                      AND citation_number IS NOT NULL
                       AND run_id IN (
                         SELECT run_id FROM tournament_runs
                         WHERE status = 'complete'
