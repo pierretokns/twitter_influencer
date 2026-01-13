@@ -252,21 +252,76 @@ def find_supporting_sources(
         return []
 
 
+def _extract_key_entities(text: str) -> set:
+    """
+    Extract key named entities and important terms from text.
+
+    Focuses on:
+    - Company/product names (OpenAI, Claude, GPT, etc.)
+    - Proper nouns (capitalized words)
+    - Technical terms and acronyms
+    - Numbers and statistics
+    """
+    import re
+
+    entities = set()
+    text_lower = text.lower()
+
+    # Known AI companies and products (case-insensitive matching)
+    known_entities = [
+        'openai', 'anthropic', 'google', 'deepmind', 'meta', 'microsoft',
+        'claude', 'gpt', 'gemini', 'llama', 'mistral', 'perplexity',
+        'chatgpt', 'copilot', 'bard', 'palm', 'torch', 'huggingface',
+        'nvidia', 'apple', 'amazon', 'aws', 'azure', 'youtube', 'twitter',
+        'hipaa', 'healthcare', 'epic', 'tailwind', 'github', 'reddit',
+    ]
+
+    for entity in known_entities:
+        if entity in text_lower:
+            entities.add(entity)
+
+    # Extract capitalized words/phrases (likely proper nouns)
+    # Match sequences like "OpenAI", "ChatGPT Health", "HIPAA"
+    caps_pattern = r'\b[A-Z][a-zA-Z]*(?:\s+[A-Z][a-zA-Z]*)*\b'
+    for match in re.findall(caps_pattern, text):
+        if len(match) > 2:  # Skip single letters
+            entities.add(match.lower())
+
+    # Extract numbers with context (e.g., "50 hours", "97%", "$1B")
+    number_pattern = r'\b\d+(?:\.\d+)?(?:\s*(?:%|hours?|days?|weeks?|months?|years?|[BMK]|billion|million))?\b'
+    for match in re.findall(number_pattern, text, re.IGNORECASE):
+        entities.add(match.lower())
+
+    # Extract acronyms (2-5 capital letters)
+    acronym_pattern = r'\b[A-Z]{2,5}\b'
+    for match in re.findall(acronym_pattern, text):
+        entities.add(match.lower())
+
+    return entities
+
+
 def find_sentence_source_mapping(
     sentences: List[str],
     source_texts: List[str],
-    threshold: float = 0.15
+    threshold: float = 0.25,  # Increased from 0.15
+    require_entity_overlap: bool = True
 ) -> Dict[int, int]:
     """
-    Map each sentence to its best matching source using TF-IDF similarity.
+    Map each sentence to its best matching source using TF-IDF similarity
+    with entity overlap validation.
 
     Used for Perplexity-style inline citation placement. Identifies which
     sentence in the generated content best matches which source text.
 
+    Key improvement over pure TF-IDF: requires that the sentence and source
+    share at least one key entity (company name, product, person, etc.) to
+    prevent false matches on generic AI vocabulary.
+
     Args:
         sentences: List of sentences from generated content
         source_texts: List of source texts (tweets, article snippets)
-        threshold: Minimum similarity to consider a match
+        threshold: Minimum similarity to consider a match (increased to 0.25)
+        require_entity_overlap: If True, require shared entities for match
 
     Returns:
         Dict mapping sentence_index -> source_index for sentences above threshold
@@ -282,6 +337,10 @@ def find_sentence_source_mapping(
         return {}
 
     try:
+        # Pre-extract entities from all texts for overlap checking
+        sentence_entities = [_extract_key_entities(s) for s in sentences]
+        source_entities = [_extract_key_entities(s) for s in source_texts]
+
         # Combine all texts for vectorization
         vectorizer = TfidfVectorizer(stop_words='english', max_features=5000)
         all_texts = source_texts + sentences
@@ -298,10 +357,31 @@ def find_sentence_source_mapping(
         for sent_idx, row in enumerate(similarities):
             if len(row) == 0:
                 continue
-            best_source_idx = int(row.argmax())
-            best_score = row[best_source_idx]
-            if best_score >= threshold:
-                mapping[sent_idx] = best_source_idx
+
+            # Sort sources by similarity score descending
+            sorted_sources = sorted(enumerate(row), key=lambda x: x[1], reverse=True)
+
+            for source_idx, score in sorted_sources:
+                if score < threshold:
+                    break  # No more candidates above threshold
+
+                # Check entity overlap if required
+                if require_entity_overlap:
+                    sent_ents = sentence_entities[sent_idx]
+                    src_ents = source_entities[source_idx]
+                    shared = sent_ents & src_ents
+
+                    # Filter out generic AI terms that appear everywhere
+                    generic_terms = {'ai', 'the', 'new', 'just', 'today', 'now', 'one', 'year'}
+                    meaningful_shared = shared - generic_terms
+
+                    if not meaningful_shared:
+                        # No meaningful entity overlap, skip this source
+                        continue
+
+                # Found a valid match
+                mapping[sent_idx] = source_idx
+                break  # Move to next sentence
 
         return mapping
 

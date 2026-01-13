@@ -421,7 +421,8 @@ Write ONLY the post text. No intro, no explanation. Start directly with the hook
 
         # Find which sentence best matches which source
         # Returns: {sentence_idx: cited_source_idx}
-        mapping = find_sentence_source_mapping(sentences, source_texts, threshold=0.12)
+        # Uses entity overlap validation to ensure citations are relevant
+        mapping = find_sentence_source_mapping(sentences, source_texts, threshold=0.25)
 
         # First pass: find order of appearance in text
         # Track which sources appear and in what sentence order
