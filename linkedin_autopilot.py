@@ -1086,11 +1086,24 @@ class PostRankingSystem:
                     "score": item.get("attribution_score", 0.0),
                     "is_ref": item.get("is_referenced", False),
                     "citation_num": item.get("citation_number"),
-                    "url": item.get("source_url", "")
+                    "url": item.get("source_url", ""),
+                    "cited_quote": item.get("cited_quote"),
+                    "start_time": item.get("start_time")
                 }
                 for i, item in enumerate(annotated)
                 if item.get("is_referenced", False)
             ]
+
+            # Update news_items with citation quotes from annotated sources
+            for attr in variant.source_attributions:
+                idx = attr["idx"]
+                if idx < len(news_items):
+                    if attr.get("cited_quote"):
+                        news_items[idx]['cited_quote'] = attr['cited_quote']
+                    if attr.get("start_time") is not None:
+                        news_items[idx]['start_time'] = attr['start_time']
+                    if attr.get("citation_num"):
+                        news_items[idx]['citation_number'] = attr['citation_num']
 
         # Update news_items with combined attribution from all variants
         for i, item in enumerate(news_items):
