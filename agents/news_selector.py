@@ -152,7 +152,72 @@ class NewsSelector:
         # Combine all sources (Discord links excluded - they're just pointers to web content)
         combined = tweets + articles + youtube
         print(f"[NewsSelector] Fetched {len(tweets)} tweets + {len(articles)} articles + {len(youtube)} YouTube = {len(combined)} total")
+
+        # Sort by timestamp globally so recency scoring works across all sources
+        combined = self._sort_by_timestamp(combined)
         return combined
+
+    def _parse_timestamp(self, ts: str) -> float:
+        """Parse various timestamp formats to Unix timestamp for sorting."""
+        if not ts:
+            return 0.0
+
+        from datetime import datetime
+
+        # Normalize the timestamp string
+        ts_clean = ts.strip()
+
+        # Try simple datetime first (most common for scraped_at)
+        try:
+            dt = datetime.strptime(ts_clean, "%Y-%m-%d %H:%M:%S")
+            return dt.timestamp()
+        except (ValueError, TypeError):
+            pass
+
+        # Try ISO formats with timezone
+        try:
+            # Handle +00:00 timezone
+            if '+' in ts_clean:
+                ts_no_tz = ts_clean.rsplit('+', 1)[0]
+                dt = datetime.strptime(ts_no_tz, "%Y-%m-%dT%H:%M:%S")
+                return dt.timestamp()
+        except (ValueError, TypeError):
+            pass
+
+        # Try ISO with Z suffix
+        try:
+            ts_no_z = ts_clean.rstrip('Z')
+            if '.' in ts_no_z:
+                dt = datetime.strptime(ts_no_z, "%Y-%m-%dT%H:%M:%S.%f")
+            else:
+                dt = datetime.strptime(ts_no_z, "%Y-%m-%dT%H:%M:%S")
+            return dt.timestamp()
+        except (ValueError, TypeError):
+            pass
+
+        # Try date only
+        try:
+            dt = datetime.strptime(ts_clean, "%Y-%m-%d")
+            return dt.timestamp()
+        except (ValueError, TypeError):
+            pass
+
+        # Try parsing human-readable dates like "December 11, 2025"
+        try:
+            dt = datetime.strptime(ts_clean, "%B %d, %Y")
+            return dt.timestamp()
+        except (ValueError, TypeError):
+            pass
+
+        return 0.0
+
+    def _sort_by_timestamp(self, items: List[Dict]) -> List[Dict]:
+        """Sort items by timestamp, most recent first."""
+        def get_ts(item):
+            ts = item.get('timestamp') or item.get('published_at') or item.get('scraped_at') or ''
+            return self._parse_timestamp(str(ts))
+
+        return sorted(items, key=get_ts, reverse=True)
 
     def _cosine_similarity_matrix(self, embeddings: np.ndarray) -> np.ndarray:
         """Calculate pairwise cosine similarities."""
