@@ -106,6 +106,16 @@ class NewsSelector:
                        likes_count, 'twitter' as source_type
                 FROM tweets
                 WHERE is_ai_relevant = TRUE
+                  AND tweet_id NOT IN (
+                    SELECT source_id FROM tournament_sources
+                    WHERE source_type = 'twitter'
+                      AND run_id IN (
+                        SELECT run_id FROM tournament_runs
+                        WHERE status = 'complete'
+                        ORDER BY completed_at DESC
+                        LIMIT 10
+                      )
+                  )
                 ORDER BY timestamp DESC
                 LIMIT ?
             ''', (limit,))
@@ -125,6 +135,16 @@ class NewsSelector:
                        'web' as source_type, url
                 FROM web_articles
                 WHERE is_ai_relevant = TRUE
+                  AND article_id NOT IN (
+                    SELECT source_id FROM tournament_sources
+                    WHERE source_type = 'web'
+                      AND run_id IN (
+                        SELECT run_id FROM tournament_runs
+                        WHERE status = 'complete'
+                        ORDER BY completed_at DESC
+                        LIMIT 10
+                      )
+                  )
                 ORDER BY scraped_at DESC
                 LIMIT ?
             ''', (limit,))
@@ -142,6 +162,16 @@ class NewsSelector:
                        'youtube' as source_type, url
                 FROM youtube_videos
                 WHERE is_ai_relevant = TRUE
+                  AND video_id NOT IN (
+                    SELECT source_id FROM tournament_sources
+                    WHERE source_type = 'youtube'
+                      AND run_id IN (
+                        SELECT run_id FROM tournament_runs
+                        WHERE status = 'complete'
+                        ORDER BY completed_at DESC
+                        LIMIT 10
+                      )
+                  )
                 ORDER BY published_at DESC
                 LIMIT ?
             ''', (limit,))
