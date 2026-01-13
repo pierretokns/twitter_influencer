@@ -811,7 +811,7 @@ HTML_TEMPLATE = '''
                             <span class="meta-tag">${p.content.length} chars</span>
                         </div>
                     </div>
-                    <div class="post-content"><span class="hook-line">${escapeHtml(p.content.split('\\n')[0])}</span>\\n${escapeHtml(p.content.split('\\n').slice(1).join('\\n'))}</div>
+                    <div class="post-content"><span class="hook-line">${escapeHtml(p.content.split('\\n')[0].trim())}</span>\\n${escapeHtml(p.content.split('\\n').slice(1).join('\\n'))}</div>
                 </div>`;
             }).join('');
 
@@ -929,7 +929,7 @@ HTML_TEMPLATE = '''
                         '<div style="padding:0.5rem;background:rgba(245,158,11,0.1);border-radius:4px;margin-bottom:0.5rem;font-size:0.8rem;">' +
                             'Evolved from ' + r.evolved_from + ': ' + (r.evolution_feedback || 'Improved based on QE feedback') +
                         '</div>' : '') +
-                    '<div class="post-content"><span class="hook-line">' + escapeHtml(r.content.split('\\n')[0]) + '</span>\\n' + escapeHtml(r.content.split('\\n').slice(1).join('\\n')) + '</div>' +
+                    '<div class="post-content"><span class="hook-line">' + escapeHtml(r.content.split('\\n')[0].trim()) + '</span>\\n' + escapeHtml(r.content.split('\\n').slice(1).join('\\n')) + '</div>' +
                     (r.debate_history && r.debate_history.length > 0 ?
                         '<details style="margin:0.5rem 0;padding:0.5rem;background:var(--bg);border-radius:4px;">' +
                             '<summary style="cursor:pointer;font-size:0.85rem;color:var(--accent);">View Debate History (' + r.debate_history.length + ' debates)</summary>' +

@@ -843,7 +843,7 @@ HTML_TEMPLATE = '''
         function renderPostCard(post) {
             const content = post.winner_content || '';
             const lines = content.split('\\n');
-            const hook = lines[0] || '';
+            const hook = (lines[0] || '').trim();
             const rest = lines.slice(1).join('\\n');
             const isLong = content.length > 300;
             const initial = (post.hook_style || 'W')[0].toUpperCase();
@@ -851,8 +851,7 @@ HTML_TEMPLATE = '''
             const likeCount = post.like_count || 0;
             const timeAgo = getTimeAgo(post.completed_at);
 
-            return `
-            <article class="post-card" data-run-id="${post.run_id}">
+            return `<article class="post-card" data-run-id="${post.run_id}">
                 <div class="post-header">
                     <div class="post-avatar ${post.was_published ? 'winner' : 'default'}">${initial}</div>
                     <div class="post-meta">
