@@ -396,7 +396,7 @@ Write ONLY the post text. No intro, no explanation. Start directly with the hook
         """
         from agents.hybrid_retriever import find_sentence_source_mapping
 
-        # Get only referenced sources, sorted by score
+        # Get only referenced sources, sorted by score for selection
         cited = [
             (i, s) for i, s in enumerate(annotated_sources)
             if s.get('is_referenced')
@@ -404,6 +404,7 @@ Write ONLY the post text. No intro, no explanation. Start directly with the hook
         if not cited:
             return content, annotated_sources
 
+        # Sort by score to pick best sources, limit to max_citations
         cited.sort(key=lambda x: x[1].get('attribution_score', 0), reverse=True)
         cited = cited[:max_citations]
 
@@ -422,17 +423,24 @@ Write ONLY the post text. No intro, no explanation. Start directly with the hook
         # Returns: {sentence_idx: cited_source_idx}
         mapping = find_sentence_source_mapping(sentences, source_texts, threshold=0.12)
 
-        # Build citation number mapping (source original_idx -> citation_number)
-        citation_map = {}  # original_idx -> citation_number
-        for citation_num, (orig_idx, src) in enumerate(cited, 1):
-            citation_map[orig_idx] = citation_num
+        # First pass: find order of appearance in text
+        # Track which sources appear and in what sentence order
+        appearance_order = []  # List of (sentence_idx, cited_source_idx)
+        for sent_idx in range(len(sentences)):
+            if sent_idx in mapping:
+                cited_source_idx = mapping[sent_idx]
+                if cited_source_idx not in [x[1] for x in appearance_order]:
+                    appearance_order.append((sent_idx, cited_source_idx))
+
+        # Assign citation numbers in order of appearance (1, 2, 3...)
+        cited_idx_to_citation = {}
+        for citation_num, (_, cited_source_idx) in enumerate(appearance_order, 1):
+            cited_idx_to_citation[cited_source_idx] = citation_num
+            # Update the source with its citation number
+            orig_idx, src = cited[cited_source_idx]
             src['citation_number'] = citation_num
-            # Build source URL if not present
             if not src.get('source_url'):
                 src['source_url'] = self._build_source_url(src)
-
-        # Build reverse map: cited_source_idx (0-based in cited list) -> citation_number
-        cited_idx_to_citation = {i: citation_map[orig_idx] for i, (orig_idx, _) in enumerate(cited)}
 
         # Insert markers into sentences
         marked_sentences = []
@@ -444,7 +452,10 @@ Write ONLY the post text. No intro, no explanation. Start directly with the hook
                 citation_num = cited_idx_to_citation.get(cited_source_idx)
                 if citation_num and citation_num not in used_citations:
                     # Add citation marker at end of sentence
-                    sentence = sentence.rstrip('.!?') + f'[{citation_num}]' + sentence[-1] if sentence[-1] in '.!?' else sentence + f'[{citation_num}]'
+                    if sentence and sentence[-1] in '.!?':
+                        sentence = sentence[:-1] + f'[{citation_num}]' + sentence[-1]
+                    else:
+                        sentence = sentence + f'[{citation_num}]'
                     used_citations.add(citation_num)
             marked_sentences.append(sentence)
 
@@ -458,6 +469,10 @@ Write ONLY the post text. No intro, no explanation. Start directly with the hook
 
     def _build_source_url(self, source: Dict) -> str:
         """Build URL for a source based on its type."""
+        # Prefer existing URL if present (web articles and YouTube already have URLs)
+        if source.get('url'):
+            return source['url']
+
         source_type = source.get('source_type', '')
         source_id = source.get('id', '')
 
@@ -467,6 +482,6 @@ Write ONLY the post text. No intro, no explanation. Start directly with the hook
         elif source_type == 'youtube':
             return f"https://youtube.com/watch?v={source_id}"
         elif source_type == 'web':
-            return source.get('url', '')
+            return ''  # Web articles should have URL
 
-        return source.get('url', '')
+        return ''
