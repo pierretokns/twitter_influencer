@@ -553,6 +553,68 @@ HTML_TEMPLATE = '''
             margin-right: 6px;
         }
 
+        /* Rich citation popover (instant hover) */
+        .citation-popover {
+            position: fixed;
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+            padding: 12px;
+            max-width: 350px;
+            z-index: 10000;
+            opacity: 0;
+            visibility: hidden;
+            transition: opacity 0.1s, visibility 0.1s;
+            pointer-events: none;
+            font-size: 13px;
+        }
+        .citation-popover.visible {
+            opacity: 1;
+            visibility: visible;
+        }
+        .popover-header {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-bottom: 8px;
+            font-weight: 600;
+            color: var(--text-primary);
+        }
+        .popover-header .source-icon {
+            width: 16px;
+            height: 16px;
+            border-radius: 4px;
+        }
+        .popover-header .source-icon.twitter { background: #1DA1F2; }
+        .popover-header .source-icon.youtube { background: #FF0000; }
+        .popover-header .source-icon.web { background: #4CAF50; }
+        .popover-quote {
+            font-style: italic;
+            color: var(--text-secondary);
+            border-left: 3px solid var(--linkedin-blue);
+            padding-left: 8px;
+            margin: 8px 0;
+            font-size: 12px;
+            line-height: 1.4;
+        }
+        .popover-url {
+            font-size: 11px;
+            color: var(--text-tertiary);
+            word-break: break-all;
+            margin-top: 8px;
+        }
+        .popover-timestamp {
+            display: inline-block;
+            background: rgba(255, 0, 0, 0.1);
+            color: #CC0000;
+            font-size: 10px;
+            font-weight: 600;
+            padding: 2px 6px;
+            border-radius: 3px;
+            margin-left: 8px;
+        }
+
         .sources-section-header {
             font-size: 12px;
             font-weight: 600;
@@ -947,9 +1009,17 @@ HTML_TEMPLATE = '''
             return escaped.replace(markerRegex, (match, num) => {
                 const source = sourceMap ? sourceMap[num] : null;
                 if (source && source.url) {
-                    // Show full URL in tooltip on hover, open in new tab on click
+                    // Encode source data for popover (escape for HTML attribute)
+                    const sourceData = JSON.stringify({
+                        url: source.url,
+                        author: source.author,
+                        type: source.type,
+                        quote: source.quote,
+                        startTime: source.startTime
+                    }).replace(/"/g, '&quot;');
+
                     return '<a href="' + source.url + '" target="_blank" rel="noopener" ' +
-                           'class="citation-marker" title="' + source.url + '">' + match + '</a>';
+                           'class="citation-marker" data-source="' + sourceData + '">' + match + '</a>';
                 }
                 // No source URL found - render as plain text
                 return '<span class="citation-marker" style="cursor: default; opacity: 0.6;">' + match + '</span>';
@@ -965,7 +1035,9 @@ HTML_TEMPLATE = '''
                     map[s.citation_number] = {
                         url: s.source_url,
                         author: s.source_author || 'unknown',
-                        type: s.source_type || 'web'
+                        type: s.source_type || 'web',
+                        quote: s.cited_quote || '',
+                        startTime: s.start_time || null
                     };
                 }
             });
@@ -1130,7 +1202,68 @@ HTML_TEMPLATE = '''
             });
         }
 
-        // Initial load
+        // Setup rich citation popovers (instant hover)
+        function setupCitationPopovers() {
+            // Create popover element if it doesn't exist
+            let popover = document.querySelector('.citation-popover');
+            if (!popover) {
+                popover = document.createElement('div');
+                popover.className = 'citation-popover';
+                document.body.appendChild(popover);
+            }
+
+            // Use event delegation for hover events
+            document.addEventListener('mouseenter', (e) => {
+                if (e.target.classList.contains('citation-marker') && e.target.dataset.source) {
+                    try {
+                        const data = JSON.parse(e.target.dataset.source);
+
+                        // Build popover content
+                        let html = '<div class="popover-header">';
+                        html += '<span class="source-icon ' + (data.type || 'web') + '"></span>';
+                        html += '<strong>@' + escapeHtml(data.author || 'source') + '</strong>';
+                        if (data.startTime !== null && data.startTime !== undefined) {
+                            const mins = Math.floor(data.startTime / 60);
+                            const secs = Math.floor(data.startTime % 60);
+                            html += '<span class="popover-timestamp">' + mins + ':' + secs.toString().padStart(2, '0') + '</span>';
+                        }
+                        html += '</div>';
+
+                        if (data.quote) {
+                            html += '<div class="popover-quote">"' + escapeHtml(data.quote) + '"</div>';
+                        }
+
+                        html += '<div class="popover-url">' + escapeHtml(data.url || '') + '</div>';
+
+                        popover.innerHTML = html;
+
+                        // Position popover below the marker
+                        const rect = e.target.getBoundingClientRect();
+                        popover.style.left = Math.max(10, rect.left) + 'px';
+                        popover.style.top = (rect.bottom + 5) + 'px';
+
+                        // Make sure popover doesn't go off-screen right
+                        const popoverRect = popover.getBoundingClientRect();
+                        if (popoverRect.right > window.innerWidth - 10) {
+                            popover.style.left = (window.innerWidth - popoverRect.width - 10) + 'px';
+                        }
+
+                        popover.classList.add('visible');
+                    } catch (err) {
+                        console.error('Failed to parse citation data:', err);
+                    }
+                }
+            }, true);
+
+            document.addEventListener('mouseleave', (e) => {
+                if (e.target.classList.contains('citation-marker')) {
+                    popover.classList.remove('visible');
+                }
+            }, true);
+        }
+
+        // Initial setup
+        setupCitationPopovers();
         loadFeed();
     </script>
 </body>
@@ -1190,8 +1323,10 @@ def get_feed():
             post['cited_count'] = result['cited_count'] if result and result['cited_count'] else 0
 
             # Get citation sources (those with citation_number) for inline markers
+            # Include cited_quote and start_time for rich popovers
             cursor.execute("""
-                SELECT citation_number, source_url, source_author, source_type
+                SELECT citation_number, source_url, source_author, source_type,
+                       cited_quote, start_time
                 FROM tournament_sources
                 WHERE run_id = ? AND citation_number IS NOT NULL
                 ORDER BY citation_number

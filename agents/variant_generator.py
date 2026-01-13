@@ -433,14 +433,19 @@ Write ONLY the post text. No intro, no explanation. Start directly with the hook
                     appearance_order.append((sent_idx, cited_source_idx))
 
         # Assign citation numbers in order of appearance (1, 2, 3...)
+        # Also extract best matching quote for each cited source
         cited_idx_to_citation = {}
-        for citation_num, (_, cited_source_idx) in enumerate(appearance_order, 1):
+        for citation_num, (sent_idx, cited_source_idx) in enumerate(appearance_order, 1):
             cited_idx_to_citation[cited_source_idx] = citation_num
             # Update the source with its citation number
             orig_idx, src = cited[cited_source_idx]
             src['citation_number'] = citation_num
             if not src.get('source_url'):
                 src['source_url'] = self._build_source_url(src)
+
+            # Extract best matching quote from source content
+            sentence = sentences[sent_idx] if sent_idx < len(sentences) else ''
+            self._extract_citation_quote(src, sentence)
 
         # Insert markers into sentences
         marked_sentences = []
@@ -485,3 +490,75 @@ Write ONLY the post text. No intro, no explanation. Start directly with the hook
             return ''  # Web articles should have URL
 
         return ''
+
+    def _extract_citation_quote(self, source: Dict, sentence: str) -> None:
+        """
+        Extract the best matching quote from a source for citation display.
+
+        For YouTube sources, also extracts timestamp for deep-linking.
+        Updates source dict in-place with 'cited_quote' and 'start_time' fields.
+
+        Args:
+            source: Source dict with 'source_type', 'text', 'id', etc.
+            sentence: The sentence from the post that references this source
+        """
+        source_type = source.get('source_type', '')
+
+        # Default: use first 200 chars of source text
+        source_text = source.get('text', '')
+        source['cited_quote'] = source_text[:200] if source_text else None
+        source['start_time'] = None
+
+        if not sentence or len(sentence) < 10:
+            return
+
+        try:
+            if source_type == 'youtube':
+                # Use YouTube-specific function with transcript/timestamp support
+                from youtube_channel_scraper import get_youtube_quote_with_timestamp
+                from pathlib import Path
+
+                video = {
+                    'video_id': source.get('id', ''),
+                    'description': source.get('text', ''),
+                    'title': source.get('username', ''),  # channel name stored in username
+                    'url': source.get('url', source.get('source_url', ''))
+                }
+
+                db_path = Path('output_data/ai_news.db')
+                quote, url_with_timestamp = get_youtube_quote_with_timestamp(video, sentence, db_path)
+
+                if quote:
+                    source['cited_quote'] = quote
+
+                # Extract timestamp from URL if present
+                if url_with_timestamp and '&t=' in url_with_timestamp:
+                    import re
+                    match = re.search(r'[&?]t=(\d+)s', url_with_timestamp)
+                    if match:
+                        source['start_time'] = float(match.group(1))
+                        # Update source URL to include timestamp
+                        source['source_url'] = url_with_timestamp
+
+            elif source_type in ('web', 'twitter'):
+                # Use generic paragraph matching with BGE-M3
+                from agents.hybrid_retriever import find_best_paragraph_match
+
+                # Create paragraph chunks from source text
+                paragraphs = []
+                if source_text:
+                    # Split on double newlines or sentences
+                    parts = source_text.split('\n\n')
+                    if len(parts) <= 1:
+                        parts = re.split(r'(?<=[.!?])\s+', source_text)
+                    paragraphs = [{'text': p.strip(), 'index': i} for i, p in enumerate(parts) if len(p.strip()) >= 30]
+
+                if paragraphs:
+                    match = find_best_paragraph_match(sentence, paragraphs, threshold=0.2)
+                    if match:
+                        source['cited_quote'] = match['text']
+
+        except ImportError as e:
+            print(f"[Generator] Quote extraction import failed: {e}")
+        except Exception as e:
+            print(f"[Generator] Quote extraction failed for {source_type}: {e}")

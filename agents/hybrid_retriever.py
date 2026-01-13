@@ -21,7 +21,7 @@ DOCUMENT PAGE FINDER:
     Used for source attribution after post generation.
 
 USAGE:
-    from agents.hybrid_retriever import HybridRetriever, find_supporting_sources
+    from agents.hybrid_retriever import HybridRetriever, find_supporting_sources, find_best_paragraph_match
 
     # For retrieval
     retriever = HybridRetriever(alpha=0.5)
@@ -29,6 +29,13 @@ USAGE:
 
     # For source attribution
     citations = find_supporting_sources(generated_content, source_texts, threshold=0.2)
+
+    # For paragraph-level quote extraction
+    paragraphs = [{'text': 'First paragraph...', 'index': 0}, ...]
+    match = find_best_paragraph_match("AI advances rapidly", paragraphs, threshold=0.3)
+    if match:
+        quote = match['text']
+        start_time = match.get('start_time')  # YouTube timestamp
 """
 
 import numpy as np
@@ -337,6 +344,147 @@ def extract_citations(
     return referenced_sources
 
 
+def find_best_paragraph_match(
+    sentence: str,
+    paragraphs: List[Dict],
+    threshold: float = 0.3
+) -> Optional[Dict]:
+    """
+    Find the specific paragraph/segment that best matches a sentence using BGE-M3.
+
+    Used for extracting citation quotes from web articles and YouTube content.
+    Based on SOTA practices from Perplexity AI and academic literature:
+    - Meta-Chunking (arXiv 2410.12788): Logical perception boundaries
+    - Max-Min Semantic Chunking: Dynamic similarity assessment
+
+    Args:
+        sentence: The sentence from the generated post to match
+        paragraphs: List of paragraph/segment dicts with 'text' key.
+                   May also have 'start_time' (YouTube), 'index', 'source' keys.
+        threshold: Minimum cosine similarity to consider a match (0.3 for BGE-M3).
+                   Higher than TF-IDF threshold (0.15) since semantic embeddings
+                   produce higher similarity scores for related content.
+
+    Returns:
+        Dict with matched paragraph info if found:
+        - 'text': The matched paragraph text (truncated to 200 chars)
+        - 'score': Cosine similarity score
+        - 'start_time': YouTube timestamp if available
+        - 'index': Paragraph index
+        - 'source': 'description' or 'transcript' for YouTube
+        Returns None if no match above threshold.
+    """
+    if not paragraphs or not sentence or len(sentence.strip()) < 10:
+        return None
+
+    # Filter empty paragraphs
+    valid_paragraphs = [
+        p for p in paragraphs
+        if p.get('text') and len(p.get('text', '').strip()) >= 20
+    ]
+
+    if not valid_paragraphs:
+        return None
+
+    # Get BGE-M3 model
+    model = get_bge_m3_model()
+
+    if model is None:
+        # Fallback to TF-IDF if BGE-M3 not available
+        return _find_best_paragraph_tfidf(sentence, valid_paragraphs, threshold=0.15)
+
+    try:
+        from sklearn.metrics.pairwise import cosine_similarity
+
+        # Encode all texts: paragraphs + query sentence
+        texts = [p['text'] for p in valid_paragraphs] + [sentence]
+
+        result = model.encode(
+            texts,
+            max_length=512,
+            return_dense=True,
+            return_sparse=False,
+            return_colbert_vecs=False
+        )
+
+        # Get dense embeddings
+        dense_vecs = np.array(result['dense_vecs'], dtype=np.float32)
+        query_vec = dense_vecs[-1:]   # (1, 1024)
+        para_vecs = dense_vecs[:-1]   # (N, 1024)
+
+        # Compute cosine similarity
+        similarities = cosine_similarity(query_vec, para_vecs)[0]
+
+        # Find best match
+        best_idx = int(similarities.argmax())
+        best_score = float(similarities[best_idx])
+
+        if best_score >= threshold:
+            matched = valid_paragraphs[best_idx]
+            return {
+                'text': matched['text'][:200],
+                'score': best_score,
+                'start_time': matched.get('start_time'),
+                'index': matched.get('index', best_idx),
+                'source': matched.get('source')
+            }
+
+        return None
+
+    except Exception as e:
+        print(f"[HybridRetriever] BGE-M3 paragraph matching failed: {e}")
+        # Fallback to TF-IDF
+        return _find_best_paragraph_tfidf(sentence, valid_paragraphs, threshold=0.15)
+
+
+def _find_best_paragraph_tfidf(
+    sentence: str,
+    paragraphs: List[Dict],
+    threshold: float = 0.15
+) -> Optional[Dict]:
+    """
+    Fallback TF-IDF based paragraph matching when BGE-M3 unavailable.
+
+    Args:
+        sentence: Query sentence
+        paragraphs: List of paragraph dicts with 'text' key
+        threshold: Minimum similarity threshold
+
+    Returns:
+        Best matching paragraph dict or None
+    """
+    try:
+        from sklearn.feature_extraction.text import TfidfVectorizer
+        from sklearn.metrics.pairwise import cosine_similarity
+
+        texts = [p['text'] for p in paragraphs] + [sentence]
+        vectorizer = TfidfVectorizer(stop_words='english', max_features=5000)
+        tfidf_matrix = vectorizer.fit_transform(texts)
+
+        query_vec = tfidf_matrix[-1]
+        para_vecs = tfidf_matrix[:-1]
+
+        similarities = cosine_similarity(query_vec, para_vecs)[0]
+        best_idx = int(similarities.argmax())
+        best_score = float(similarities[best_idx])
+
+        if best_score >= threshold:
+            matched = paragraphs[best_idx]
+            return {
+                'text': matched['text'][:200],
+                'score': best_score,
+                'start_time': matched.get('start_time'),
+                'index': matched.get('index', best_idx),
+                'source': matched.get('source')
+            }
+
+        return None
+
+    except Exception as e:
+        print(f"[HybridRetriever] TF-IDF paragraph matching failed: {e}")
+        return None
+
+
 # Singleton for BGE-M3 model (lazy loaded)
 _bge_m3_model = None
 
@@ -464,5 +612,20 @@ if __name__ == "__main__":
     sparse_dict = {100: 0.5, 200: 0.8, 300: 0.3, 400: 0.9, 500: 0.1}
     dense = sparse_to_dense(sparse_dict, top_k=4)
     print(f"Sparse to dense: {dense}")  # Should be [0.9, 0.8, 0.5, 0.3]
+
+    # Test find_best_paragraph_match (TF-IDF fallback - BGE-M3 may not be loaded)
+    print("\nTesting find_best_paragraph_match...")
+    paragraphs = [
+        {'text': 'OpenAI released GPT-5 with breakthrough reasoning capabilities', 'index': 0},
+        {'text': 'Google announced new quantum computing advances', 'index': 1},
+        {'text': 'Claude 4 from Anthropic supports 1 million token context', 'index': 2, 'start_time': 125.5},
+    ]
+    query = "Anthropic Claude extended context window"
+    match = find_best_paragraph_match(query, paragraphs, threshold=0.1)
+    if match:
+        print(f"  Match found: '{match['text'][:50]}...'")
+        print(f"  Score: {match['score']:.3f}, Index: {match['index']}, Start time: {match.get('start_time')}")
+    else:
+        print("  No match found (may need lower threshold)")
 
     print("\nAll tests passed!")

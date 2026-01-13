@@ -159,24 +159,32 @@ def save_tournament_to_db(
                 is_referenced = item.get('is_referenced', False)
                 attribution_score = item.get('attribution_score', 0.0)
                 citation_number = item.get('citation_number')  # Perplexity-style [N] marker
+                cited_quote = item.get('cited_quote')  # Best matching quote for popover
+                start_time = item.get('start_time')  # YouTube timestamp for deep-linking
+
+                # Use source URL with timestamp if available
+                final_url = item.get('source_url', source_url)
 
                 cursor.execute("""
                     INSERT INTO tournament_sources (
                         run_id, source_type, source_id, source_text,
                         source_url, source_author, source_timestamp,
-                        is_referenced, attribution_score, citation_number
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        is_referenced, attribution_score, citation_number,
+                        cited_quote, start_time
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
                     run_id,
                     source_type,
                     str(source_id),
                     item.get('text', '')[:500],  # Truncate long text
-                    source_url,
+                    final_url,
                     item.get('username', ''),
                     item.get('timestamp', ''),
                     is_referenced,
                     attribution_score,
-                    citation_number
+                    citation_number,
+                    cited_quote[:200] if cited_quote else None,  # Truncate quote
+                    start_time
                 ))
                 saved_count += 1
 
