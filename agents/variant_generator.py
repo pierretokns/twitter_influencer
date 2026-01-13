@@ -52,7 +52,7 @@ import random
 import re
 import subprocess
 import time
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 from .post_variant import PostVariant
 
@@ -371,3 +371,102 @@ Write ONLY the post text. No intro, no explanation. Start directly with the hook
         except Exception as e:
             print(f"[Generator] Attribution failed: {e}")
             return news_items
+
+    def insert_citation_markers(
+        self,
+        content: str,
+        annotated_sources: List[Dict],
+        max_citations: int = 5
+    ) -> Tuple[str, List[Dict]]:
+        """
+        Insert inline [1], [2] citation markers into post content.
+
+        Uses sentence-level TF-IDF to identify which sentences reference
+        which sources, then inserts markers at sentence boundaries.
+
+        Args:
+            content: The generated post content
+            annotated_sources: Sources with is_referenced and attribution_score
+            max_citations: Max inline markers (rest stay unlabeled in panel)
+
+        Returns:
+            Tuple of:
+            - Content with [1], [2] markers inserted
+            - Sources list with citation_number field added
+        """
+        from agents.hybrid_retriever import find_sentence_source_mapping
+
+        # Get only referenced sources, sorted by score
+        cited = [
+            (i, s) for i, s in enumerate(annotated_sources)
+            if s.get('is_referenced')
+        ]
+        if not cited:
+            return content, annotated_sources
+
+        cited.sort(key=lambda x: x[1].get('attribution_score', 0), reverse=True)
+        cited = cited[:max_citations]
+
+        # Split content into sentences
+        sentence_pattern = r'(?<=[.!?])\s+'
+        sentences = re.split(sentence_pattern, content)
+        sentences = [s.strip() for s in sentences if s.strip()]
+
+        if not sentences:
+            return content, annotated_sources
+
+        # Get source texts for matching
+        source_texts = [s.get('text', '')[:500] for _, s in cited]
+
+        # Find which sentence best matches which source
+        # Returns: {sentence_idx: cited_source_idx}
+        mapping = find_sentence_source_mapping(sentences, source_texts, threshold=0.12)
+
+        # Build citation number mapping (source original_idx -> citation_number)
+        citation_map = {}  # original_idx -> citation_number
+        for citation_num, (orig_idx, src) in enumerate(cited, 1):
+            citation_map[orig_idx] = citation_num
+            src['citation_number'] = citation_num
+            # Build source URL if not present
+            if not src.get('source_url'):
+                src['source_url'] = self._build_source_url(src)
+
+        # Build reverse map: cited_source_idx (0-based in cited list) -> citation_number
+        cited_idx_to_citation = {i: citation_map[orig_idx] for i, (orig_idx, _) in enumerate(cited)}
+
+        # Insert markers into sentences
+        marked_sentences = []
+        used_citations = set()
+
+        for sent_idx, sentence in enumerate(sentences):
+            if sent_idx in mapping:
+                cited_source_idx = mapping[sent_idx]
+                citation_num = cited_idx_to_citation.get(cited_source_idx)
+                if citation_num and citation_num not in used_citations:
+                    # Add citation marker at end of sentence
+                    sentence = sentence.rstrip('.!?') + f'[{citation_num}]' + sentence[-1] if sentence[-1] in '.!?' else sentence + f'[{citation_num}]'
+                    used_citations.add(citation_num)
+            marked_sentences.append(sentence)
+
+        # Reconstruct content
+        marked_content = ' '.join(marked_sentences)
+
+        cited_count = len(used_citations)
+        print(f"[Generator] Inserted {cited_count} citation markers")
+
+        return marked_content, annotated_sources
+
+    def _build_source_url(self, source: Dict) -> str:
+        """Build URL for a source based on its type."""
+        source_type = source.get('source_type', '')
+        source_id = source.get('id', '')
+
+        if source_type == 'twitter':
+            username = source.get('username', '')
+            return f"https://x.com/{username}/status/{source_id}"
+        elif source_type == 'youtube':
+            return f"https://youtube.com/watch?v={source_id}"
+        elif source_type == 'web':
+            return source.get('url', '')
+
+        return source.get('url', '')

@@ -1063,6 +1063,54 @@ class PostRankingSystem:
             return variants
 
         Logger.success(f"Generated {len(variants)} variants")
+
+        # ===== SOURCE ATTRIBUTION (Document Page Finder) =====
+        # For each variant, identify which sources were actually referenced
+        # using TF-IDF similarity (per Liang et al. 2024 hybrid retrieval paper)
+        Logger.info("\n[STEP 1.5] Running source attribution...")
+        for variant in variants:
+            annotated = self.variant_generator.annotate_sources_with_attribution(
+                variant.content, news_items, threshold=0.15
+            )
+
+            # Insert inline citation markers [1], [2], etc. (Perplexity-style)
+            marked_content, annotated = self.variant_generator.insert_citation_markers(
+                variant.content, annotated, max_citations=5
+            )
+            variant.content = marked_content  # Replace with marked content
+
+            # Store attribution with the variant for later saving
+            variant.source_attributions = [
+                {
+                    "idx": i,
+                    "score": item.get("attribution_score", 0.0),
+                    "is_ref": item.get("is_referenced", False),
+                    "citation_num": item.get("citation_number"),
+                    "url": item.get("source_url", "")
+                }
+                for i, item in enumerate(annotated)
+                if item.get("is_referenced", False)
+            ]
+
+        # Update news_items with combined attribution from all variants
+        for i, item in enumerate(news_items):
+            item['is_referenced'] = any(
+                i in [a["idx"] for a in v.source_attributions] for v in variants
+            )
+            item['attribution_score'] = max(
+                (a["score"] for v in variants for a in v.source_attributions if a["idx"] == i),
+                default=0.0
+            )
+            # Find citation number if any variant assigned one
+            for v in variants:
+                for attr in v.source_attributions:
+                    if attr["idx"] == i and attr.get("citation_num"):
+                        item['citation_number'] = attr["citation_num"]
+                        item['source_url'] = attr.get("url", "")
+                        break
+
+        self.pipeline_state["news_items"] = news_items  # Update with attribution
+
         notify(1, "generated", {"count": len(variants)})
 
         # ===== STEP 2: QE EVALUATION =====

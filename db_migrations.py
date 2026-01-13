@@ -272,7 +272,7 @@ def migrate_discord_db(conn: sqlite3.Connection) -> int:
 # AI NEWS DATABASE MIGRATIONS
 # =============================================================================
 
-AI_NEWS_DB_VERSION = 7
+AI_NEWS_DB_VERSION = 8
 
 AI_NEWS_MIGRATIONS: Dict[int, List[str]] = {
     # Version 1: Initial schema
@@ -595,6 +595,17 @@ AI_NEWS_MIGRATIONS: Dict[int, List[str]] = {
 
         # Index for finding referenced sources by attribution score
         "CREATE INDEX IF NOT EXISTS idx_tournament_sources_referenced ON tournament_sources(is_referenced, attribution_score DESC)",
+    ],
+
+    # Version 8: Perplexity-style inline citations
+    # Add citation_number to track which [N] marker maps to which source
+    8: [
+        # citation_number: The inline marker number [1], [2], etc.
+        # NULL means source was referenced but not given an inline citation
+        "ALTER TABLE tournament_sources ADD COLUMN citation_number INTEGER DEFAULT NULL",
+
+        # Index for looking up sources by citation number
+        "CREATE INDEX IF NOT EXISTS idx_tournament_sources_citation ON tournament_sources(run_id, citation_number)",
     ],
 }
 

@@ -525,6 +525,34 @@ HTML_TEMPLATE = '''
             margin-left: 8px;
         }
         .source-score.low { background: var(--text-tertiary); }
+
+        /* Perplexity-style inline citation markers */
+        .citation-marker {
+            color: var(--linkedin-blue);
+            font-weight: 600;
+            text-decoration: none;
+            cursor: pointer;
+            background: rgba(10, 102, 194, 0.1);
+            padding: 1px 4px;
+            border-radius: 3px;
+            font-size: 0.85em;
+            margin: 0 1px;
+        }
+        .citation-marker:hover {
+            background: rgba(10, 102, 194, 0.25);
+            text-decoration: underline;
+        }
+        .citation-badge {
+            display: inline-block;
+            background: var(--linkedin-blue);
+            color: white;
+            font-size: 10px;
+            font-weight: 600;
+            padding: 2px 5px;
+            border-radius: 3px;
+            margin-right: 6px;
+        }
+
         .sources-section-header {
             font-size: 12px;
             font-weight: 600;
@@ -884,8 +912,14 @@ HTML_TEMPLATE = '''
             const likeCount = post.like_count || 0;
             const timeAgo = getTimeAgo(post.completed_at);
 
+            // Build citation source map for inline markers
+            const sourceMap = buildSourceMap(post.citation_sources || []);
+
             let html = `<article class="post-card" data-run-id="${post.run_id}"><div class="post-header"><div class="post-avatar ${post.was_published ? 'winner' : 'default'}">${initial}</div><div class="post-meta"><div class="post-author"><a href="#">${post.hook_style || 'Tournament Winner'}</a><span class="badge badge-winner">WINNER</span>${post.was_published ? '<span class="badge badge-published">PUBLISHED</span>' : ''}</div><div class="post-subtitle">Tournament #${post.run_id} &bull; ${post.num_variants} variants &bull; ${post.num_rounds} rounds</div><div class="post-time">${timeAgo}</div></div><button class="post-menu" onclick="showPostMenu(${post.run_id})"><svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><path d="M14 12a2 2 0 11-4 0 2 2 0 014 0zm6 0a2 2 0 11-4 0 2 2 0 014 0zM6 12a2 2 0 11-4 0 2 2 0 014 0z"/></svg></button></div>`;
-            html += `<div class="post-content ${isLong ? 'collapsed' : ''}" id="content-${post.run_id}"><span class="hook">${escapeHtml(hook)}</span>${rest ? '\\n' + escapeHtml(rest) : ''}</div>`;
+            // Render content with clickable citation markers [1], [2], etc.
+            const hookHtml = renderContentWithCitations(hook, sourceMap);
+            const restHtml = rest ? '\\n' + renderContentWithCitations(rest, sourceMap) : '';
+            html += `<div class="post-content ${isLong ? 'collapsed' : ''}" id="content-${post.run_id}"><span class="hook">${hookHtml}</span>${restHtml}</div>`;
             if (isLong) html += `<span class="see-more" onclick="expandPost(${post.run_id})">...see more</span>`;
             html += `<div class="post-metrics"><span class="metric ${post.winner_qe_score >= 75 ? 'high' : ''}">QE: ${post.winner_qe_score || 0}/100</span><span class="metric">ELO: ${Math.round(post.winner_elo || 1000)}</span><span class="metric">${post.total_debates || 0} debates</span></div>`;
             html += `<div class="reactions-summary"><div style="display: flex; align-items: center; gap: 4px;">`;
@@ -900,6 +934,42 @@ HTML_TEMPLATE = '''
         function escapeHtml(text) {
             if (!text) return '';
             return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        }
+
+        // Render content with clickable Perplexity-style citation markers
+        function renderContentWithCitations(content, sourceMap) {
+            // First escape HTML
+            let escaped = escapeHtml(content);
+
+            // Find citation markers like [1], [2], [3] and make them clickable
+            const markerRegex = /\[(\d+)\]/g;
+
+            return escaped.replace(markerRegex, (match, num) => {
+                const source = sourceMap ? sourceMap[num] : null;
+                if (source && source.url) {
+                    // Show full URL in tooltip on hover, open in new tab on click
+                    return '<a href="' + source.url + '" target="_blank" rel="noopener" ' +
+                           'class="citation-marker" title="' + source.url + '">' + match + '</a>';
+                }
+                // No source URL found - render as plain text
+                return '<span class="citation-marker" style="cursor: default; opacity: 0.6;">' + match + '</span>';
+            });
+        }
+
+        // Build source URL map from sources array for citation rendering
+        function buildSourceMap(sources) {
+            const map = {};
+            if (!sources) return map;
+            sources.forEach(s => {
+                if (s.citation_number && s.source_url) {
+                    map[s.citation_number] = {
+                        url: s.source_url,
+                        author: s.source_author || 'unknown',
+                        type: s.source_type || 'web'
+                    };
+                }
+            });
+            return map;
         }
 
         function getTimeAgo(dateStr) {
@@ -1006,10 +1076,12 @@ HTML_TEMPLATE = '''
         function renderSourceItem(s, isCited) {
             const scorePercent = Math.round((s.attribution_score || 0) * 100);
             const scoreClass = scorePercent < 30 ? 'low' : '';
+            const citationBadge = s.citation_number ? `<span class="citation-badge">[${s.citation_number}]</span>` : '';
 
             return `
                 <a href="${s.source_url || '#'}" target="_blank" class="source-item ${isCited ? 'cited' : ''}" ${!s.source_url ? 'style="pointer-events:none"' : ''}>
                     <div class="source-header">
+                        ${citationBadge}
                         <span class="source-type ${s.source_type}">${s.source_type}</span>
                         <span class="source-author">@${s.source_author || 'unknown'}</span>
                         ${isCited ? `<span class="source-score ${scoreClass}">${scorePercent}%</span>` : ''}
@@ -1103,7 +1175,7 @@ def get_feed():
     cursor.execute(query, params)
     posts = [dict(row) for row in cursor.fetchall()]
 
-    # Get source counts for each post (including cited count)
+    # Get source counts and citation sources for each post
     for post in posts:
         try:
             cursor.execute("""
@@ -1116,9 +1188,19 @@ def get_feed():
             result = cursor.fetchone()
             post['source_count'] = result['total_count'] if result else 0
             post['cited_count'] = result['cited_count'] if result and result['cited_count'] else 0
+
+            # Get citation sources (those with citation_number) for inline markers
+            cursor.execute("""
+                SELECT citation_number, source_url, source_author, source_type
+                FROM tournament_sources
+                WHERE run_id = ? AND citation_number IS NOT NULL
+                ORDER BY citation_number
+            """, (post['run_id'],))
+            post['citation_sources'] = [dict(row) for row in cursor.fetchall()]
         except:
             post['source_count'] = 0
             post['cited_count'] = 0
+            post['citation_sources'] = []
 
     # Get user's likes
     try:
@@ -1160,10 +1242,11 @@ def get_sources(run_id):
         cursor.execute("""
             SELECT source_type, source_text, source_url, source_author, source_timestamp,
                    COALESCE(is_referenced, 0) as is_referenced,
-                   COALESCE(attribution_score, 0.0) as attribution_score
+                   COALESCE(attribution_score, 0.0) as attribution_score,
+                   citation_number
             FROM tournament_sources
             WHERE run_id = ?
-            ORDER BY is_referenced DESC, attribution_score DESC, source_type, source_timestamp DESC
+            ORDER BY citation_number ASC NULLS LAST, is_referenced DESC, attribution_score DESC, source_type, source_timestamp DESC
         """, (run_id,))
         sources = [dict(row) for row in cursor.fetchall()]
     except Exception as e:

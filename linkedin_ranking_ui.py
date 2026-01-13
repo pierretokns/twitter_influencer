@@ -141,8 +141,8 @@ def save_tournament_to_db(
         # Save the top sources used for generation (limit to avoid bloat)
         # Now includes is_referenced and attribution_score from Document Page Finder
         MAX_SOURCES = 20  # Save top 20 most relevant sources
-        if news_sources and winner:
-            saved_count = 0
+        saved_count = 0
+        if news_sources:
             for idx, item in enumerate(news_sources[:MAX_SOURCES], 1):
                 source_type = item.get('source_type', 'unknown')
                 source_id = item.get('id', '')
@@ -158,13 +158,14 @@ def save_tournament_to_db(
                 # Get attribution info (added by variant_generator.annotate_sources_with_attribution)
                 is_referenced = item.get('is_referenced', False)
                 attribution_score = item.get('attribution_score', 0.0)
+                citation_number = item.get('citation_number')  # Perplexity-style [N] marker
 
                 cursor.execute("""
                     INSERT INTO tournament_sources (
                         run_id, source_type, source_id, source_text,
                         source_url, source_author, source_timestamp,
-                        is_referenced, attribution_score
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        is_referenced, attribution_score, citation_number
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
                     run_id,
                     source_type,
@@ -174,13 +175,13 @@ def save_tournament_to_db(
                     item.get('username', ''),
                     item.get('timestamp', ''),
                     is_referenced,
-                    attribution_score
+                    attribution_score,
+                    citation_number
                 ))
                 saved_count += 1
 
         conn.commit()
-        sources_count = saved_count if news_sources and winner else 0
-        print(f"[DB] Saved tournament run #{run_id} with {len(ranked_variants)} variants and {sources_count} sources")
+        print(f"[DB] Saved tournament run #{run_id} with {len(ranked_variants)} variants and {saved_count} sources")
         return run_id
 
     except Exception as e:

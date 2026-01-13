@@ -245,6 +245,64 @@ def find_supporting_sources(
         return []
 
 
+def find_sentence_source_mapping(
+    sentences: List[str],
+    source_texts: List[str],
+    threshold: float = 0.15
+) -> Dict[int, int]:
+    """
+    Map each sentence to its best matching source using TF-IDF similarity.
+
+    Used for Perplexity-style inline citation placement. Identifies which
+    sentence in the generated content best matches which source text.
+
+    Args:
+        sentences: List of sentences from generated content
+        source_texts: List of source texts (tweets, article snippets)
+        threshold: Minimum similarity to consider a match
+
+    Returns:
+        Dict mapping sentence_index -> source_index for sentences above threshold
+    """
+    if not sentences or not source_texts:
+        return {}
+
+    try:
+        from sklearn.feature_extraction.text import TfidfVectorizer
+        from sklearn.metrics.pairwise import cosine_similarity
+    except ImportError:
+        print("[HybridRetriever] sklearn not available")
+        return {}
+
+    try:
+        # Combine all texts for vectorization
+        vectorizer = TfidfVectorizer(stop_words='english', max_features=5000)
+        all_texts = source_texts + sentences
+        tfidf_matrix = vectorizer.fit_transform(all_texts)
+
+        n_sources = len(source_texts)
+        source_vecs = tfidf_matrix[:n_sources]
+        sentence_vecs = tfidf_matrix[n_sources:]
+
+        # For each sentence, find best matching source
+        similarities = cosine_similarity(sentence_vecs, source_vecs)
+
+        mapping = {}
+        for sent_idx, row in enumerate(similarities):
+            if len(row) == 0:
+                continue
+            best_source_idx = int(row.argmax())
+            best_score = row[best_source_idx]
+            if best_score >= threshold:
+                mapping[sent_idx] = best_source_idx
+
+        return mapping
+
+    except Exception as e:
+        print(f"[HybridRetriever] Sentence mapping failed: {e}")
+        return {}
+
+
 def extract_citations(
     content: str,
     sources: List[Dict]
