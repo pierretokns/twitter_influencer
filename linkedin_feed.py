@@ -942,7 +942,7 @@ HTML_TEMPLATE = '''
             let escaped = escapeHtml(content);
 
             // Find citation markers like [1], [2], [3] and make them clickable
-            const markerRegex = /\[(\d+)\]/g;
+            const markerRegex = /\\[(\\d+)\\]/g;
 
             return escaped.replace(markerRegex, (match, num) => {
                 const source = sourceMap ? sourceMap[num] : null;
