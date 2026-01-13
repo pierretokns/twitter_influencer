@@ -406,6 +406,13 @@ AI_KEYWORDS = [
     "breakthrough", "benchmark", "evaluation",
 ]
 
+# Blocked keywords - content containing these will be filtered out
+# Avoid military/political content that could be sensitive
+BLOCKED_KEYWORDS = [
+    "military", "armed forces", "troops", "defense contractor",
+    "air force", "navy", "usmc", "marines",
+]
+
 
 @dataclass
 class InfluencerScore:
@@ -569,8 +576,13 @@ class AINewsDatabase:
         if not tweet_id:
             return
 
-        # Check AI relevance
+        # Check for blocked content
         text = tweet_data.get('text', '').lower()
+        if any(blocked.lower() in text for blocked in BLOCKED_KEYWORDS):
+            print(f"[FILTER] Skipping tweet {tweet_id} - contains blocked keyword")
+            return
+
+        # Check AI relevance
         is_ai_relevant = any(kw.lower() in text for kw in AI_KEYWORDS)
         relevance_score = sum(1 for kw in AI_KEYWORDS if kw.lower() in text) / len(AI_KEYWORDS)
 
@@ -829,6 +841,12 @@ class AINewsDatabase:
 
         # Generate article_id from URL hash
         article_id = hashlib.md5(url.encode()).hexdigest()[:16]
+
+        # Check for blocked content
+        text_to_check = f"{article_data.get('title', '')} {article_data.get('content', '')}".lower()
+        if any(blocked.lower() in text_to_check for blocked in BLOCKED_KEYWORDS):
+            print(f"[FILTER] Skipping article {url[:50]}... - contains blocked keyword")
+            return False
 
         # Check AI relevance
         text = f"{article_data.get('title', '')} {article_data.get('description', '')}".lower()
