@@ -534,10 +534,9 @@ Write ONLY the post text. No intro, no explanation. Start directly with the hook
 
                 # Extract timestamp from URL if present
                 if url_with_timestamp and '&t=' in url_with_timestamp:
-                    import re
-                    match = re.search(r'[&?]t=(\d+)s', url_with_timestamp)
-                    if match:
-                        source['start_time'] = float(match.group(1))
+                    ts_match = re.search(r'[&?]t=(\d+)s', url_with_timestamp)
+                    if ts_match:
+                        source['start_time'] = float(ts_match.group(1))
                         # Update source URL to include timestamp
                         source['source_url'] = url_with_timestamp
 
