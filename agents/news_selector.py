@@ -118,9 +118,9 @@ class NewsSelector:
         try:
             cursor = conn.cursor()
             cursor.execute('''
-                SELECT id, title as text, source_name as username,
+                SELECT article_id as id, title as text, source_name as username,
                        published_at as timestamp, 0 as likes_count,
-                       'web' as source_type
+                       'web' as source_type, url
                 FROM web_articles
                 WHERE is_ai_relevant = TRUE
                 ORDER BY scraped_at DESC
