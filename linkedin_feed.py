@@ -884,75 +884,17 @@ HTML_TEMPLATE = '''
             const likeCount = post.like_count || 0;
             const timeAgo = getTimeAgo(post.completed_at);
 
-            return `<article class="post-card" data-run-id="${post.run_id}">
-                <div class="post-header">
-                    <div class="post-avatar ${post.was_published ? 'winner' : 'default'}">${initial}</div>
-                    <div class="post-meta">
-                        <div class="post-author">
-                            <a href="#">${post.hook_style || 'Tournament Winner'}</a>
-                            <span class="badge badge-winner">WINNER</span>
-                            ${post.was_published ? '<span class="badge badge-published">PUBLISHED</span>' : ''}
-                        </div>
-                        <div class="post-subtitle">Tournament #${post.run_id} &bull; ${post.num_variants} variants &bull; ${post.num_rounds} rounds</div>
-                        <div class="post-time">${timeAgo}</div>
-                    </div>
-                    <button class="post-menu" onclick="showPostMenu(${post.run_id})">
-                        <svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><path d="M14 12a2 2 0 11-4 0 2 2 0 014 0zm6 0a2 2 0 11-4 0 2 2 0 014 0zM6 12a2 2 0 11-4 0 2 2 0 014 0z"/></svg>
-                    </button>
-                </div>
-<div class="post-content ${isLong ? 'collapsed' : ''}" id="content-${post.run_id}"><span class="hook">${escapeHtml(hook)}</span>${rest ? '\\n' + escapeHtml(rest) : ''}</div>
-                ${isLong ? `<span class="see-more" onclick="expandPost(${post.run_id})">...see more</span>` : ''}
-
-                <div class="post-metrics">
-                    <span class="metric ${post.winner_qe_score >= 75 ? 'high' : ''}">QE: ${post.winner_qe_score || 0}/100</span>
-                    <span class="metric">ELO: ${Math.round(post.winner_elo || 1000)}</span>
-                    <span class="metric">${post.total_debates || 0} debates</span>
-                </div>
-
-                <div class="reactions-summary">
-                    <div style="display: flex; align-items: center; gap: 4px;">
-                        ${likeCount > 0 ? `
-                            <span class="reaction-icons">
-                                <span class="reaction-icon like">+</span>
-                            </span>
-                            <span>${likeCount}</span>
-                        ` : ''}
-                    </div>
-                </div>
-
-                <div class="post-actions">
-                    <button class="action-btn ${isLiked ? 'liked' : ''}" onclick="toggleLike(${post.run_id})">
-                        <svg viewBox="0 0 24 24" fill="${isLiked ? 'currentColor' : 'none'}" stroke="currentColor" stroke-width="2">
-                            <path d="M14 9V5a3 3 0 00-3-3l-4 9v11h11.28a2 2 0 002-1.7l1.38-9a2 2 0 00-2-2.3zM7 22H4a2 2 0 01-2-2v-7a2 2 0 012-2h3"/>
-                        </svg>
-                        Like
-                    </button>
-                    <button class="action-btn" onclick="openPublish(${post.run_id})">
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                            <path d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z"/>
-                        </svg>
-                        Share
-                    </button>
-                    <button class="action-btn" onclick="copyToClipboard(${post.run_id})">
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                            <rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/>
-                        </svg>
-                        Copy
-                    </button>
-                    <button class="action-btn" onclick="toggleSources(${post.run_id})">
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                            <path d="M10 13a5 5 0 007.54.54l3-3a5 5 0 00-7.07-7.07l-1.72 1.71"/>
-                            <path d="M14 11a5 5 0 00-7.54-.54l-3 3a5 5 0 007.07 7.07l1.71-1.71"/>
-                        </svg>
-                        Sources ${post.source_count ? '(' + (post.cited_count ? post.cited_count + '/' : '') + post.source_count + ')' : ''}
-                    </button>
-                </div>
-
-                <!-- Sources panel (hidden by default) -->
-                <div class="sources-panel" id="sources-${post.run_id}" style="display: none;">
-                    <div class="sources-loading">Loading sources...</div>
-                </div>
-            </article>`;
+            let html = `<article class="post-card" data-run-id="${post.run_id}"><div class="post-header"><div class="post-avatar ${post.was_published ? 'winner' : 'default'}">${initial}</div><div class="post-meta"><div class="post-author"><a href="#">${post.hook_style || 'Tournament Winner'}</a><span class="badge badge-winner">WINNER</span>${post.was_published ? '<span class="badge badge-published">PUBLISHED</span>' : ''}</div><div class="post-subtitle">Tournament #${post.run_id} &bull; ${post.num_variants} variants &bull; ${post.num_rounds} rounds</div><div class="post-time">${timeAgo}</div></div><button class="post-menu" onclick="showPostMenu(${post.run_id})"><svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><path d="M14 12a2 2 0 11-4 0 2 2 0 014 0zm6 0a2 2 0 11-4 0 2 2 0 014 0zM6 12a2 2 0 11-4 0 2 2 0 014 0z"/></svg></button></div>`;
+            html += `<div class="post-content ${isLong ? 'collapsed' : ''}" id="content-${post.run_id}"><span class="hook">${escapeHtml(hook)}</span>${rest ? '\\n' + escapeHtml(rest) : ''}</div>`;
+            if (isLong) html += `<span class="see-more" onclick="expandPost(${post.run_id})">...see more</span>`;
+            html += `<div class="post-metrics"><span class="metric ${post.winner_qe_score >= 75 ? 'high' : ''}">QE: ${post.winner_qe_score || 0}/100</span><span class="metric">ELO: ${Math.round(post.winner_elo || 1000)}</span><span class="metric">${post.total_debates || 0} debates</span></div>`;
+            html += `<div class="reactions-summary"><div style="display: flex; align-items: center; gap: 4px;">`;
+            if (likeCount > 0) html += `<span class="reaction-icons"><span class="reaction-icon like">+</span></span><span>${likeCount}</span>`;
+            html += `</div></div>`;
+            html += `<div class="post-actions"><button class="action-btn ${isLiked ? 'liked' : ''}" onclick="toggleLike(${post.run_id})"><svg viewBox="0 0 24 24" fill="${isLiked ? 'currentColor' : 'none'}" stroke="currentColor" stroke-width="2"><path d="M14 9V5a3 3 0 00-3-3l-4 9v11h11.28a2 2 0 002-1.7l1.38-9a2 2 0 00-2-2.3zM7 22H4a2 2 0 01-2-2v-7a2 2 0 012-2h3"/></svg>Like</button><button class="action-btn" onclick="openPublish(${post.run_id})"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z"/></svg>Share</button><button class="action-btn" onclick="copyToClipboard(${post.run_id})"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>Copy</button><button class="action-btn" onclick="toggleSources(${post.run_id})"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 13a5 5 0 007.54.54l3-3a5 5 0 00-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 00-7.54-.54l-3 3a5 5 0 007.07 7.07l1.71-1.71"/></svg>Sources ${post.source_count ? '(' + (post.cited_count ? post.cited_count + '/' : '') + post.source_count + ')' : ''}</button></div>`;
+            html += `<div class="sources-panel" id="sources-${post.run_id}" style="display: none;"><div class="sources-loading">Loading sources...</div></div>`;
+            html += `</article>`;
+            return html;
         }
 
         function escapeHtml(text) {
