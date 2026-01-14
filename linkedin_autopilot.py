@@ -41,7 +41,6 @@ import sqlite3
 import ssl
 import re
 import schedule
-import subprocess
 from pathlib import Path
 from datetime import datetime, timedelta
 from typing import List, Dict, Any, Optional, Tuple
@@ -659,30 +658,18 @@ class ContentGenerator:
 
         return content.strip()
 
-    def _call_claude_cli(self, prompt: str, max_tokens: int = 500) -> Optional[str]:
-        """Call Claude CLI tool for content generation"""
+    def _call_llm(self, prompt: str, timeout: int = 60) -> Optional[str]:
+        """Call OpenRouter LLM for content generation"""
         try:
-            # Use the claude CLI tool installed via npm
-            result = subprocess.run(
-                ['claude', '-p', prompt],
-                capture_output=True,
-                text=True,
-                timeout=60
-            )
-            if result.returncode == 0 and result.stdout.strip():
-                return self._clean_post_content(result.stdout.strip())
-            else:
-                if result.stderr:
-                    Logger.warning(f"Claude CLI error: {result.stderr}")
-                return None
-        except FileNotFoundError:
-            Logger.warning("Claude CLI not found. Make sure it's installed via npm.")
-            return None
-        except subprocess.TimeoutExpired:
-            Logger.warning("Claude CLI timed out")
+            # Import here to handle circular imports
+            from agents.llm_client import call_llm as llm_call, LLMError as LLMErr
+
+            result = llm_call(prompt, timeout=timeout)
+            if result:
+                return self._clean_post_content(result)
             return None
         except Exception as e:
-            Logger.warning(f"Claude CLI call failed: {e}")
+            Logger.warning(f"LLM call failed: {e}")
             return None
 
     def get_recent_ai_news(self, limit: int = 20) -> List[Dict]:
@@ -761,11 +748,11 @@ Rules:
 
 Post style: {template_type}"""
 
-        result = self._call_claude_cli(prompt, max_tokens=500)
+        result = self._call_llm(prompt, timeout=60)
         if result:
             return result
         else:
-            Logger.warning("Claude CLI unavailable, using template fallback")
+            Logger.warning("LLM unavailable, using template fallback")
             return self.generate_post_from_template(news_items, template_type)
 
     def generate_post_from_template(self, news_items: List[Dict],
@@ -855,7 +842,7 @@ Comment: {comment}
 Write a brief, friendly, professional response (1-2 sentences).
 Be genuine and encourage further discussion."""
 
-        result = self._call_claude_cli(prompt, max_tokens=100)
+        result = self._call_llm(prompt, timeout=30)
         if result:
             return result
 
@@ -904,6 +891,8 @@ from agents import (
     PostVariantGenerator,
     NewsSelector,
 )
+from agents.llm_client import call_llm, LLMError
+from agents.telemetry import setup_telemetry
 
 
 class PostRankingSystem:
@@ -1310,25 +1299,17 @@ Example good prompts:
 
 Now generate a prompt for the post above:"""
 
-            result = subprocess.run(
-                ['claude', '-p', meta_prompt],
-                capture_output=True,
-                text=True,
-                timeout=30
-            )
+            from agents.llm_client import call_llm
 
-            if result.returncode == 0 and result.stdout.strip():
-                prompt = result.stdout.strip()
-                # Clean up the prompt
-                prompt = prompt.replace('\n', ' ').strip()
+            result = call_llm(meta_prompt, timeout=30)
+            if result:
+                prompt = result.replace('\n', ' ').strip()
                 if len(prompt) > 50:  # Sanity check
-                    Logger.info(f"Claude generated image prompt: {prompt[:100]}...")
+                    Logger.info(f"LLM generated image prompt: {prompt[:100]}...")
                     return prompt
 
-        except subprocess.TimeoutExpired:
-            Logger.warning("Claude CLI timed out for image prompt")
         except Exception as e:
-            Logger.warning(f"Could not generate prompt with Claude: {e}")
+            Logger.warning(f"Could not generate prompt with LLM: {e}")
 
         return None
 
@@ -1743,19 +1724,11 @@ Respond in JSON format only:
 Only set approved=false for serious issues (offensive content, major errors)."""
 
         try:
-            result = subprocess.run(
-                ['claude', '-p', prompt],
-                capture_output=True,
-                text=True,
-                timeout=30
-            )
-            if result.returncode == 0 and result.stdout.strip():
-                import json
-                response = result.stdout.strip()
-                start = response.find('{')
-                end = response.rfind('}') + 1
-                if start >= 0 and end > start:
-                    return json.loads(response[start:end])
+            from agents.llm_client import call_llm_json
+
+            result = call_llm_json(prompt, timeout=30)
+            if result:
+                return result
             return {"approved": True, "score": 7, "summary": "Review completed"}
         except Exception as e:
             Logger.warning(f"QA review failed: {e}")
