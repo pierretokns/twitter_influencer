@@ -1,0 +1,17 @@
+[Unit]
+Description=LinkedIn Feed UI (AI Content Feed)
+After=network.target
+
+[Service]
+Type=simple
+User=erki
+WorkingDirectory=/home/erki/twitter_influencer
+Environment=PATH=/home/erki/.local/bin:/usr/bin
+Environment=DISPLAY=:20
+EnvironmentFile=/home/erki/twitter_influencer/.env
+ExecStart=/home/erki/.local/bin/uv run python linkedin_feed.py
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
