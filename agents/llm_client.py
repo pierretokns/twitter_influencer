@@ -1,20 +1,23 @@
 # /// script
 # requires-python = ">=3.12"
 # dependencies = [
-#     "openai>=1.0.0",
 #     "python-dotenv>=0.19.0",
 # ]
 # ///
 """
-OpenRouter LLM Client
+Claude CLI LLM Client
 =====================
 
-Centralized LLM client using OpenRouter API with OpenAI SDK.
-Replaces subprocess calls to Claude CLI.
+Uses Claude Code CLI for LLM calls with subprocess.
+OTEL traces are sent automatically when configured via environment variables.
 
 ENVIRONMENT VARIABLES:
-    OPENROUTER_API_KEY: Required - OpenRouter API key
-    OPENROUTER_MODEL: Optional - Default model (default: anthropic/claude-sonnet-4)
+    ANTHROPIC_API_KEY: Required for Claude CLI authentication
+
+    # OTEL Configuration (optional - enables tracing)
+    CLAUDE_CODE_ENABLE_TELEMETRY: Set to "1" to enable OTEL
+    OTEL_EXPORTER_OTLP_PROTOCOL: "grpc" or "http"
+    OTEL_EXPORTER_OTLP_ENDPOINT: e.g. "http://127.0.0.1:4317"
 
 USAGE:
     from agents.llm_client import call_llm, call_llm_json
@@ -27,19 +30,14 @@ USAGE:
 """
 
 import json
-import os
+import subprocess
 from typing import Optional
 
 from dotenv import load_dotenv
-from openai import OpenAI, APITimeoutError, APIConnectionError, RateLimitError
 
 load_dotenv()
 
-DEFAULT_MODEL = os.getenv("OPENROUTER_MODEL", "anthropic/claude-sonnet-4")
 DEFAULT_TIMEOUT = 60
-
-# Lazy-loaded client singleton
-_client: Optional[OpenAI] = None
 
 
 class LLMError(Exception):
@@ -48,98 +46,69 @@ class LLMError(Exception):
 
 
 class LLMTimeoutError(LLMError):
-    """Raised when API call times out"""
+    """Raised when CLI call times out"""
     pass
 
 
 class LLMRateLimitError(LLMError):
-    """Raised on 429 rate limit"""
+    """Raised on rate limit (for backwards compatibility)"""
     pass
 
 
 class LLMConnectionError(LLMError):
-    """Raised on connection failures"""
+    """Raised on connection failures (for backwards compatibility)"""
     pass
-
-
-def get_client() -> OpenAI:
-    """
-    Get or create the OpenRouter client (singleton).
-
-    Returns:
-        Configured OpenAI client for OpenRouter
-    """
-    global _client
-    if _client is None:
-        api_key = os.environ.get("OPENROUTER_API_KEY")
-        if not api_key:
-            raise LLMError("OPENROUTER_API_KEY environment variable not set")
-
-        _client = OpenAI(
-            base_url="https://openrouter.ai/api/v1",
-            api_key=api_key,
-            default_headers={
-                "HTTP-Referer": "https://github.com/twitter_influencer",
-                "X-Title": "Twitter Influencer Bot",
-            }
-        )
-    return _client
 
 
 def call_llm(
     prompt: str,
     timeout: int = DEFAULT_TIMEOUT,
-    model: str = None,
+    model: str = None,  # Ignored - Claude CLI uses configured model
     system_prompt: str = None,
 ) -> Optional[str]:
     """
-    Make a simple LLM call and return the response text.
+    Make a Claude CLI call and return the response.
 
     Args:
-        prompt: The user prompt to send
-        timeout: Request timeout in seconds (default: 60)
-        model: Model to use (default: OPENROUTER_MODEL env or anthropic/claude-sonnet-4)
-        system_prompt: Optional system prompt
+        prompt: The prompt to send
+        timeout: Timeout in seconds (default: 60)
+        model: Ignored - kept for backwards compatibility
+        system_prompt: Optional system prompt (prepended to prompt)
 
     Returns:
         Response text string, or None if call failed
 
     Raises:
-        LLMTimeoutError: If the request times out
-        LLMRateLimitError: If rate limited (429)
-        LLMConnectionError: If connection fails
+        LLMTimeoutError: If the CLI call times out
+        LLMError: If Claude CLI is not installed
     """
-    client = get_client()
-    model = model or DEFAULT_MODEL
-
-    messages = []
+    full_prompt = prompt
     if system_prompt:
-        messages.append({"role": "system", "content": system_prompt})
-    messages.append({"role": "user", "content": prompt})
+        full_prompt = f"{system_prompt}\n\n{prompt}"
 
     try:
-        response = client.chat.completions.create(
-            model=model,
-            messages=messages,
+        result = subprocess.run(
+            ['claude', '-p', full_prompt, '--output-format', 'text'],
+            capture_output=True,
+            text=True,
             timeout=timeout,
         )
 
-        if response.choices and len(response.choices) > 0:
-            return response.choices[0].message.content
+        if result.returncode == 0:
+            return result.stdout.strip()
 
+        # Log error but don't raise for non-zero exit
+        print(f"[LLMClient] CLI error (exit {result.returncode}): {result.stderr.strip()}")
         return None
 
-    except APITimeoutError as e:
-        print(f"[LLMClient] Timeout after {timeout}s: {e}")
-        raise LLMTimeoutError(f"Request timed out after {timeout}s") from e
+    except subprocess.TimeoutExpired:
+        print(f"[LLMClient] Timeout after {timeout}s")
+        raise LLMTimeoutError(f"CLI timed out after {timeout}s")
 
-    except RateLimitError as e:
-        print(f"[LLMClient] Rate limited: {e}")
-        raise LLMRateLimitError("Rate limited by OpenRouter") from e
-
-    except APIConnectionError as e:
-        print(f"[LLMClient] Connection error: {e}")
-        raise LLMConnectionError(f"Failed to connect: {e}") from e
+    except FileNotFoundError:
+        raise LLMError(
+            "Claude CLI not found. Install with: sudo npm install -g @anthropic-ai/claude-code"
+        )
 
     except Exception as e:
         print(f"[LLMClient] Unexpected error: {e}")
@@ -153,24 +122,23 @@ def call_llm_json(
     system_prompt: str = None,
 ) -> Optional[dict]:
     """
-    Make an LLM call and extract JSON from the response.
+    Make a Claude CLI call and extract JSON from the response.
 
     Uses the same JSON extraction pattern as existing agents:
     finds first '{' and last '}' to handle markdown/text around JSON.
 
     Args:
-        prompt: The user prompt to send
-        timeout: Request timeout in seconds (default: 60)
-        model: Model to use (default: OPENROUTER_MODEL env or anthropic/claude-sonnet-4)
+        prompt: The prompt to send
+        timeout: Timeout in seconds (default: 60)
+        model: Ignored - kept for backwards compatibility
         system_prompt: Optional system prompt
 
     Returns:
         Parsed JSON dict, or None if call failed or no valid JSON
 
     Raises:
-        LLMTimeoutError: If the request times out
-        LLMRateLimitError: If rate limited (429)
-        LLMConnectionError: If connection fails
+        LLMTimeoutError: If the CLI call times out
+        LLMError: If Claude CLI is not installed
     """
     response = call_llm(prompt, timeout=timeout, model=model, system_prompt=system_prompt)
 
@@ -209,44 +177,23 @@ def extract_json(text: str) -> Optional[dict]:
     return None
 
 
-def get_usage_info(response) -> dict:
-    """
-    Extract token usage info from a response.
-
-    Args:
-        response: OpenAI API response object
-
-    Returns:
-        Dict with prompt_tokens, completion_tokens, total_tokens
-    """
-    if hasattr(response, 'usage') and response.usage:
-        return {
-            "prompt_tokens": response.usage.prompt_tokens,
-            "completion_tokens": response.usage.completion_tokens,
-            "total_tokens": response.usage.total_tokens,
-        }
-    return {}
-
-
-# For backwards compatibility - agents can catch these or let them propagate
 __all__ = [
     'call_llm',
     'call_llm_json',
     'extract_json',
-    'get_client',
     'LLMError',
     'LLMTimeoutError',
     'LLMRateLimitError',
     'LLMConnectionError',
-    'DEFAULT_MODEL',
+    'DEFAULT_TIMEOUT',
 ]
 
 
 if __name__ == "__main__":
     # Quick test
-    print(f"Testing LLM client with model: {DEFAULT_MODEL}")
+    print("Testing Claude CLI client...")
     try:
-        result = call_llm("Say 'Hello from OpenRouter!' in exactly those words.", timeout=30)
+        result = call_llm("Say 'Hello from Claude CLI!' in exactly those words.", timeout=30)
         print(f"Response: {result}")
 
         json_result = call_llm_json('Respond with exactly: {"status": "ok", "number": 42}', timeout=30)
