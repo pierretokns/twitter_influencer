@@ -209,6 +209,11 @@ def save_tournament_to_db(
                 cited_quote = winner_cite.get('cited_quote') or item.get('cited_quote')
                 start_time = winner_cite.get('start_time') or item.get('start_time')
 
+                # CRITICAL FIX: If a source has a citation_number, it MUST be marked as referenced
+                # This ensures cited sources are properly tracked and not lost
+                if citation_number is not None:
+                    is_referenced = True
+
                 # Use source URL with timestamp if available
                 final_url = winner_cite.get('source_url') or item.get('source_url', source_url)
 
