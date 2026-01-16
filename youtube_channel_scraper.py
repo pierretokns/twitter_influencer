@@ -132,6 +132,7 @@ class YouTubeVideo:
     thumbnail_url: str
     is_ai_relevant: bool = False
     ai_relevance_score: float = 0.0
+    view_count: int = 0
     scraped_at: str = ""
 
 
@@ -214,7 +215,7 @@ class YouTubeDatabase:
         return [dict(row) for row in cursor.fetchall()]
 
     def save_video(self, video: YouTubeVideo) -> bool:
-        """Save a video, returns True if new"""
+        """Save a video, returns True if new. Updates view_count on re-scrapes (upsert)"""
         cursor = self.conn.cursor()
 
         # Check if exists
@@ -225,17 +226,26 @@ class YouTubeDatabase:
             cursor.execute("""
                 INSERT INTO youtube_videos (
                     video_id, channel_id, channel_name, title, description,
-                    url, published_at, thumbnail_url, is_ai_relevant,
+                    url, published_at, thumbnail_url, view_count, is_ai_relevant,
                     ai_relevance_score, scraped_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 video.video_id, video.channel_id, video.channel_name,
                 video.title, video.description, video.url, video.published_at,
-                video.thumbnail_url, video.is_ai_relevant, video.ai_relevance_score,
-                video.scraped_at or datetime.now().isoformat()
+                video.thumbnail_url, video.view_count, video.is_ai_relevant,
+                video.ai_relevance_score, video.scraped_at or datetime.now().isoformat()
             ))
             self.conn.commit()
             return True
+        else:
+            # Upsert: Update view_count on re-scrapes
+            if video.view_count > 0:
+                cursor.execute("""
+                    UPDATE youtube_videos
+                    SET view_count = ?
+                    WHERE video_id = ?
+                """, (video.view_count, video.video_id))
+                self.conn.commit()
         return False
 
     def update_channel_stats(self, channel_id: str):
@@ -334,6 +344,15 @@ class YouTubeRSSScraper:
                 if 'media_thumbnail' in entry:
                     thumbnail = entry.media_thumbnail[0].get('url', '')
 
+                # Extract view count from media:statistics
+                view_count = 0
+                if 'media_statistics' in entry:
+                    try:
+                        stats = entry.media_statistics
+                        view_count = int(stats.get('views', 0))
+                    except (KeyError, ValueError, AttributeError, TypeError):
+                        pass
+
                 video = YouTubeVideo(
                     video_id=video_id,
                     channel_id=channel_id,
@@ -343,6 +362,7 @@ class YouTubeRSSScraper:
                     url=entry.link,
                     published_at=entry.get('published', ''),
                     thumbnail_url=thumbnail,
+                    view_count=view_count,
                     is_ai_relevant=is_relevant,
                     ai_relevance_score=score,
                     scraped_at=datetime.now().isoformat()
