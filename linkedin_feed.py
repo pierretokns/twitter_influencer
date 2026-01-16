@@ -1514,6 +1514,284 @@ def publish():
         return jsonify({"success": False, "message": f"Error: {str(e)}"})
 
 
+# Chat API Endpoints
+import json
+import uuid
+from agents.chat_agent import ChatAgent
+from agents.telemetry import setup_telemetry, get_tracer
+
+
+# Initialize telemetry and chat agent
+try:
+    setup_telemetry(service_name="linkedin_feed", db_path=str(AI_NEWS_DB))
+    chat_agent = ChatAgent(db_path=str(AI_NEWS_DB))
+except Exception as e:
+    print(f"[Warning] Failed to initialize chat agent: {e}")
+    chat_agent = None
+
+
+@app.route('/api/chat/session', methods=['POST'])
+def create_chat_session():
+    """Create a new chat session and return session_id"""
+    if not chat_agent:
+        return jsonify({"error": "Chat not available"}), 503
+
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+
+        session_id = str(uuid.uuid4())
+        user_id = get_user_id()
+
+        cursor.execute("""
+            INSERT INTO chat_sessions (session_id, user_id, last_activity)
+            VALUES (?, ?, ?)
+        """, (session_id, user_id, datetime.now().isoformat()))
+
+        conn.commit()
+        conn.close()
+
+        return jsonify({
+            "session_id": session_id,
+            "created_at": datetime.now().isoformat()
+        })
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/chat/history/<session_id>', methods=['GET'])
+def get_chat_history(session_id):
+    """Get chat message history for a session"""
+    if not chat_agent:
+        return jsonify({"error": "Chat not available"}), 503
+
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+
+        # Get messages in chronological order
+        cursor.execute("""
+            SELECT role, content, citations, created_at
+            FROM chat_messages
+            WHERE session_id = ?
+            ORDER BY created_at ASC
+            LIMIT 50
+        """, (session_id,))
+
+        messages = []
+        for row in cursor.fetchall():
+            msg = {
+                "role": row["role"],
+                "content": row["content"],
+                "created_at": row["created_at"]
+            }
+            if row["citations"]:
+                msg["citations"] = json.loads(row["citations"])
+            messages.append(msg)
+
+        conn.close()
+        return jsonify({"messages": messages})
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/chat', methods=['POST'])
+def chat_non_streaming():
+    """Non-streaming chat endpoint (fallback for clients without SSE support)"""
+    if not chat_agent:
+        return jsonify({"error": "Chat not available"}), 503
+
+    try:
+        data = request.json
+        query = data.get('message', '').strip()
+        session_id = data.get('session_id')
+
+        if not query:
+            return jsonify({"error": "Empty message"}), 400
+
+        if not session_id:
+            return jsonify({"error": "session_id required"}), 400
+
+        # Get conversation history
+        conn = get_db()
+        cursor = conn.cursor()
+
+        cursor.execute("""
+            SELECT role, content
+            FROM chat_messages
+            WHERE session_id = ?
+            ORDER BY created_at ASC
+            LIMIT 10
+        """, (session_id,))
+
+        history = [
+            {"role": row["role"], "content": row["content"]}
+            for row in cursor.fetchall()
+        ]
+
+        # Generate response
+        full_response = ""
+        citations_extracted = []
+        sources_list = []
+
+        for event in chat_agent.stream_response(query, session_id, history):
+            if event.event == "sources":
+                sources_list = event.data.get("sources", [])
+            elif event.event == "token":
+                full_response += event.data["token"]
+            elif event.event == "citation":
+                citations_extracted.append(event.data)
+
+        # Store in database
+        message_id = str(uuid.uuid4())
+        cursor.execute("""
+            INSERT INTO chat_messages (message_id, session_id, role, content)
+            VALUES (?, ?, ?, ?)
+        """, (message_id, session_id, "user", query))
+
+        response_id = str(uuid.uuid4())
+        cursor.execute("""
+            INSERT INTO chat_messages (message_id, session_id, role, content, citations)
+            VALUES (?, ?, ?, ?, ?)
+        """, (response_id, session_id, "assistant", full_response, json.dumps(citations_extracted)))
+
+        cursor.execute("""
+            UPDATE chat_sessions
+            SET message_count = message_count + 2,
+                last_activity = ?
+            WHERE session_id = ?
+        """, (datetime.now().isoformat(), session_id))
+
+        conn.commit()
+        conn.close()
+
+        return jsonify({
+            "response": full_response,
+            "sources": sources_list,
+            "citations": citations_extracted
+        })
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/chat/stream', methods=['GET'])
+def chat_stream():
+    """SSE streaming chat endpoint"""
+    if not chat_agent:
+        return jsonify({"error": "Chat not available"}), 503
+
+    query = request.args.get('message', '').strip()
+    session_id = request.args.get('session_id', '')
+
+    if not query:
+        return jsonify({"error": "Empty message"}), 400
+
+    if not session_id:
+        return jsonify({"error": "session_id required"}), 400
+
+    def generate():
+        try:
+            # Get conversation history
+            conn = get_db()
+            cursor = conn.cursor()
+
+            cursor.execute("""
+                SELECT role, content
+                FROM chat_messages
+                WHERE session_id = ?
+                ORDER BY created_at ASC
+                LIMIT 10
+            """, (session_id,))
+
+            history = [
+                {"role": row["role"], "content": row["content"]}
+                for row in cursor.fetchall()
+            ]
+
+            # Store user message
+            message_id = str(uuid.uuid4())
+            cursor.execute("""
+                INSERT INTO chat_messages (message_id, session_id, role, content)
+                VALUES (?, ?, ?, ?)
+            """, (message_id, session_id, "user", query))
+            conn.commit()
+
+            # Stream response events
+            full_response = ""
+            citations_extracted = []
+            sources_list = []
+
+            for event in chat_agent.stream_response(query, session_id, history):
+                if event.event == "sources":
+                    sources_list = event.data.get("sources", [])
+                    yield f"event: sources\ndata: {json.dumps(event.data)}\n\n"
+                elif event.event == "token":
+                    full_response += event.data["token"]
+                    yield f"event: token\ndata: {json.dumps(event.data)}\n\n"
+                elif event.event == "citation":
+                    citations_extracted.append(event.data)
+                    yield f"event: citation\ndata: {json.dumps(event.data)}\n\n"
+                elif event.event == "done":
+                    yield f"event: done\ndata: {json.dumps(event.data)}\n\n"
+                elif event.event == "error":
+                    yield f"event: error\ndata: {json.dumps(event.data)}\n\n"
+
+            # Store assistant response in database
+            response_id = str(uuid.uuid4())
+            cursor.execute("""
+                INSERT INTO chat_messages (message_id, session_id, role, content, citations)
+                VALUES (?, ?, ?, ?, ?)
+            """, (response_id, session_id, "assistant", full_response, json.dumps(citations_extracted)))
+
+            cursor.execute("""
+                UPDATE chat_sessions
+                SET message_count = message_count + 2,
+                    last_activity = ?
+                WHERE session_id = ?
+            """, (datetime.now().isoformat(), session_id))
+
+            conn.commit()
+            conn.close()
+
+        except Exception as e:
+            yield f"event: error\ndata: {json.dumps({'error': str(e)})}\n\n"
+
+    return app.response_class(
+        generate(),
+        mimetype="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no"
+        }
+    )
+
+
+@app.route('/api/chat/sessions/<session_id>', methods=['DELETE'])
+def delete_chat_session(session_id):
+    """Delete a chat session (GDPR compliance)"""
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+
+        # Delete messages
+        cursor.execute("DELETE FROM chat_messages WHERE session_id = ?", (session_id,))
+
+        # Delete session
+        cursor.execute("DELETE FROM chat_sessions WHERE session_id = ?", (session_id,))
+
+        conn.commit()
+        conn.close()
+
+        return jsonify({"success": True, "message": "Session deleted"})
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 if __name__ == '__main__':
     print("\n" + "="*60)
     print("LinkedIn Feed Clone")
