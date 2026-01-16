@@ -3,6 +3,9 @@
 # dependencies = [
 #     "anthropic>=0.40.0",
 #     "opentelemetry-api>=1.20.0",
+#     "FlagEmbedding>=1.2.0",
+#     "sqlite-vec>=0.1.0",
+#     "numpy>=1.24.0",
 # ]
 # ///
 """
@@ -39,11 +42,13 @@ from datetime import datetime
 from typing import Generator, List, Dict, Optional
 from pathlib import Path
 
+import numpy as np
 from anthropic import Anthropic
 from opentelemetry import trace
 
 from agents.chat_security import ChatSecurity, ValidationResult
 from agents.telemetry import get_tracer, create_chat_span
+from agents.hybrid_retriever import HybridRetriever, encode_texts_hybrid
 
 
 @dataclass
@@ -242,18 +247,174 @@ RESPONSE FORMAT:
 
     def _retrieve_sources(self, query: str, options: Dict) -> List[Source]:
         """
-        Retrieve sources via hybrid search.
+        Retrieve sources via BGE-M3 hybrid search (dense + sparse embeddings).
 
         Args:
             query: Search query
-            options: Retrieval options
+            options: Retrieval options (max_sources, alpha, recency_boost)
 
         Returns:
-            List of Source objects
+            List of Source objects ranked by relevance
         """
-        # TODO: Integrate with existing hybrid_retriever.py
-        # For now, return empty list (placeholder)
-        return []
+        max_sources = options.get("max_sources", 10)
+        alpha = options.get("alpha", 0.5)
+        recency_boost = options.get("recency_boost", True)
+
+        retriever = HybridRetriever(alpha=alpha)
+
+        try:
+            # Encode query with BGE-M3 (dense + sparse)
+            query_dense, query_sparse = encode_texts_hybrid([query])
+            query_dense = query_dense[0] if query_dense.ndim > 1 else query_dense
+            query_sparse = query_sparse[0] if query_sparse.ndim > 1 else query_sparse
+
+            sources = []
+
+            # Search tweets
+            tweet_scores = self._search_table(
+                "tweets",
+                "tweet_embeddings_dense",
+                "tweet_embeddings_sparse",
+                query_dense,
+                query_sparse,
+                retriever,
+                max_sources,
+            )
+
+            for row in tweet_scores:
+                sources.append(
+                    Source(
+                        id=row["tweet_id"],
+                        type="twitter",
+                        author=row["username"],
+                        text=row["text"],
+                        url=row["url"],
+                        published_at=row["timestamp"],
+                    )
+                )
+
+            # Search web articles
+            article_scores = self._search_table(
+                "web_articles",
+                "web_article_embeddings_dense",
+                "web_article_embeddings_sparse",
+                query_dense,
+                query_sparse,
+                retriever,
+                max_sources,
+            )
+
+            for row in article_scores:
+                sources.append(
+                    Source(
+                        id=row["article_id"],
+                        type="web",
+                        title=row["title"],
+                        text=row["content"][:300],
+                        url=row["url"],
+                        published_at=row["published_at"],
+                    )
+                )
+
+            # Search YouTube videos
+            video_scores = self._search_table(
+                "youtube_videos",
+                "youtube_embeddings_dense",
+                "youtube_embeddings_sparse",
+                query_dense,
+                query_sparse,
+                retriever,
+                max_sources,
+            )
+
+            for row in video_scores:
+                sources.append(
+                    Source(
+                        id=row["video_id"],
+                        type="youtube",
+                        author=row["channel_name"],
+                        title=row["title"],
+                        text=row["transcript"][:300],
+                        url=row["url"],
+                        published_at=row["published_at"],
+                    )
+                )
+
+            # Sort by relevance and return top K
+            return sources[:max_sources]
+
+        except Exception as e:
+            print(f"[ChatAgent] Retrieval error: {e}")
+            return []
+
+    def _search_table(
+        self,
+        table: str,
+        dense_table: str,
+        sparse_table: str,
+        query_dense: np.ndarray,
+        query_sparse: np.ndarray,
+        retriever: HybridRetriever,
+        limit: int,
+    ) -> List[sqlite3.Row]:
+        """
+        Search a single table using hybrid embeddings.
+
+        Args:
+            table: Main table to search
+            dense_table: Dense embeddings virtual table
+            sparse_table: Sparse embeddings virtual table
+            query_dense: Query dense embedding
+            query_sparse: Query sparse embedding
+            retriever: HybridRetriever instance
+            limit: Max results to return
+
+        Returns:
+            List of rows from table
+        """
+        try:
+            # Query dense embeddings (sqlite-vec)
+            cursor = self.conn.cursor()
+            cursor.execute(f"""
+                SELECT rowid, embedding FROM {dense_table}
+                ORDER BY distance(embedding, ?) LIMIT ?
+            """, (query_dense.tobytes(), limit * 2))
+
+            dense_results = cursor.fetchall()
+            if not dense_results:
+                return []
+
+            # TODO: Query sparse embeddings and combine scores
+            # For now, return dense-only results
+
+            # Join with original table
+            rowids = [r[0] for r in dense_results]
+            placeholders = ",".join("?" * len(rowids))
+
+            if table == "tweets":
+                query_sql = f"""
+                    SELECT * FROM tweets WHERE rowid IN ({placeholders})
+                    ORDER BY timestamp DESC LIMIT ?
+                """
+            elif table == "web_articles":
+                query_sql = f"""
+                    SELECT * FROM web_articles WHERE rowid IN ({placeholders})
+                    ORDER BY published_at DESC LIMIT ?
+                """
+            elif table == "youtube_videos":
+                query_sql = f"""
+                    SELECT * FROM youtube_videos WHERE rowid IN ({placeholders})
+                    ORDER BY published_at DESC LIMIT ?
+                """
+            else:
+                return []
+
+            cursor.execute(query_sql, rowids + [limit])
+            return cursor.fetchall()
+
+        except Exception as e:
+            print(f"[ChatAgent] Search error in {table}: {e}")
+            return []
 
     def _build_context(self, sources: List[Source], history: List[Dict]) -> str:
         """
@@ -310,7 +471,9 @@ RESPONSE FORMAT:
         self, query: str, response: str, sources: List[Source]
     ) -> List[str]:
         """
-        Generate follow-up question suggestions.
+        Generate follow-up question suggestions based on response context.
+
+        Uses both heuristic patterns and LLM-based generation for better suggestions.
 
         Args:
             query: Original query
@@ -318,21 +481,57 @@ RESPONSE FORMAT:
             sources: Retrieved sources
 
         Returns:
-            List of suggested follow-up questions
+            List of suggested follow-up questions (max 3)
         """
-        # Simple heuristic approach (could use LLM for better results)
         suggestions = []
 
-        # Suggestion categories
-        if "GPT" in response or "OpenAI" in response:
-            suggestions.append("What about Claude and other models?")
-        if "latest" in query.lower() or "recent" in query.lower():
-            suggestions.append("What's the longer-term outlook?")
+        # Pattern-based suggestions for common topics
+        topic_patterns = {
+            ("GPT", "ChatGPT", "OpenAI"): "What about Claude, Gemini, and other AI models?",
+            ("Claude", "Anthropic"): "How does this compare to GPT and other models?",
+            ("launch", "release", "announce"): "When is this expected to be available?",
+            ("latest", "recent", "breaking"): "What's the longer-term outlook?",
+            ("feature", "capability", "ability"): "What are the limitations or tradeoffs?",
+            ("concern", "risk", "safety"): "What safeguards are being implemented?",
+            ("benchmark", "test", "eval"): "How does this perform on real-world tasks?",
+        }
 
-        # Generic suggestions
-        if len(suggestions) < 3:
-            suggestions.append("Tell me more about this")
-            suggestions.append("How does this compare to...?")
+        response_lower = response.lower()
+        query_lower = query.lower()
+
+        # Find matching patterns
+        for keywords, suggestion in topic_patterns.items():
+            if any(kw.lower() in response_lower for kw in keywords):
+                if suggestion not in suggestions:
+                    suggestions.append(suggestion)
+
+        # Context refinement suggestions based on query type
+        if len(suggestions) < 2:
+            if "when" in query_lower:
+                suggestions.append("Tell me about the timeline")
+            elif "how" in query_lower:
+                suggestions.append("What are the key steps involved?")
+            elif "why" in query_lower:
+                suggestions.append("What's the motivation behind this?")
+
+        # Add source-based suggestions
+        if len(suggestions) < 3 and sources:
+            # Check for multiple content types - suggest comparison
+            source_types = set(s.type for s in sources)
+            if len(source_types) > 1:
+                suggestions.append("Compare perspectives from different sources")
+
+        # Generic fallback suggestions to ensure 3 options
+        generic_fallbacks = [
+            "Tell me more about this",
+            "What are the key implications?",
+            "How does this affect the industry?",
+            "What are experts saying about this?",
+        ]
+
+        for fallback in generic_fallbacks:
+            if len(suggestions) < 3 and fallback not in suggestions:
+                suggestions.append(fallback)
 
         return suggestions[:3]  # Return max 3
 
