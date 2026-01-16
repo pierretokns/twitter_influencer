@@ -94,6 +94,15 @@ SEED_CHANNELS = [
     ("UCHlNU7kIZhRgSbhHvFoy72w", "Hugging Face", "community"),  # AI models, datasets, community
     ("UCcIXc5mJsHVYTZR1maL5l9w", "DeepLearning.AI", "education"),  # @DeepLearningAI - Andrew Ng's platform
     ("UCBa5G_ESCn8Yd4vw5U-gIcg", "Stanford Online", "education"),  # University AI/ML course lectures
+
+    # Emerging AI Model & Service Providers - VERIFIED
+    ("UCZzz69u3MGBmJ3APUTyyXPA", "Deepseek", "official"),  # @deepseek-ai - Chinese LLM provider
+    ("UCHCffBTGYa1Ut72h03ldtGA", "Fireworks AI", "official"),  # @fireworksai - LLM inference optimization
+    ("UCZD2IkWTzZvajgiy9CjNfxA", "Deepgram", "official"),  # Speech-to-text & voice AI
+    ("UCUBqu_z5uP0AZhYtuyFZB3g", "RunwayML", "official"),  # @RunwayML - Video generation & creative AI
+    ("UCOCLmqf7Jy3LcsO0SMBGP_Q", "Baseten", "official"),  # @baseten - ML model deployment platform
+    ("UCipPA-ZHX6UYGH_Iyti1-Jw", "Alibaba Cloud", "official"),  # Qwen models & cloud infrastructure
+    ("UC7vVhkEfw4nOGp8TyDk7RcQ", "Boston Dynamics", "official"),  # Robotics & embodied AI research
 ]
 
 # Keywords to identify AI-relevant videos

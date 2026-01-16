@@ -18,7 +18,14 @@ CHANNELS = {
     "perplexity_ai": "Perplexity AI",
     "modal_labs": "Modal",
     "stabilityai": "Stability AI",
-    "togethercompute": "Together AI",
+    # New channels from research
+    "deepseek-ai": "Deepseek",
+    "fireworksai": "Fireworks AI",
+    "BostonDynamics": "Boston Dynamics",
+    "DeepgramAI": "Deepgram",
+    # Additional channels from browser search
+    "RunwayML": "RunwayML",
+    "baseten": "Baseten",
 }
 
 def extract_channel_id_from_handle(handle: str) -> Optional[str]:
