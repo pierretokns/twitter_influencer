@@ -1,0 +1,25 @@
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 127.0.0.1:4317
+      http:
+        endpoint: 127.0.0.1:4318
+
+exporters:
+  sqlite:
+    path: /home/erki/twitter_influencer/output_data/ai_news.db
+  debug:
+    verbosity: basic
+
+processors:
+  batch:
+    timeout: 1s
+    send_batch_size: 100
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [sqlite, debug]

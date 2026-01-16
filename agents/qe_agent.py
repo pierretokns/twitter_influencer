@@ -36,12 +36,11 @@ USAGE:
     variants = qe_agent.evaluate_batch(variants)  # Batch evaluation
 """
 
-import json
-import subprocess
 import time
-from typing import List, Optional
+from typing import List
 
 from .post_variant import PostVariant
+from .llm_client import call_llm_json, LLMError
 
 
 class QEAgent:
@@ -120,33 +119,6 @@ Respond in JSON format ONLY:
         """Initialize the QE Agent"""
         pass
 
-    def _call_claude_cli(self, prompt: str) -> Optional[str]:
-        """
-        Call Claude CLI for evaluation.
-
-        Args:
-            prompt: The evaluation prompt with post content
-
-        Returns:
-            Claude's response string or None if failed
-        """
-        try:
-            result = subprocess.run(
-                ['claude', '-p', prompt],
-                capture_output=True,
-                text=True,
-                timeout=45
-            )
-            if result.returncode == 0:
-                return result.stdout.strip()
-            return None
-        except subprocess.TimeoutExpired:
-            print("[QEAgent] Claude CLI timed out")
-            return None
-        except Exception as e:
-            print(f"[QEAgent] Claude call failed: {e}")
-            return None
-
     def evaluate_post(self, variant: PostVariant) -> PostVariant:
         """
         Evaluate a single post variant and update its QE fields.
@@ -161,27 +133,21 @@ Respond in JSON format ONLY:
             content=variant.content,
             char_count=len(variant.content)
         )
-        result = self._call_claude_cli(prompt)
 
-        if result:
-            try:
-                # Extract JSON from response
-                start = result.find('{')
-                end = result.rfind('}') + 1
-                if start >= 0 and end > start:
-                    data = json.loads(result[start:end])
+        try:
+            data = call_llm_json(prompt, timeout=45)
+            if data:
+                # Update variant with evaluation results
+                variant.qe_score = data.get('score', 50)
+                variant.qe_feedback = data.get('feedback', '')
+                variant.qe_breakdown = data.get('breakdown', {})
+                variant.qe_strengths = data.get('strengths', [])
+                variant.qe_issues = data.get('issues', [])
 
-                    # Update variant with evaluation results
-                    variant.qe_score = data.get('score', 50)
-                    variant.qe_feedback = data.get('feedback', '')
-                    variant.qe_breakdown = data.get('breakdown', {})
-                    variant.qe_strengths = data.get('strengths', [])
-                    variant.qe_issues = data.get('issues', [])
-
-                    print(f"  [QE] {variant.variant_id}: {variant.qe_score}/100 - {variant.qe_feedback[:60]}...")
-                    return variant
-            except json.JSONDecodeError as e:
-                print(f"  [QE] JSON parse error: {e}")
+                print(f"  [QE] {variant.variant_id}: {variant.qe_score}/100 - {variant.qe_feedback[:60]}...")
+                return variant
+        except LLMError as e:
+            print(f"  [QE] LLM error: {e}")
 
         # Fallback: assign default score
         variant.qe_score = 60

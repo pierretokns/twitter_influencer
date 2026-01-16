@@ -59,22 +59,50 @@ DB_PATH = OUTPUT_DIR / "ai_news.db"
 
 # Seed YouTube channels for AI news monitoring
 # Format: (channel_id, channel_name, category)
+# All channel IDs verified via RSS feed URLs (youtube.com/feeds/videos.xml?channel_id=...)
 SEED_CHANNELS = [
-    # Official Company Channels
-    ("UCXZCJLdBC09xxGZ6gcdrc6A", "OpenAI", "official"),
-    ("UCP7jMXSY2xbc3KCAE0MHQ-A", "Google DeepMind", "official"),
-    ("UCLXo7UDZvByw2ixzpQCufnA", "Anthropic", "official"),
-    ("UCnUYZLuoy1rq1aVMwx4aTzw", "Google Chrome", "official"),  # For Disco/GenTabs
+    # Official AI Company Channels - VERIFIED
+    ("UCXZCJLdBC09xxGZ6gcdrc6A", "OpenAI", "official"),  # @OpenAI - 1.9M+ subs
+    ("UCP7jMXSY2xbc3KCAE0MHQ-A", "Google DeepMind", "official"),  # @GoogleDeepMind
+    ("UCrDwWp7EBBv4NwvScIpBDOA", "Anthropic", "official"),  # @anthropic-ai - 352K+ subs
 
-    # AI News & Updates
-    ("UCuK2Mf5As9OKfWU7XV6yzCg", "Matt Wolfe", "news"),  # @mreflow
-    ("UCNJ1Ymd5yFuUPtn21xtRbbw", "AI Explained", "news"),
-    ("UCbfYPyITQ-7l4upoX8nvctg", "Two Minute Papers", "research"),
-    ("UCZHmQk67mSJgfCCTn7xBfew", "Yannic Kilcher", "research"),
+    # Top-Tier AI Model Providers - VERIFIED
+    ("UCAIPDhucf3cBHRq9yeqytrw", "Daily (Pipecat)", "official"),  # @DailyHQ - 1.53K subs - Voice/multimodal AI
+    ("UC-ew9TfeD887qUSiWWAAj1w", "ElevenLabs", "official"),  # @elevenlabsio - Text-to-speech & voice AI
+    ("UC5-pBdfdA3KUo-vq72l-umA", "Mistral AI", "official"),  # @MistralAIofficial - 6.9K subs - LLM provider
+    ("UClzRQA8Un3AJnlD6h1hv6fA", "Liquid AI", "official"),  # @liquid-ai-inc - 856 subs - Efficient foundation models
+    ("UC477UdoLR2Js3RHhRWSXsQA", "Modal", "official"),  # Modal Labs - AI infrastructure/deployment
+    ("UCT5qXmLacW_a4DE-3EgeOiQ", "Arc (Browser Company)", "official"),  # @TheBrowserCompany - 100K+ subs - Browser/AI
+    ("UCTSqI4c58ffN6l5Mbdat6dg", "Perplexity AI", "official"),  # @perplexity_ai - AI search engine
+    ("UCrhOqMww3ItTHOKxtYM56cg", "Stability AI", "official"),  # @stabilityai - Stable Diffusion & generative AI
 
-    # Tech News with AI Focus
-    ("UCddiUEpeqJcYeBxX1IVBKvQ", "The Verge", "tech"),
-    ("UC0RhatS1pyxInC00YKjjBqQ", "Fireship", "tech"),  # Popular dev/AI channel
+    # Top-Tier AI Research & Education Channels
+    ("UCbfYPyITQ-7l4upoX8nvctg", "Two Minute Papers", "research"),  # Péter Sólyom - Weekly AI papers
+    ("UCZHmQk67mSJgfCCTn7xBfew", "Yannic Kilcher", "research"),  # ML/AI research papers & NNs explained
+    ("UCYO_jab_esuFRV4b17AJtAw", "3Blue1Brown", "education"),  # Grant Sanderson - Math/AI visualization - 7.9M subs
+    ("UCSHZKyawb77ixDdsGog4iWA", "Lex Fridman", "interviews"),  # Long-form AI researcher interviews - 3.6M+ subs
+    ("UCX7Y2qWriXpqocG97SFW2OQ", "Jeremy Howard", "education"),  # @howardjeremyp - Practical deep learning
+    ("UCNJ1Ymd5yFuUPtn21xtRbbw", "AI Explained", "education"),  # Accessible AI concepts & news
+
+    # Tech & Innovation Coverage
+    ("UCddiUEpeqJcYeBxX1IVBKvQ", "The Verge", "news"),  # @theverge - Tech news & reviews
+    ("UC5WjFrtBdufl6CZojX3D8dQ", "Tesla", "innovation"),  # @Tesla - AI/robotics development
+    ("UCsBjURrPoezykLs9EqgamOA", "Fireship", "education"),  # @Fireship - Concise coding & tech tutorials
+    ("UChpleBmo18P08aKCIgti38g", "Matt Wolfe", "news"),  # @mreflow - AI tools & news
+
+    # AI/ML Community & Education Platforms
+    ("UCHlNU7kIZhRgSbhHvFoy72w", "Hugging Face", "community"),  # AI models, datasets, community
+    ("UCcIXc5mJsHVYTZR1maL5l9w", "DeepLearning.AI", "education"),  # @DeepLearningAI - Andrew Ng's platform
+    ("UCBa5G_ESCn8Yd4vw5U-gIcg", "Stanford Online", "education"),  # University AI/ML course lectures
+
+    # Emerging AI Model & Service Providers - VERIFIED
+    ("UCZzz69u3MGBmJ3APUTyyXPA", "Deepseek", "official"),  # @deepseek-ai - Chinese LLM provider
+    ("UCHCffBTGYa1Ut72h03ldtGA", "Fireworks AI", "official"),  # @fireworksai - LLM inference optimization
+    ("UCZD2IkWTzZvajgiy9CjNfxA", "Deepgram", "official"),  # Speech-to-text & voice AI
+    ("UCUBqu_z5uP0AZhYtuyFZB3g", "RunwayML", "official"),  # @RunwayML - Video generation & creative AI
+    ("UCOCLmqf7Jy3LcsO0SMBGP_Q", "Baseten", "official"),  # @baseten - ML model deployment platform
+    ("UCipPA-ZHX6UYGH_Iyti1-Jw", "Alibaba Cloud", "official"),  # Qwen models & cloud infrastructure
+    ("UC7vVhkEfw4nOGp8TyDk7RcQ", "Boston Dynamics", "official"),  # Robotics & embodied AI research
 ]
 
 # Keywords to identify AI-relevant videos

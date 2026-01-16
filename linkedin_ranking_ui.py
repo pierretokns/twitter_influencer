@@ -73,6 +73,35 @@ def save_tournament_to_db(
         # Get winner info
         winner = ranked_variants[0] if ranked_variants else None
 
+        # Insert citation markers into winner content
+        winner_content = winner.content if winner else None
+        if winner and news_sources and winner.source_attributions:
+            try:
+                from agents.variant_generator import PostVariantGenerator
+                generator = PostVariantGenerator()
+
+                # Build annotated sources for citation insertion
+                # Map source_attributions to news_sources
+                annotated_sources = []
+                for attr in winner.source_attributions:
+                    idx = attr.get('idx')
+                    if idx is not None and idx < len(news_sources):
+                        src = news_sources[idx].copy()
+                        src['is_referenced'] = attr.get('is_referenced', False)
+                        src['attribution_score'] = attr.get('score', 0.0)
+                        annotated_sources.append(src)
+
+                if annotated_sources:
+                    # Insert citation markers into content
+                    winner_content, _ = generator.insert_citation_markers(
+                        winner_content,
+                        annotated_sources,
+                        max_citations=10
+                    )
+            except Exception as e:
+                print(f"[DB] Warning: Could not insert citations: {e}")
+                # Continue with original content if citation insertion fails
+
         # Insert tournament run
         cursor.execute("""
             INSERT INTO tournament_runs (
@@ -87,7 +116,7 @@ def save_tournament_to_db(
             num_rounds,
             len(debates) if debates else 0,
             winner.variant_id if winner else None,
-            winner.content if winner else None,
+            winner_content,
             winner.elo_rating if winner else None,
             winner.qe_score if winner else None,
             'complete'
@@ -276,6 +305,39 @@ HTML_TEMPLATE = '''
             color: var(--text);
             min-height: 100vh;
         }
+
+        .top-nav {
+            background: var(--card);
+            border-bottom: 1px solid var(--border);
+            padding: 0.75rem 2rem;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .top-nav .logo {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            color: var(--text);
+            text-decoration: none;
+            font-weight: 600;
+        }
+        .top-nav .logo svg { width: 24px; height: 24px; color: #0077b5; }
+        .top-nav .nav-links { display: flex; gap: 1rem; }
+        .top-nav .nav-link {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            padding: 0.5rem 1rem;
+            border-radius: 4px;
+            color: var(--muted);
+            text-decoration: none;
+            font-size: 0.875rem;
+            transition: all 0.2s;
+        }
+        .top-nav .nav-link:hover { background: var(--hover); color: var(--text); }
+        .top-nav .nav-link.active { background: #0077b5; color: white; }
+        .top-nav .nav-link svg { width: 18px; height: 18px; }
 
         .header {
             background: linear-gradient(135deg, #0077b5 0%, #00a0dc 100%);
@@ -604,6 +666,25 @@ HTML_TEMPLATE = '''
     </style>
 </head>
 <body>
+    <nav class="top-nav">
+        <a href="/" class="logo">
+            <svg viewBox="0 0 24 24" fill="currentColor">
+                <path d="M20.5 2h-17A1.5 1.5 0 002 3.5v17A1.5 1.5 0 003.5 22h17a1.5 1.5 0 001.5-1.5v-17A1.5 1.5 0 0020.5 2zM8 19H5v-9h3zM6.5 8.25A1.75 1.75 0 118.3 6.5a1.78 1.78 0 01-1.8 1.75zM19 19h-3v-4.74c0-1.42-.6-1.93-1.38-1.93A1.74 1.74 0 0013 14.19a.66.66 0 000 .14V19h-3v-9h2.9v1.3a3.11 3.11 0 012.7-1.4c1.55 0 3.36.86 3.36 3.66z"/>
+            </svg>
+            AI Tournament
+        </a>
+        <div class="nav-links">
+            <a href="https://b.gourmand.dev" class="nav-link">
+                <svg viewBox="0 0 24 24" fill="currentColor"><path d="M23 9v2h-2v7a3 3 0 01-3 3h-4v-6h-4v6H6a3 3 0 01-3-3v-7H1V9l11-7 5 3.18V2h3v5.09z"/></svg>
+                Feed
+            </a>
+            <a href="/" class="nav-link active">
+                <svg viewBox="0 0 24 24" fill="currentColor"><path d="M17 6V5a3 3 0 00-3-3h-4a3 3 0 00-3 3v1H2v4a3 3 0 003 3h14a3 3 0 003-3V6zM9 5a1 1 0 011-1h4a1 1 0 011 1v1H9zm10 9a4 4 0 003-1.38V17a3 3 0 01-3 3H5a3 3 0 01-3-3v-4.38A4 4 0 005 14z"/></svg>
+                Tournament
+            </a>
+        </div>
+    </nav>
+
     <div class="header">
         <h1>LinkedIn Post Tournament</h1>
         <p>Multi-agent ELO ranking with human-in-the-loop approval</p>

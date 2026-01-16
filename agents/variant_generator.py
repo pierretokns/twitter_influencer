@@ -50,11 +50,11 @@ USAGE:
 import hashlib
 import random
 import re
-import subprocess
 import time
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Tuple
 
 from .post_variant import PostVariant
+from .llm_client import call_llm, LLMError
 
 
 # Viral hook styles with example templates
@@ -154,34 +154,6 @@ Write ONLY the post text. No intro, no explanation. Start directly with the hook
     def __init__(self):
         """Initialize the generator with available hook styles"""
         self.hook_styles = list(VIRAL_HOOKS.keys())
-
-    def _call_claude_cli(self, prompt: str, timeout: int = 90) -> Optional[str]:
-        """
-        Call Claude CLI for generation.
-
-        Args:
-            prompt: The generation prompt
-            timeout: Timeout in seconds
-
-        Returns:
-            Claude's response string or None if failed
-        """
-        try:
-            result = subprocess.run(
-                ['claude', '-p', prompt],
-                capture_output=True,
-                text=True,
-                timeout=timeout
-            )
-            if result.returncode == 0:
-                return result.stdout.strip()
-            return None
-        except subprocess.TimeoutExpired:
-            print("[Generator] Claude CLI timed out")
-            return None
-        except Exception as e:
-            print(f"[Generator] Claude call failed: {e}")
-            return None
 
     def _clean_post(self, text: str) -> str:
         """
@@ -290,7 +262,11 @@ Write ONLY the post text. No intro, no explanation. Start directly with the hook
                 hook_example=example_hook
             )
 
-            result = self._call_claude_cli(prompt)
+            try:
+                result = call_llm(prompt, timeout=90)
+            except LLMError as e:
+                print(f"[Generator] LLM error: {e}")
+                result = None
 
             if result:
                 content = self._clean_post(result)

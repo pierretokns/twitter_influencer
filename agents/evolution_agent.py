@@ -45,11 +45,11 @@ USAGE:
 """
 
 import re
-import subprocess
 import time
-from typing import List, Optional
+from typing import List
 
 from .post_variant import PostVariant
+from .llm_client import call_llm, LLMError
 
 
 class EvolutionAgent:
@@ -107,34 +107,6 @@ Write ONLY the improved post. No explanation. Start directly with the hook:'''
         """
         self.evolution_threshold = threshold or self.DEFAULT_THRESHOLD
 
-    def _call_claude_cli(self, prompt: str, timeout: int = 90) -> Optional[str]:
-        """
-        Call Claude CLI for evolution.
-
-        Args:
-            prompt: The evolution prompt
-            timeout: Timeout in seconds (default: 90)
-
-        Returns:
-            Claude's response string or None if failed
-        """
-        try:
-            result = subprocess.run(
-                ['claude', '-p', prompt],
-                capture_output=True,
-                text=True,
-                timeout=timeout
-            )
-            if result.returncode == 0:
-                return result.stdout.strip()
-            return None
-        except subprocess.TimeoutExpired:
-            print("[EvolutionAgent] Claude CLI timed out")
-            return None
-        except Exception as e:
-            print(f"[EvolutionAgent] Claude call failed: {e}")
-            return None
-
     def _clean_post(self, text: str) -> str:
         """
         Clean up generated post text.
@@ -191,7 +163,11 @@ Write ONLY the improved post. No explanation. Start directly with the hook:'''
             news_context=news_context[:1500]  # Limit context length
         )
 
-        result = self._call_claude_cli(prompt)
+        try:
+            result = call_llm(prompt, timeout=90)
+        except LLMError as e:
+            print(f"[EvolutionAgent] LLM error: {e}")
+            result = None
 
         if result:
             content = self._clean_post(result)
