@@ -272,7 +272,7 @@ def migrate_discord_db(conn: sqlite3.Connection) -> int:
 # AI NEWS DATABASE MIGRATIONS
 # =============================================================================
 
-AI_NEWS_DB_VERSION = 10
+AI_NEWS_DB_VERSION = 11
 
 AI_NEWS_MIGRATIONS: Dict[int, List[str]] = {
     # Version 1: Initial schema
@@ -695,6 +695,45 @@ AI_NEWS_MIGRATIONS: Dict[int, List[str]] = {
         """,
         "CREATE INDEX IF NOT EXISTS idx_mastodon_queue_status ON mastodon_queue(status)",
         "CREATE INDEX IF NOT EXISTS idx_mastodon_queue_run ON mastodon_queue(tournament_run_id)",
+    ],
+
+    # Version 11: Chat sessions and messages for RAG chatbot
+    11: [
+        # Chat sessions table - anonymous sessions for conversation
+        """
+        CREATE TABLE IF NOT EXISTS chat_sessions (
+            session_id TEXT PRIMARY KEY,
+            user_id TEXT DEFAULT 'anonymous',
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            last_activity TEXT,
+            message_count INTEGER DEFAULT 0,
+            total_tokens INTEGER DEFAULT 0,
+            bucket_exported BOOLEAN DEFAULT FALSE,
+            bucket_path TEXT
+        )
+        """,
+
+        # Chat messages table - stores user and assistant messages
+        """
+        CREATE TABLE IF NOT EXISTS chat_messages (
+            message_id TEXT PRIMARY KEY,
+            session_id TEXT NOT NULL,
+            role TEXT NOT NULL,
+            content TEXT NOT NULL,
+            citations JSON,
+            retrieval_context JSON,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            latency_ms INTEGER,
+            input_tokens INTEGER,
+            output_tokens INTEGER,
+            FOREIGN KEY (session_id) REFERENCES chat_sessions(session_id)
+        )
+        """,
+
+        # Indexes for efficient queries
+        "CREATE INDEX IF NOT EXISTS idx_chat_messages_session ON chat_messages(session_id)",
+        "CREATE INDEX IF NOT EXISTS idx_chat_sessions_user ON chat_sessions(user_id)",
+        "CREATE INDEX IF NOT EXISTS idx_chat_sessions_activity ON chat_sessions(last_activity)",
     ],
 }
 

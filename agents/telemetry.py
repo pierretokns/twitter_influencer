@@ -42,6 +42,18 @@ from opentelemetry.sdk.trace import TracerProvider, ReadableSpan
 from opentelemetry.sdk.trace.export import SpanExporter, SpanExportResult, BatchSpanProcessor
 from opentelemetry.sdk.resources import Resource, SERVICE_NAME
 
+# OpenTelemetry GenAI Semantic Conventions
+# Reference: https://github.com/open-telemetry/semantic-conventions/tree/main/model/gen_ai
+GEN_AI_ATTRIBUTES = {
+    "gen_ai.system": "claude",
+    "gen_ai.request.model": "claude-sonnet-4-5",
+    "gen_ai.request.max_tokens": "max_tokens",
+    "gen_ai.response.model": "model",
+    "gen_ai.usage.input_tokens": "input_tokens",
+    "gen_ai.usage.output_tokens": "output_tokens",
+    "gen_ai.usage.total_tokens": "total_tokens",
+}
+
 
 # Thread-local storage for database connections
 _local = threading.local()
@@ -284,11 +296,50 @@ def shutdown_telemetry():
         _tracer_provider = None
 
 
+def create_chat_span(tracer: trace.Tracer, name: str, session_id: str, **gen_ai_attrs) -> trace.Span:
+    """
+    Create a span for chat operations with GenAI semantic conventions.
+
+    Args:
+        tracer: OpenTelemetry Tracer instance
+        name: Span name (e.g., "chat.process_message", "chat.generate")
+        session_id: Chat session ID
+        **gen_ai_attrs: GenAI attributes like input_tokens, output_tokens, etc.
+
+    Returns:
+        OpenTelemetry Span with GenAI attributes
+
+    Example:
+        span = create_chat_span(tracer, "chat.generate", session_id,
+                               input_tokens=1250, output_tokens=350)
+    """
+    span = tracer.start_span(name)
+
+    # Add session context
+    span.set_attribute("session.id", session_id)
+
+    # Add GenAI system attributes
+    span.set_attribute("gen_ai.system", "claude")
+    span.set_attribute("gen_ai.request.model", "claude-sonnet-4-5")
+
+    # Add provided GenAI attributes
+    if "input_tokens" in gen_ai_attrs:
+        span.set_attribute("gen_ai.usage.input_tokens", gen_ai_attrs["input_tokens"])
+    if "output_tokens" in gen_ai_attrs:
+        span.set_attribute("gen_ai.usage.output_tokens", gen_ai_attrs["output_tokens"])
+    if "total_tokens" in gen_ai_attrs:
+        span.set_attribute("gen_ai.usage.total_tokens", gen_ai_attrs["total_tokens"])
+
+    return span
+
+
 __all__ = [
     'SQLiteSpanExporter',
     'setup_telemetry',
     'get_tracer',
     'shutdown_telemetry',
+    'create_chat_span',
+    'GEN_AI_ATTRIBUTES',
 ]
 
 
