@@ -2447,6 +2447,31 @@ def delete_chat_session(session_id):
         return jsonify({"error": str(e)}), 500
 
 
+@app.route('/api/chat/suggest', methods=['POST'])
+def suggest_followups():
+    """Generate follow-up question suggestions based on response context"""
+    try:
+        data = request.json
+        last_response = data.get('last_response', '')
+        context_sources = data.get('context_sources', [])
+
+        if not last_response:
+            return jsonify({"error": "last_response is required"}), 400
+
+        # Initialize chat agent for suggestion generation
+        agent = ChatAgent()
+        suggestions = agent._generate_followups(
+            response=last_response,
+            sources=context_sources,
+            max_suggestions=3
+        )
+
+        return jsonify({"suggestions": suggestions})
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 if __name__ == '__main__':
     print("\n" + "="*60)
     print("LinkedIn Feed Clone")

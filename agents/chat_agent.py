@@ -319,8 +319,8 @@ RESPONSE FORMAT:
             # Search YouTube videos
             video_scores = self._search_table(
                 "youtube_videos",
-                "youtube_embeddings_dense",
-                "youtube_embeddings_sparse",
+                "youtube_video_embeddings_dense",
+                "youtube_video_embeddings_sparse",
                 query_dense,
                 query_sparse,
                 retriever,
