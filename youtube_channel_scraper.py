@@ -66,6 +66,16 @@ SEED_CHANNELS = [
     ("UCP7jMXSY2xbc3KCAE0MHQ-A", "Google DeepMind", "official"),  # @GoogleDeepMind
     ("UCrDwWp7EBBv4NwvScIpBDOA", "Anthropic", "official"),  # @anthropic-ai - 352K+ subs
 
+    # Top-Tier AI Model Providers - VERIFIED
+    ("UCAIPDhucf3cBHRq9yeqytrw", "Daily (Pipecat)", "official"),  # @DailyHQ - 1.53K subs - Voice/multimodal AI
+    ("UC-ew9TfeD887qUSiWWAAj1w", "ElevenLabs", "official"),  # @elevenlabsio - Text-to-speech & voice AI
+    ("UC5-pBdfdA3KUo-vq72l-umA", "Mistral AI", "official"),  # @MistralAIofficial - 6.9K subs - LLM provider
+    ("UClzRQA8Un3AJnlD6h1hv6fA", "Liquid AI", "official"),  # @liquid-ai-inc - 856 subs - Efficient foundation models
+    ("UC477UdoLR2Js3RHhRWSXsQA", "Modal", "official"),  # Modal Labs - AI infrastructure/deployment
+    ("UCT5qXmLacW_a4DE-3EgeOiQ", "Arc (Browser Company)", "official"),  # @TheBrowserCompany - 100K+ subs - Browser/AI
+    ("UCTSqI4c58ffN6l5Mbdat6dg", "Perplexity AI", "official"),  # @perplexity_ai - AI search engine
+    ("UCrhOqMww3ItTHOKxtYM56cg", "Stability AI", "official"),  # @stabilityai - Stable Diffusion & generative AI
+
     # Top-Tier AI Research & Education Channels
     ("UCbfYPyITQ-7l4upoX8nvctg", "Two Minute Papers", "research"),  # Péter Sólyom - Weekly AI papers
     ("UCZHmQk67mSJgfCCTn7xBfew", "Yannic Kilcher", "research"),  # ML/AI research papers & NNs explained
