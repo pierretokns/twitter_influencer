@@ -73,6 +73,35 @@ def save_tournament_to_db(
         # Get winner info
         winner = ranked_variants[0] if ranked_variants else None
 
+        # Insert citation markers into winner content
+        winner_content = winner.content if winner else None
+        if winner and news_sources and winner.source_attributions:
+            try:
+                from agents.variant_generator import PostVariantGenerator
+                generator = PostVariantGenerator()
+
+                # Build annotated sources for citation insertion
+                # Map source_attributions to news_sources
+                annotated_sources = []
+                for attr in winner.source_attributions:
+                    idx = attr.get('idx')
+                    if idx is not None and idx < len(news_sources):
+                        src = news_sources[idx].copy()
+                        src['is_referenced'] = attr.get('is_referenced', False)
+                        src['attribution_score'] = attr.get('score', 0.0)
+                        annotated_sources.append(src)
+
+                if annotated_sources:
+                    # Insert citation markers into content
+                    winner_content, _ = generator.insert_citation_markers(
+                        winner_content,
+                        annotated_sources,
+                        max_citations=10
+                    )
+            except Exception as e:
+                print(f"[DB] Warning: Could not insert citations: {e}")
+                # Continue with original content if citation insertion fails
+
         # Insert tournament run
         cursor.execute("""
             INSERT INTO tournament_runs (
@@ -87,7 +116,7 @@ def save_tournament_to_db(
             num_rounds,
             len(debates) if debates else 0,
             winner.variant_id if winner else None,
-            winner.content if winner else None,
+            winner_content,
             winner.elo_rating if winner else None,
             winner.qe_score if winner else None,
             'complete'
