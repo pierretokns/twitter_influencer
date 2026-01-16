@@ -1266,6 +1266,661 @@ HTML_TEMPLATE = '''
         setupCitationPopovers();
         loadFeed();
     </script>
+
+    <!-- Chat Widget -->
+    <div id="chat-widget" class="chat-widget">
+        <div class="chat-header">
+            <span class="chat-title">💬 Chat with AI News</span>
+            <button id="chat-toggle-btn" class="chat-btn-toggle" aria-label="Toggle chat">−</button>
+            <button id="chat-close-btn" class="chat-btn-close" aria-label="Close chat">×</button>
+        </div>
+
+        <div class="chat-content">
+            <!-- Sources Panel -->
+            <div id="sources-panel" class="sources-panel" style="display: none;">
+                <div class="sources-label">🔍 Sources</div>
+                <div id="sources-list" class="sources-list"></div>
+            </div>
+
+            <!-- Messages Area -->
+            <div id="chat-messages" class="chat-messages" role="log" aria-live="polite" aria-label="Chat messages">
+                <div class="chat-welcome">
+                    <h3>Welcome to AI News Chat</h3>
+                    <p>Ask anything about AI news and industry trends. I'll search recent sources and provide citations.</p>
+                    <div id="starter-suggestions" class="suggestion-chips">
+                        <button class="suggestion-chip" onclick="chatSendSuggestion('What are the latest developments in AI?')">Latest AI developments</button>
+                        <button class="suggestion-chip" onclick="chatSendSuggestion('Compare GPT-5 and Claude')">Model comparisons</button>
+                        <button class="suggestion-chip" onclick="chatSendSuggestion('What are AI safety concerns?')">AI safety concerns</button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Follow-up Suggestions -->
+            <div id="suggestions-container" class="suggestions-container" style="display: none;">
+                <div id="suggestions-list" class="suggestion-chips"></div>
+            </div>
+
+            <!-- Input Area -->
+            <div class="chat-input-container">
+                <textarea
+                    id="chat-input"
+                    class="chat-textarea"
+                    placeholder="Ask about AI news..."
+                    rows="1"
+                    aria-label="Chat message input"
+                ></textarea>
+                <button id="chat-send-btn" class="chat-send-btn" aria-label="Send message">
+                    <span class="send-icon">➤</span>
+                </button>
+            </div>
+
+            <!-- Toast Notifications -->
+            <div id="chat-toast" class="chat-toast"></div>
+        </div>
+    </div>
+
+    <style>
+        /* Chat Widget Styles */
+        .chat-widget {
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            width: 400px;
+            max-width: calc(100vw - 40px);
+            height: 600px;
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+            display: flex;
+            flex-direction: column;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            z-index: 9999;
+            transition: all 0.3s ease;
+        }
+
+        .chat-widget.collapsed {
+            height: auto;
+            max-width: 200px;
+        }
+
+        .chat-widget.collapsed .chat-content {
+            display: none;
+        }
+
+        .chat-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 12px 16px;
+            border-bottom: 1px solid var(--border);
+            background: linear-gradient(135deg, var(--linkedin-blue) 0%, #0a5aa8 100%);
+            color: white;
+            border-radius: 12px 12px 0 0;
+            cursor: pointer;
+        }
+
+        .chat-title {
+            font-weight: 600;
+            font-size: 14px;
+        }
+
+        .chat-btn-toggle, .chat-btn-close {
+            background: none;
+            border: none;
+            color: white;
+            cursor: pointer;
+            font-size: 20px;
+            padding: 0;
+            width: 24px;
+            height: 24px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: 4px;
+            transition: background 0.15s;
+        }
+
+        .chat-btn-toggle:hover, .chat-btn-close:hover {
+            background: rgba(255, 255, 255, 0.2);
+        }
+
+        .chat-content {
+            display: flex;
+            flex-direction: column;
+            flex: 1;
+            overflow: hidden;
+        }
+
+        .sources-panel {
+            padding: 10px 12px;
+            border-bottom: 1px solid var(--border);
+            background: var(--bg-secondary);
+            max-height: 60px;
+            overflow: hidden;
+        }
+
+        .sources-label {
+            font-size: 12px;
+            font-weight: 600;
+            color: var(--text-secondary);
+            margin-bottom: 6px;
+        }
+
+        .sources-list {
+            display: flex;
+            gap: 6px;
+            overflow-x: auto;
+            scrollbar-width: thin;
+        }
+
+        .source-chip {
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+            padding: 4px 8px;
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 14px;
+            font-size: 11px;
+            white-space: nowrap;
+            cursor: pointer;
+            transition: all 0.15s;
+            flex-shrink: 0;
+        }
+
+        .source-chip:hover {
+            border-color: var(--linkedin-blue);
+            background: rgba(10, 102, 194, 0.05);
+        }
+
+        .source-chip .source-type {
+            font-size: 10px;
+            color: var(--text-secondary);
+        }
+
+        .chat-messages {
+            flex: 1;
+            overflow-y: auto;
+            padding: 12px;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        .chat-welcome {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+            align-items: center;
+            justify-content: center;
+            text-align: center;
+            padding: 16px;
+            color: var(--text-secondary);
+        }
+
+        .chat-welcome h3 {
+            margin: 0;
+            font-size: 16px;
+            color: var(--text-primary);
+        }
+
+        .chat-welcome p {
+            margin: 0;
+            font-size: 13px;
+            line-height: 1.4;
+        }
+
+        .chat-message {
+            display: flex;
+            gap: 8px;
+            margin-bottom: 4px;
+            animation: fadeIn 0.2s ease;
+        }
+
+        .chat-message.user {
+            justify-content: flex-end;
+        }
+
+        .chat-message-bubble {
+            max-width: 85%;
+            padding: 8px 12px;
+            border-radius: 12px;
+            font-size: 13px;
+            line-height: 1.4;
+            word-break: break-word;
+        }
+
+        .chat-message.user .chat-message-bubble {
+            background: var(--linkedin-blue);
+            color: white;
+            border-bottom-right-radius: 4px;
+        }
+
+        .chat-message.assistant .chat-message-bubble {
+            background: var(--bg-secondary);
+            color: var(--text-primary);
+            border-bottom-left-radius: 4px;
+        }
+
+        .citation-marker {
+            display: inline;
+            color: var(--linkedin-blue);
+            font-size: 0.75em;
+            vertical-align: super;
+            cursor: pointer;
+            font-weight: 600;
+        }
+
+        .chat-message.assistant .citation-marker {
+            color: var(--linkedin-blue);
+        }
+
+        .chat-message.user .citation-marker {
+            color: rgba(255, 255, 255, 0.8);
+        }
+
+        .typing-indicator {
+            display: inline-flex;
+            gap: 3px;
+            padding: 8px 12px;
+        }
+
+        .typing-dot {
+            width: 6px;
+            height: 6px;
+            background: var(--text-secondary);
+            border-radius: 50%;
+            animation: bounce 1.4s infinite ease-in-out;
+        }
+
+        .typing-dot:nth-child(1) { animation-delay: 0s; }
+        .typing-dot:nth-child(2) { animation-delay: 0.2s; }
+        .typing-dot:nth-child(3) { animation-delay: 0.4s; }
+
+        @keyframes bounce {
+            0%, 80%, 100% { transform: translateY(0); }
+            40% { transform: translateY(-4px); }
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(4px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        .suggestions-container {
+            padding: 0 12px;
+            max-height: 50px;
+            overflow: hidden;
+            border-bottom: 1px solid var(--border);
+            border-top: 1px solid var(--border);
+        }
+
+        .suggestion-chips {
+            display: flex;
+            gap: 6px;
+            overflow-x: auto;
+            padding: 8px 0;
+            scrollbar-width: thin;
+        }
+
+        .suggestion-chip {
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+            padding: 6px 12px;
+            background: rgba(10, 102, 194, 0.08);
+            border: 1px solid rgba(10, 102, 194, 0.3);
+            border-radius: 16px;
+            font-size: 12px;
+            color: var(--linkedin-blue);
+            cursor: pointer;
+            white-space: nowrap;
+            transition: all 0.15s ease;
+            flex-shrink: 0;
+            font-family: inherit;
+            font-weight: 500;
+        }
+
+        .suggestion-chip:hover {
+            background: var(--linkedin-blue);
+            color: white;
+            transform: translateY(-1px);
+            box-shadow: 0 2px 8px rgba(10, 102, 194, 0.25);
+        }
+
+        .suggestion-chip:focus {
+            outline: 2px solid var(--linkedin-blue);
+            outline-offset: 2px;
+        }
+
+        .chat-input-container {
+            display: flex;
+            gap: 8px;
+            padding: 12px;
+            border-top: 1px solid var(--border);
+            background: var(--bg-card);
+            border-radius: 0 0 12px 12px;
+        }
+
+        .chat-textarea {
+            flex: 1;
+            min-height: 36px;
+            max-height: 120px;
+            padding: 8px 12px;
+            border: 1px solid var(--border);
+            border-radius: 18px;
+            resize: none;
+            font-family: inherit;
+            font-size: 13px;
+            line-height: 1.4;
+            transition: border-color 0.15s;
+        }
+
+        .chat-textarea:focus {
+            outline: none;
+            border-color: var(--linkedin-blue);
+            box-shadow: 0 0 0 3px rgba(10, 102, 194, 0.1);
+        }
+
+        .chat-textarea::placeholder {
+            color: var(--text-tertiary);
+        }
+
+        .chat-send-btn {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            width: 36px;
+            height: 36px;
+            padding: 0;
+            background: var(--linkedin-blue);
+            color: white;
+            border: none;
+            border-radius: 50%;
+            cursor: pointer;
+            transition: all 0.15s;
+            font-size: 16px;
+            flex-shrink: 0;
+        }
+
+        .chat-send-btn:hover {
+            background: var(--linkedin-blue-hover);
+            transform: scale(1.05);
+        }
+
+        .chat-send-btn:active {
+            transform: scale(0.95);
+        }
+
+        .chat-send-btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        .chat-toast {
+            position: fixed;
+            bottom: 240px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            padding: 8px 14px;
+            border-radius: 6px;
+            font-size: 12px;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+            opacity: 0;
+            animation: slideUp 0.2s ease forwards;
+            pointer-events: none;
+        }
+
+        @keyframes slideUp {
+            to { opacity: 1; }
+        }
+
+        /* Mobile Responsive */
+        @media (max-width: 768px) {
+            .chat-widget {
+                width: 100%;
+                height: 60vh;
+                max-width: 100%;
+                right: 0;
+                left: 0;
+                bottom: 0;
+                border-radius: 16px 16px 0 0;
+            }
+
+            .suggestion-chips {
+                overflow-x: auto;
+                -webkit-overflow-scrolling: touch;
+            }
+        }
+    </style>
+
+    <script>
+        // Chat Widget JavaScript
+        let chatSessionId = null;
+        let isStreaming = false;
+
+        async function initChatSession() {
+            try {
+                const response = await fetch('/api/chat/session', { method: 'POST' });
+                const data = await response.json();
+                chatSessionId = data.session_id;
+            } catch (err) {
+                console.error('Failed to initialize chat session:', err);
+            }
+        }
+
+        function chatSendMessage() {
+            const input = document.getElementById('chat-input');
+            const message = input.value.trim();
+
+            if (!message || isStreaming || !chatSessionId) return;
+
+            // Add user message
+            const messagesContainer = document.getElementById('chat-messages');
+            const userMsg = document.createElement('div');
+            userMsg.className = 'chat-message user';
+            userMsg.innerHTML = `<div class="chat-message-bubble">${escapeHtml(message)}</div>`;
+            messagesContainer.appendChild(userMsg);
+
+            // Clear input and reset height
+            input.value = '';
+            input.style.height = 'auto';
+
+            // Scroll to bottom
+            messagesContainer.scrollTop = messagesContainer.scrollHeight;
+
+            // Send message with streaming
+            chatStreamMessage(message);
+        }
+
+        function chatSendSuggestion(message) {
+            const input = document.getElementById('chat-input');
+            input.value = message;
+            chatSendMessage();
+        }
+
+        async function chatStreamMessage(message) {
+            if (isStreaming || !chatSessionId) return;
+
+            isStreaming = true;
+            const messagesContainer = document.getElementById('chat-messages');
+
+            // Hide welcome message
+            const welcome = document.querySelector('.chat-welcome');
+            if (welcome) welcome.style.display = 'none';
+
+            // Add typing indicator
+            const typingDiv = document.createElement('div');
+            typingDiv.className = 'chat-message assistant';
+            typingDiv.innerHTML = '<div class="typing-indicator"><div class="typing-dot"></div><div class="typing-dot"></div><div class="typing-dot"></div></div>';
+            messagesContainer.appendChild(typingDiv);
+
+            // Build SSE URL with query parameters
+            const url = `/api/chat/stream?message=${encodeURIComponent(message)}&session_id=${chatSessionId}`;
+
+            try {
+                const response = await fetch(url);
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder();
+
+                let buffer = '';
+                let fullResponse = '';
+                let sourcesList = [];
+
+                // Remove typing indicator before first content
+                typingDiv.remove();
+
+                // Create assistant message container
+                const assistantDiv = document.createElement('div');
+                assistantDiv.className = 'chat-message assistant';
+                const messageBubble = document.createElement('div');
+                messageBubble.className = 'chat-message-bubble';
+                assistantDiv.appendChild(messageBubble);
+                messagesContainer.appendChild(assistantDiv);
+
+                while (true) {
+                    const { done, value } = await reader.read();
+
+                    if (done) break;
+
+                    buffer += decoder.decode(value, { stream: true });
+                    const lines = buffer.split('\n');
+
+                    // Process complete lines
+                    for (let i = 0; i < lines.length - 1; i++) {
+                        const line = lines[i];
+
+                        if (line.startsWith('event: ')) {
+                            const eventType = line.slice(7);
+                            const dataLine = lines[++i];
+
+                            if (dataLine.startsWith('data: ')) {
+                                const data = JSON.parse(dataLine.slice(6));
+
+                                if (eventType === 'sources') {
+                                    sourcesList = data.sources || [];
+                                    displaySources(sourcesList);
+                                } else if (eventType === 'token') {
+                                    fullResponse += data.token;
+                                    messageBubble.textContent = fullResponse;
+                                } else if (eventType === 'citation') {
+                                    // Re-render message with citations
+                                    messageBubble.innerHTML = renderMessageWithCitations(fullResponse);
+                                } else if (eventType === 'done') {
+                                    showSuggestions(data.suggested_followups || []);
+                                }
+                            }
+                        }
+                    }
+
+                    // Keep incomplete line in buffer
+                    buffer = lines[lines.length - 1];
+                }
+
+                // Final re-render with all citations
+                messageBubble.innerHTML = renderMessageWithCitations(fullResponse);
+
+            } catch (err) {
+                console.error('Chat error:', err);
+                const errorDiv = document.createElement('div');
+                errorDiv.className = 'chat-message assistant';
+                errorDiv.innerHTML = `<div class="chat-message-bubble" style="color: #d32f2f;">Error: ${escapeHtml(err.message)}</div>`;
+                messagesContainer.appendChild(errorDiv);
+            } finally {
+                isStreaming = false;
+                messagesContainer.scrollTop = messagesContainer.scrollHeight;
+                document.getElementById('chat-input').focus();
+            }
+        }
+
+        function renderMessageWithCitations(text) {
+            // Escape HTML and linkify citations
+            let html = escapeHtml(text);
+            html = html.replace(/\[(\d+)\]/g, '<span class="citation-marker" data-index="$1">[$1]</span>');
+            return html;
+        }
+
+        function displaySources(sources) {
+            const panel = document.getElementById('sources-panel');
+            const list = document.getElementById('sources-list');
+
+            list.innerHTML = '';
+
+            sources.forEach((source, idx) => {
+                const chip = document.createElement('div');
+                chip.className = 'source-chip';
+                const icon = source.type === 'twitter' ? '🐦' : source.type === 'youtube' ? '📺' : '📰';
+                chip.innerHTML = `
+                    <span>${icon}</span>
+                    <span class="source-type">${source.type}</span>
+                `;
+                list.appendChild(chip);
+            });
+
+            panel.style.display = sources.length > 0 ? 'block' : 'none';
+        }
+
+        function showSuggestions(suggestions) {
+            if (!suggestions || suggestions.length === 0) return;
+
+            const container = document.getElementById('suggestions-container');
+            const list = document.getElementById('suggestions-list');
+
+            list.innerHTML = '';
+
+            suggestions.forEach(suggestion => {
+                const chip = document.createElement('button');
+                chip.className = 'suggestion-chip';
+                chip.textContent = suggestion;
+                chip.onclick = () => chatSendSuggestion(suggestion);
+                list.appendChild(chip);
+            });
+
+            container.style.display = 'block';
+        }
+
+        function escapeHtml(text) {
+            const map = {
+                '&': '&amp;',
+                '<': '&lt;',
+                '>': '&gt;',
+                '"': '&quot;',
+                "'": '&#039;'
+            };
+            return text.replace(/[&<>"']/g, m => map[m]);
+        }
+
+        // Chat widget controls
+        document.getElementById('chat-send-btn').onclick = chatSendMessage;
+
+        document.getElementById('chat-input').addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                chatSendMessage();
+            }
+        });
+
+        document.getElementById('chat-input').addEventListener('input', (e) => {
+            e.target.style.height = 'auto';
+            e.target.style.height = Math.min(e.target.scrollHeight, 120) + 'px';
+        });
+
+        document.getElementById('chat-toggle-btn').onclick = () => {
+            const widget = document.getElementById('chat-widget');
+            widget.classList.toggle('collapsed');
+        };
+
+        document.getElementById('chat-close-btn').onclick = () => {
+            document.getElementById('chat-widget').style.display = 'none';
+        };
+
+        // Initialize on page load
+        window.addEventListener('load', initChatSession);
+    </script>
 </body>
 </html>
 '''
