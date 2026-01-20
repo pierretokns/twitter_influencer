@@ -213,7 +213,7 @@ Write ONLY the post text. No intro, no explanation. Start directly with the hook
             Formatted news context string with clear [N] numbering
         """
         formatted = []
-        for i, item in enumerate(news_items[:20], 1):
+        for i, item in enumerate(news_items[:50], 1):
             text = item.get('text', '')[:400]
             source = item.get('username', item.get('source_name', 'Unknown'))
             source_type = item.get('source_type', 'twitter')
