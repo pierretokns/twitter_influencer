@@ -1053,20 +1053,62 @@ class PostRankingSystem:
 
         Logger.success(f"Generated {len(variants)} variants")
 
-        # ===== SOURCE ATTRIBUTION (Document Page Finder) =====
-        # For each variant, identify which sources were actually referenced
-        # using TF-IDF similarity (per Liang et al. 2024 hybrid retrieval paper)
-        Logger.info("\n[STEP 1.5] Running source attribution...")
+        # ===== HYBRID CITATION PIPELINE (3 Stages) =====
+        # Based on CiteFix (arXiv 2504.15629) and VeriCite (arXiv 2510.11394):
+        # Stage 1: Prompt-based generation (LLM adds [N] citations)
+        # Stage 2: Post-processing verification (entity overlap + semantic)
+        # Stage 3: Correction (remove/replace weak citations)
+        Logger.info("\n[STEP 1.5] Running hybrid citation pipeline...")
+
         for variant in variants:
-            annotated = self.variant_generator.annotate_sources_with_attribution(
-                variant.content, news_items, threshold=0.15
+            # Stage 1: Parse LLM-generated citations
+            # The LLM now generates citations directly via the updated prompt
+            content, annotated = self.variant_generator.parse_llm_citations(
+                variant.content, news_items
             )
 
-            # Insert inline citation markers [1], [2], etc. (Perplexity-style)
-            marked_content, annotated = self.variant_generator.insert_citation_markers(
-                variant.content, annotated, max_citations=5
+            # Check if LLM generated any citations
+            cited_count = sum(1 for a in annotated if a.get('is_referenced'))
+            if cited_count == 0:
+                # Fallback to post-hoc attribution if LLM didn't cite
+                Logger.info("  No LLM citations found, falling back to post-hoc attribution...")
+                annotated = self.variant_generator.annotate_sources_with_attribution(
+                    content, news_items, threshold=0.25
+                )
+                content, annotated = self.variant_generator.insert_citation_markers(
+                    content, annotated, max_citations=5
+                )
+
+            # Stage 2: Verify citations (entity overlap + semantic similarity)
+            verification_results = self.variant_generator.verify_citations_hybrid(
+                content, annotated,
+                semantic_threshold=0.4,
+                require_entity_overlap=True
             )
-            variant.content = marked_content  # Replace with marked content
+
+            # Log verification results
+            weak_count = sum(1 for v in verification_results if v['status'] == 'weak')
+            verified_count = sum(1 for v in verification_results if v['status'] == 'verified')
+            Logger.info(f"  Citation verification: {verified_count} verified, {weak_count} weak")
+
+            for v in verification_results:
+                if v['status'] == 'weak':
+                    Logger.info(f"    [{v['citation']}] WEAK: {v['reason'][:60]}...")
+
+            # Stage 3: Correct weak citations (remove them)
+            content, warnings = self.variant_generator.correct_weak_citations(
+                content, verification_results, annotated,
+                action='remove',  # 'remove', 'replace', or 'warn'
+                min_citations_after=1
+            )
+
+            for warning in warnings:
+                Logger.info(f"    {warning}")
+
+            variant.content = content
+
+            # Re-parse to get final citation state after corrections
+            _, annotated = self.variant_generator.parse_llm_citations(content, news_items)
 
             # Store attribution with the variant for later saving
             variant.source_attributions = [

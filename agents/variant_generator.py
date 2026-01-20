@@ -113,10 +113,24 @@ class PostVariantGenerator:
     HASHTAG_RANGE = (3, 5)
 
     # The generation prompt template (research-backed formatting)
+    # Uses prompt-based citation generation (Stage 1 of hybrid pipeline)
     GENERATION_PROMPT = '''You are a LinkedIn content creator with 100K+ followers. Write a viral post about TODAY'S AI NEWS.
 
-===== TODAY'S AI NEWS (from Twitter/X and tech blogs) =====
+===== TODAY'S AI NEWS (NUMBERED SOURCES) =====
 {news_context}
+
+===== CITATION RULES =====
+Add [N] citations when referencing specific information from source N.
+
+Rules:
+- Only cite when DIRECTLY using information from that specific source
+- Do NOT cite for your own insights or generic observations
+- Maximum 5 citations total (use them strategically)
+- Place [N] at end of sentence, before punctuation
+- Each source should only be cited ONCE (for its strongest claim)
+- IMPORTANT: Ensure the source actually contains the information you're citing
+
+Example: "OpenAI released GPT-5 with multimodal capabilities[1]. This represents a major shift..."
 
 ===== YOUR TASK =====
 Write a LinkedIn post that:
@@ -124,6 +138,7 @@ Write a LinkedIn post that:
 2. FOCUS primarily on news item [{focus_item}] but can reference others
 3. Add YOUR unique insight, opinion, or takeaway - don't just summarize
 4. Make it feel timely and current ("Just saw that...", "This week...", "Breaking:")
+5. Include [N] citations for specific facts from sources (NOT for your opinions)
 
 ===== HOOK STYLE: {hook_style} =====
 Example: "{hook_example}"
@@ -186,19 +201,23 @@ Write ONLY the post text. No intro, no explanation. Start directly with the hook
 
     def _format_news_context(self, news_items: List[Dict]) -> str:
         """
-        Format news items with source attribution.
+        Format news items with source attribution for LLM citation generation.
+
+        Includes source type (twitter/youtube/web) for context. Truncates text
+        to 400 chars to keep prompt reasonable while providing enough context.
 
         Args:
-            news_items: List of news dicts with 'text', 'username' keys
+            news_items: List of news dicts with 'text', 'username', 'source_type' keys
 
         Returns:
-            Formatted news context string
+            Formatted news context string with clear [N] numbering
         """
         formatted = []
         for i, item in enumerate(news_items[:20], 1):
-            text = item.get('text', '')
+            text = item.get('text', '')[:400]
             source = item.get('username', item.get('source_name', 'Unknown'))
-            formatted.append(f"[{i}] @{source}: {text}")
+            source_type = item.get('source_type', 'twitter')
+            formatted.append(f"[{i}] @{source} ({source_type}):\n{text}")
         return "\n\n".join(formatted)
 
     def _select_hook_styles(self, num_variants: int) -> List[str]:
@@ -416,7 +435,8 @@ Write ONLY the post text. No intro, no explanation. Start directly with the hook
         # Find which sentence best matches which source
         # Returns: {sentence_idx: cited_source_idx}
         # Uses entity overlap validation to ensure citations are relevant
-        mapping = find_sentence_source_mapping(all_sentences, source_texts, threshold=0.25)
+        # Updated thresholds: 0.4 (was 0.25) for BGE-M3, entity overlap now required
+        mapping = find_sentence_source_mapping(all_sentences, source_texts, threshold=0.4, require_entity_overlap=True)
 
         # First pass: find order of appearance in text
         # Track which sources appear and in what sentence order
@@ -433,7 +453,7 @@ Write ONLY the post text. No intro, no explanation. Start directly with the hook
         for citation_num, (sent_idx, cited_source_idx) in enumerate(appearance_order, 1):
             cited_idx_to_citation[cited_source_idx] = citation_num
             # Update the source with its citation number
-            orig_idx, src = cited[cited_source_idx]
+            _, src = cited[cited_source_idx]
             src['citation_number'] = citation_num
             if not src.get('source_url'):
                 src['source_url'] = self._build_source_url(src)
@@ -566,3 +586,325 @@ Write ONLY the post text. No intro, no explanation. Start directly with the hook
             print(f"[Generator] Quote extraction import failed: {e}")
         except Exception as e:
             print(f"[Generator] Quote extraction failed for {source_type}: {e}")
+
+    def parse_llm_citations(
+        self,
+        content: str,
+        news_items: List[Dict]
+    ) -> Tuple[str, List[Dict]]:
+        """
+        Parse LLM-generated [N] citations and annotate news items.
+
+        Stage 1 of hybrid pipeline: Extract citations that the LLM generated
+        directly in the prompt-based generation phase.
+
+        Args:
+            content: Generated content with [1], [2], etc. markers from LLM
+            news_items: List of news item dicts used for generation
+
+        Returns:
+            Tuple of:
+            - Content (unchanged, may be modified in later stages)
+            - News items with citation metadata added
+        """
+        import re
+
+        # Extract all citation numbers from content
+        citation_pattern = r'\[(\d+)\]'
+        cited_numbers = set(int(m) for m in re.findall(citation_pattern, content))
+
+        # Annotate news items with citation info
+        annotated = []
+        for i, item in enumerate(news_items):
+            item_copy = dict(item)
+            citation_num = i + 1
+
+            if citation_num in cited_numbers:
+                item_copy['is_referenced'] = True
+                item_copy['citation_number'] = citation_num
+                item_copy['attribution_score'] = 1.0  # LLM-cited = high confidence
+                if not item_copy.get('source_url'):
+                    item_copy['source_url'] = self._build_source_url(item_copy)
+            else:
+                item_copy['is_referenced'] = False
+                item_copy['attribution_score'] = 0.0
+
+            annotated.append(item_copy)
+
+        cited_count = len(cited_numbers)
+        print(f"[Generator] LLM generated {cited_count} citations: {sorted(cited_numbers)}")
+
+        return content, annotated
+
+    def verify_citations_hybrid(
+        self,
+        content: str,
+        news_items: List[Dict],
+        semantic_threshold: float = 0.4,
+        require_entity_overlap: bool = True
+    ) -> List[Dict]:
+        """
+        Verify LLM-generated citations using entity overlap + semantic similarity.
+
+        Stage 2 of hybrid pipeline: For each citation [N], check if the cited
+        source actually supports the claim being made. Uses lightweight
+        verification (entity overlap + BGE-M3 similarity) instead of NLI
+        for performance.
+
+        Based on CiteFix (arXiv 2504.15629): 80% of unverifiable facts are
+        attribution errors, not hallucinations. Post-processing verification
+        improves accuracy by 15-21%.
+
+        Args:
+            content: Generated content with [N] citation markers
+            news_items: List of news items with citation metadata
+            semantic_threshold: Minimum BGE-M3 similarity (0.4 recommended)
+            require_entity_overlap: Require matching entity terms (enabled)
+
+        Returns:
+            List of verification results for each citation:
+            - citation: The citation number [N]
+            - sentence: The sentence containing the citation
+            - source: Source author/name
+            - similarity: Semantic similarity score
+            - entity_overlap: List of overlapping entities
+            - status: 'verified', 'weak', or 'invalid'
+            - reason: Explanation of the verification result
+        """
+        from agents.hybrid_retriever import _extract_key_entities
+
+        results = []
+
+        # Extract sentences with citations
+        citation_pattern = r'([^.!?\n]*\[(\d+)\][^.!?\n]*[.!?]?)'
+
+        for match in re.finditer(citation_pattern, content):
+            sentence = match.group(1).strip()
+            citation_num = int(match.group(2))
+
+            # Check if citation number is valid
+            if citation_num < 1 or citation_num > len(news_items):
+                results.append({
+                    'citation': citation_num,
+                    'sentence': sentence,
+                    'status': 'invalid',
+                    'reason': f'Citation number {citation_num} out of range (1-{len(news_items)})'
+                })
+                continue
+
+            source = news_items[citation_num - 1]
+            source_text = source.get('text', '')[:500]
+            source_name = source.get('username', source.get('source_name', 'Unknown'))
+
+            # Extract entities from sentence and source
+            sent_entities = _extract_key_entities(sentence)
+            source_entities = _extract_key_entities(source_text)
+            entity_overlap = sent_entities & source_entities
+
+            # Check entity overlap first (fast filter)
+            if require_entity_overlap and not entity_overlap:
+                results.append({
+                    'citation': citation_num,
+                    'sentence': sentence,
+                    'source': source_name,
+                    'similarity': 0.0,
+                    'entity_overlap': [],
+                    'status': 'weak',
+                    'reason': f'No entity overlap between sentence and source'
+                })
+                continue
+
+            # Compute semantic similarity using BGE-M3
+            try:
+                from agents.hybrid_retriever import encode_texts_hybrid
+                from sklearn.metrics.pairwise import cosine_similarity
+
+                # Remove citation marker for cleaner embedding
+                clean_sentence = re.sub(r'\[\d+\]', '', sentence).strip()
+
+                # Encode sentence and source
+                sent_emb, _ = encode_texts_hybrid([clean_sentence])
+                source_emb, _ = encode_texts_hybrid([source_text])
+
+                if sent_emb is not None and source_emb is not None:
+                    similarity = float(cosine_similarity(sent_emb, source_emb)[0][0])
+                else:
+                    # Fallback if BGE-M3 unavailable
+                    similarity = 0.5 if entity_overlap else 0.2
+
+            except Exception as e:
+                print(f"[Generator] Semantic verification failed: {e}")
+                # Fallback: use entity overlap as proxy
+                similarity = 0.5 if entity_overlap else 0.2
+
+            # Determine verification status
+            if similarity >= semantic_threshold:
+                status = 'verified'
+                reason = f'Semantic similarity {similarity:.2f} >= {semantic_threshold}'
+                if entity_overlap:
+                    reason += f', entities: {list(entity_overlap)[:3]}'
+            else:
+                status = 'weak'
+                reason = f'Low similarity ({similarity:.2f} < {semantic_threshold})'
+                if entity_overlap:
+                    reason += f', but has entity overlap: {list(entity_overlap)[:3]}'
+
+            results.append({
+                'citation': citation_num,
+                'sentence': sentence,
+                'source': source_name,
+                'similarity': similarity,
+                'entity_overlap': list(entity_overlap),
+                'status': status,
+                'reason': reason
+            })
+
+        return results
+
+    def correct_weak_citations(
+        self,
+        content: str,
+        verification_results: List[Dict],
+        news_items: List[Dict],
+        action: str = 'remove',
+        min_citations_after: int = 1
+    ) -> Tuple[str, List[str]]:
+        """
+        Handle weak citations based on verification results.
+
+        Stage 3 of hybrid pipeline: Remove, replace, or warn about citations
+        that failed verification. Based on CiteFix approach for post-processing
+        citation correction.
+
+        Args:
+            content: Generated content with [N] markers
+            verification_results: Results from verify_citations_hybrid()
+            news_items: List of news items for potential replacement
+            action: 'remove' (delete marker), 'replace' (find better), 'warn' (log only)
+            min_citations_after: Don't remove if would leave fewer citations
+
+        Returns:
+            Tuple of (corrected_content, list_of_warnings)
+        """
+        warnings = []
+        corrected = content
+
+        # Count current valid citations
+        verified_count = sum(1 for r in verification_results if r['status'] == 'verified')
+        weak_results = [r for r in verification_results if r['status'] in ('weak', 'invalid')]
+
+        for result in weak_results:
+            citation_num = result['citation']
+            pattern = rf'\[{citation_num}\]'
+
+            if action == 'remove':
+                # Check if removal would leave too few citations
+                if verified_count >= min_citations_after:
+                    corrected = re.sub(pattern, '', corrected)
+                    warnings.append(
+                        f"Removed weak citation [{citation_num}]: {result['reason']}"
+                    )
+                else:
+                    warnings.append(
+                        f"Kept weak citation [{citation_num}] to maintain minimum citations"
+                    )
+
+            elif action == 'replace':
+                # Find better source using entity + semantic matching
+                sentence = result.get('sentence', '')
+                best_source_idx, best_score = self._find_best_replacement_source(
+                    sentence, news_items, exclude_idx=citation_num - 1
+                )
+
+                if best_source_idx is not None and best_score > 0.4:
+                    new_num = best_source_idx + 1
+                    corrected = re.sub(pattern, f'[{new_num}]', corrected)
+                    warnings.append(
+                        f"Replaced [{citation_num}] with [{new_num}] (score: {best_score:.2f})"
+                    )
+                    # Update verified count since we found a good replacement
+                    verified_count += 1
+                elif verified_count >= min_citations_after:
+                    corrected = re.sub(pattern, '', corrected)
+                    warnings.append(
+                        f"Removed [{citation_num}], no good replacement found"
+                    )
+                else:
+                    warnings.append(
+                        f"Kept weak citation [{citation_num}] - no replacement and minimum needed"
+                    )
+
+            elif action == 'warn':
+                warnings.append(
+                    f"Warning: Citation [{citation_num}] may be weak - {result['reason']}"
+                )
+
+        # Clean up any double spaces or spacing issues from removed citations
+        corrected = re.sub(r'  +', ' ', corrected)
+        corrected = re.sub(r' ([.!?,])', r'\1', corrected)
+
+        return corrected, warnings
+
+    def _find_best_replacement_source(
+        self,
+        sentence: str,
+        news_items: List[Dict],
+        exclude_idx: int
+    ) -> Tuple[int, float]:
+        """
+        Find the best replacement source for a weak citation.
+
+        Uses entity overlap + semantic similarity to find a source that
+        actually supports the sentence's claim.
+
+        Args:
+            sentence: The sentence needing a better source
+            news_items: List of news items to search
+            exclude_idx: Index of source to exclude (the weak one)
+
+        Returns:
+            Tuple of (best_source_index, similarity_score) or (None, 0.0)
+        """
+        from agents.hybrid_retriever import _extract_key_entities
+
+        # Remove citation markers from sentence
+        clean_sentence = re.sub(r'\[\d+\]', '', sentence).strip()
+        sent_entities = _extract_key_entities(clean_sentence)
+
+        best_idx = None
+        best_score = 0.0
+
+        try:
+            from agents.hybrid_retriever import encode_texts_hybrid
+            from sklearn.metrics.pairwise import cosine_similarity
+
+            # Encode sentence
+            sent_emb, _ = encode_texts_hybrid([clean_sentence])
+            if sent_emb is None:
+                return None, 0.0
+
+            for idx, item in enumerate(news_items):
+                if idx == exclude_idx:
+                    continue
+
+                source_text = item.get('text', '')[:500]
+                source_entities = _extract_key_entities(source_text)
+
+                # Require entity overlap
+                if not (sent_entities & source_entities):
+                    continue
+
+                # Compute semantic similarity
+                source_emb, _ = encode_texts_hybrid([source_text])
+                if source_emb is None:
+                    continue
+
+                similarity = float(cosine_similarity(sent_emb, source_emb)[0][0])
+                if similarity > best_score:
+                    best_score = similarity
+                    best_idx = idx
+
+        except Exception as e:
+            print(f"[Generator] Replacement source search failed: {e}")
+
+        return best_idx, best_score

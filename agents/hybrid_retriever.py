@@ -307,8 +307,8 @@ def _extract_key_entities(text: str) -> set:
 def find_sentence_source_mapping(
     sentences: List[str],
     source_texts: List[str],
-    threshold: float = 0.25,
-    require_entity_overlap: bool = False  # Disabled - use semantic similarity instead
+    threshold: float = 0.4,
+    require_entity_overlap: bool = True
 ) -> Dict[int, int]:
     """
     Map each sentence to its best matching source using semantic similarity (BGE-M3).
@@ -320,17 +320,24 @@ def find_sentence_source_mapping(
     matching of paraphrased content. This allows sentences like "Qwen demonstrated
     AI agents" to match sources about "Qwen app completing tasks" semantically.
 
+    Now with dynamic entity overlap validation: requires matching entity terms
+    extracted from source texts (company names, product names, key terms) to appear
+    in both sentence and source before considering a match valid.
+
     Args:
         sentences: List of sentences from generated content
         source_texts: List of source texts (tweets, article snippets)
-        threshold: Minimum similarity to consider a match
-        require_entity_overlap: Deprecated - always uses semantic similarity now
+        threshold: Minimum similarity to consider a match (increased from 0.25 to 0.4)
+        require_entity_overlap: Require entity term overlap between sentence and source (enabled by default)
 
     Returns:
         Dict mapping sentence_index -> source_index for sentences above threshold
     """
     if not sentences or not source_texts:
         return {}
+
+    # Extract entities from each source text (dynamic entity terms)
+    source_entities = [_extract_key_entities(text) for text in source_texts]
 
     try:
         # Try to use BGE-M3 semantic embeddings first (better for paraphrases)
@@ -350,6 +357,9 @@ def find_sentence_source_mapping(
             if len(row) == 0:
                 continue
 
+            # Extract entities from this sentence
+            sent_entities = _extract_key_entities(sentences[sent_idx])
+
             # Sort sources by similarity score descending
             sorted_sources = sorted(enumerate(row), key=lambda x: x[1], reverse=True)
 
@@ -357,7 +367,14 @@ def find_sentence_source_mapping(
                 if score < threshold:
                     break  # No more candidates above threshold
 
-                # Found a valid semantic match
+                # Check entity overlap if enabled
+                if require_entity_overlap:
+                    # Require at least one entity term to match
+                    entity_overlap = sent_entities & source_entities[source_idx]
+                    if not entity_overlap:
+                        continue  # Skip this source, try next
+
+                # Found a valid semantic match with entity validation
                 mapping[sent_idx] = source_idx
                 break  # Move to next sentence
 
@@ -386,10 +403,20 @@ def find_sentence_source_mapping(
                 if len(row) == 0:
                     continue
 
+                # Extract entities from this sentence for TF-IDF path too
+                sent_entities = _extract_key_entities(sentences[sent_idx])
+
                 sorted_sources = sorted(enumerate(row), key=lambda x: x[1], reverse=True)
                 for source_idx, score in sorted_sources:
                     if score < threshold:
                         break
+
+                    # Check entity overlap if enabled (TF-IDF path)
+                    if require_entity_overlap:
+                        entity_overlap = sent_entities & source_entities[source_idx]
+                        if not entity_overlap:
+                            continue  # Skip this source, try next
+
                     mapping[sent_idx] = source_idx
                     break
 
@@ -437,7 +464,7 @@ def extract_citations(
 def find_best_paragraph_match(
     sentence: str,
     paragraphs: List[Dict],
-    threshold: float = 0.3
+    threshold: float = 0.35
 ) -> Optional[Dict]:
     """
     Find the specific paragraph/segment that best matches a sentence using BGE-M3.
