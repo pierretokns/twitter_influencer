@@ -144,18 +144,18 @@ def regenerate_tweets(conn: sqlite3.Connection, batch_size: int = 32, dry_run: b
             print(f"[Tweets] Batch {i//batch_size + 1} failed - skipping")
             continue
 
-        # Insert embeddings
+        # Insert embeddings - sqlite-vec expects binary blob format
         for j, tweet_id in enumerate(ids):
-            dense_json = json.dumps(dense[j].tolist())
-            sparse_json = json.dumps(sparse[j].tolist())
+            dense_blob = np.asarray(dense[j], dtype=np.float32).tobytes()
+            sparse_blob = np.asarray(sparse[j], dtype=np.float32).tobytes()
 
             cursor.execute(
                 "INSERT OR REPLACE INTO tweet_embeddings_dense (id, embedding) VALUES (?, ?)",
-                (tweet_id, dense_json)
+                (tweet_id, dense_blob)
             )
             cursor.execute(
                 "INSERT OR REPLACE INTO tweet_embeddings_sparse (id, embedding) VALUES (?, ?)",
-                (tweet_id, sparse_json)
+                (tweet_id, sparse_blob)
             )
 
         conn.commit()
@@ -200,18 +200,18 @@ def regenerate_articles(conn: sqlite3.Connection, batch_size: int = 32, dry_run:
             print(f"[Articles] Batch {i//batch_size + 1} failed - skipping")
             continue
 
-        # Insert embeddings
+        # Insert embeddings - sqlite-vec expects binary blob format
         for j, article_id in enumerate(ids):
-            dense_json = json.dumps(dense[j].tolist())
-            sparse_json = json.dumps(sparse[j].tolist())
+            dense_blob = np.asarray(dense[j], dtype=np.float32).tobytes()
+            sparse_blob = np.asarray(sparse[j], dtype=np.float32).tobytes()
 
             cursor.execute(
                 "INSERT OR REPLACE INTO web_article_embeddings_dense (id, embedding) VALUES (?, ?)",
-                (article_id, dense_json)
+                (article_id, dense_blob)
             )
             cursor.execute(
                 "INSERT OR REPLACE INTO web_article_embeddings_sparse (id, embedding) VALUES (?, ?)",
-                (article_id, sparse_json)
+                (article_id, sparse_blob)
             )
 
         conn.commit()
@@ -256,18 +256,18 @@ def regenerate_youtube(conn: sqlite3.Connection, batch_size: int = 32, dry_run: 
             print(f"[YouTube] Batch {i//batch_size + 1} failed - skipping")
             continue
 
-        # Insert embeddings
+        # Insert embeddings - sqlite-vec expects binary blob format
         for j, video_id in enumerate(ids):
-            dense_json = json.dumps(dense[j].tolist())
-            sparse_json = json.dumps(sparse[j].tolist())
+            dense_blob = np.asarray(dense[j], dtype=np.float32).tobytes()
+            sparse_blob = np.asarray(sparse[j], dtype=np.float32).tobytes()
 
             cursor.execute(
                 "INSERT OR REPLACE INTO youtube_video_embeddings_dense (id, embedding) VALUES (?, ?)",
-                (video_id, dense_json)
+                (video_id, dense_blob)
             )
             cursor.execute(
                 "INSERT OR REPLACE INTO youtube_video_embeddings_sparse (id, embedding) VALUES (?, ?)",
-                (video_id, sparse_json)
+                (video_id, sparse_blob)
             )
 
         conn.commit()

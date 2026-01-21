@@ -614,31 +614,32 @@ class AINewsDatabase:
         # Save legacy embedding if available (384 dim)
         if embedding is not None and self._has_vec:
             try:
-                embedding_list = embedding.tolist()
+                # sqlite-vec expects binary blob format
+                embedding_blob = np.asarray(embedding, dtype=np.float32).tobytes()
                 cursor.execute('''
                     INSERT OR REPLACE INTO tweet_embeddings (tweet_id, embedding)
                     VALUES (?, ?)
-                ''', (tweet_id, json.dumps(embedding_list)))
+                ''', (tweet_id, embedding_blob))
             except Exception as e:
                 Logger.debug(f"Could not save legacy embedding: {e}")
 
         # Save hybrid embeddings if available (BGE-M3)
         if self._has_vec and dense_embedding is not None:
             try:
-                # Save dense embedding (1024 dim)
-                dense_list = dense_embedding.tolist()
+                # Save dense embedding (1024 dim) - sqlite-vec expects binary blob
+                dense_blob = np.asarray(dense_embedding, dtype=np.float32).tobytes()
                 cursor.execute('''
                     INSERT OR REPLACE INTO tweet_embeddings_dense (id, embedding)
                     VALUES (?, ?)
-                ''', (tweet_id, json.dumps(dense_list)))
+                ''', (tweet_id, dense_blob))
 
                 # Save sparse embedding if available (256 dim)
                 if sparse_embedding is not None:
-                    sparse_list = sparse_embedding.tolist()
+                    sparse_blob = np.asarray(sparse_embedding, dtype=np.float32).tobytes()
                     cursor.execute('''
                         INSERT OR REPLACE INTO tweet_embeddings_sparse (id, embedding)
                         VALUES (?, ?)
-                    ''', (tweet_id, json.dumps(sparse_list)))
+                    ''', (tweet_id, sparse_blob))
             except Exception as e:
                 Logger.debug(f"Could not save hybrid embeddings: {e}")
 
@@ -880,20 +881,20 @@ class AINewsDatabase:
             # Save hybrid embeddings if available (BGE-M3)
             if self._has_vec and dense_embedding is not None:
                 try:
-                    # Save dense embedding (1024 dim)
-                    dense_list = dense_embedding.tolist()
+                    # Save dense embedding (1024 dim) - sqlite-vec expects binary blob
+                    dense_blob = np.asarray(dense_embedding, dtype=np.float32).tobytes()
                     cursor.execute('''
                         INSERT OR REPLACE INTO web_article_embeddings_dense (id, embedding)
                         VALUES (?, ?)
-                    ''', (article_id, json.dumps(dense_list)))
+                    ''', (article_id, dense_blob))
 
                     # Save sparse embedding if available (256 dim)
                     if sparse_embedding is not None:
-                        sparse_list = sparse_embedding.tolist()
+                        sparse_blob = np.asarray(sparse_embedding, dtype=np.float32).tobytes()
                         cursor.execute('''
                             INSERT OR REPLACE INTO web_article_embeddings_sparse (id, embedding)
                             VALUES (?, ?)
-                        ''', (article_id, json.dumps(sparse_list)))
+                        ''', (article_id, sparse_blob))
                     self.conn.commit()
                 except Exception as e:
                     Logger.debug(f"Could not save web article embeddings: {e}")
