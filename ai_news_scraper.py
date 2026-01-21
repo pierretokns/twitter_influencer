@@ -647,12 +647,26 @@ class AINewsDatabase:
         relevance_score = sum(1 for kw in AI_KEYWORDS if kw.lower() in text) / len(AI_KEYWORDS)
 
         cursor.execute('''
-            INSERT OR REPLACE INTO tweets (
+            INSERT INTO tweets (
                 tweet_id, username, display_name, text, timestamp, url,
                 replies_count, retweets_count, likes_count,
                 has_media, media_type, is_reply,
                 is_ai_relevant, ai_relevance_score
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(tweet_id) DO UPDATE SET
+                username = excluded.username,
+                display_name = COALESCE(excluded.display_name, display_name),
+                text = COALESCE(excluded.text, text),
+                timestamp = COALESCE(timestamp, excluded.timestamp),
+                url = COALESCE(excluded.url, url),
+                replies_count = excluded.replies_count,
+                retweets_count = excluded.retweets_count,
+                likes_count = excluded.likes_count,
+                has_media = excluded.has_media,
+                media_type = excluded.media_type,
+                is_reply = excluded.is_reply,
+                is_ai_relevant = excluded.is_ai_relevant,
+                ai_relevance_score = excluded.ai_relevance_score
         ''', (
             tweet_id,
             tweet_data.get('username', '').lower().lstrip('@'),
@@ -915,16 +929,28 @@ class AINewsDatabase:
         is_ai_relevant = any(kw.lower() in text for kw in AI_KEYWORDS)
         relevance_score = sum(1 for kw in AI_KEYWORDS if kw.lower() in text) / len(AI_KEYWORDS)
 
-        # Normalize date to ISO 8601 format
-        published_at = normalize_date(article_data.get('published_at'), fallback_to_now=True)
+        # Normalize date to ISO 8601 format (no fallback - preserve existing on re-scrape)
+        published_at = normalize_date(article_data.get('published_at'), fallback_to_now=False)
 
         try:
             cursor.execute('''
-                INSERT OR REPLACE INTO web_articles (
+                INSERT INTO web_articles (
                     article_id, source_id, source_name, title, url,
                     description, content, author, published_at, category,
-                    is_ai_relevant, ai_relevance_score
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    is_ai_relevant, ai_relevance_score, scraped_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(article_id) DO UPDATE SET
+                    source_id = COALESCE(excluded.source_id, source_id),
+                    source_name = COALESCE(excluded.source_name, source_name),
+                    title = COALESCE(excluded.title, title),
+                    url = COALESCE(excluded.url, url),
+                    description = COALESCE(excluded.description, description),
+                    content = COALESCE(excluded.content, content),
+                    author = COALESCE(excluded.author, author),
+                    published_at = COALESCE(published_at, excluded.published_at),
+                    category = COALESCE(excluded.category, category),
+                    is_ai_relevant = excluded.is_ai_relevant,
+                    ai_relevance_score = excluded.ai_relevance_score
             ''', (
                 article_id,
                 article_data.get('source_id'),
