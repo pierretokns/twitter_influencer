@@ -13,6 +13,7 @@
 #     "hdbscan>=0.8.33",
 #     "beautifulsoup4>=4.12.0",
 #     "python-dateutil>=2.8.0",
+#     "trafilatura>=1.6.0",
 # ]
 # ///
 
@@ -1251,6 +1252,180 @@ class WebSourceScraper:
             })
         return self.session
 
+    def _fetch_article_content(self, url: str) -> Optional[str]:
+        """
+        Fetch and extract full article content using trafilatura.
+
+        Args:
+            url: Article URL
+
+        Returns:
+            Extracted article text (max 10000 chars) or None
+        """
+        try:
+            import trafilatura
+
+            downloaded = trafilatura.fetch_url(url)
+            if not downloaded:
+                return None
+
+            content = trafilatura.extract(
+                downloaded,
+                include_comments=False,
+                include_tables=False,
+                favor_precision=True
+            )
+
+            if content:
+                # Limit content size
+                return content[:10000]
+            return None
+
+        except ImportError:
+            Logger.warning("trafilatura not installed - article content won't be fetched")
+            return None
+        except Exception as e:
+            Logger.debug(f"Failed to fetch content from {url}: {e}")
+            return None
+
+    def _chunk_content(self, content: str, min_chars: int = 50, max_chars: int = 500) -> List[Dict[str, Any]]:
+        """
+        Chunk article content into semantic paragraphs for embedding.
+
+        Args:
+            content: Full article text
+            min_chars: Minimum chunk size
+            max_chars: Maximum chunk size
+
+        Returns:
+            List of chunk dicts with 'text', 'index', 'char_start' keys
+        """
+        if not content or len(content) < min_chars:
+            return []
+
+        # First try double-newline paragraph breaks
+        paragraphs = [p.strip() for p in content.split('\n\n') if len(p.strip()) >= min_chars]
+
+        # If no double-newline paragraphs, try single newlines (common in trafilatura output)
+        if not paragraphs or len(paragraphs) <= 1:
+            single_newline_paragraphs = [p.strip() for p in content.split('\n') if len(p.strip()) >= min_chars]
+            if len(single_newline_paragraphs) > len(paragraphs):
+                paragraphs = single_newline_paragraphs
+
+        # If still no good paragraphs, try sentence splitting
+        if not paragraphs:
+            sentences = re.split(r'(?<=[.!?])\s+', content)
+
+            # Merge short sentences into chunks
+            chunks = []
+            current = {'text': '', 'char_start': 0}
+            char_pos = 0
+
+            for sent in sentences:
+                sent = sent.strip()
+                if len(sent) < 20:
+                    continue
+
+                if not current['text']:
+                    current['char_start'] = char_pos
+
+                current['text'] += ' ' + sent
+                char_pos += len(sent) + 1
+
+                if len(current['text']) >= min_chars:
+                    chunks.append({
+                        'text': current['text'].strip()[:max_chars],
+                        'index': len(chunks),
+                        'char_start': current['char_start']
+                    })
+                    current = {'text': '', 'char_start': 0}
+
+            # Don't forget the last chunk
+            if current['text'].strip() and len(current['text'].strip()) >= min_chars // 2:
+                chunks.append({
+                    'text': current['text'].strip()[:max_chars],
+                    'index': len(chunks),
+                    'char_start': current['char_start']
+                })
+
+            return chunks
+
+        # Use paragraph-based chunks
+        chunks = []
+        char_pos = 0
+
+        for para in paragraphs:
+            # Truncate long paragraphs
+            text = para[:max_chars]
+            chunks.append({
+                'text': text,
+                'index': len(chunks),
+                'char_start': char_pos
+            })
+            char_pos += len(para) + 2  # +2 for \n\n
+
+        return chunks
+
+    def _save_article_chunks(self, article_id: str, chunks: List[Dict[str, Any]]) -> int:
+        """
+        Save article chunks to the article_paragraphs table.
+
+        Args:
+            article_id: The article's ID
+            chunks: List of chunk dicts from _chunk_content
+
+        Returns:
+            Number of chunks saved
+        """
+        if not chunks:
+            return 0
+
+        cursor = self.db.conn.cursor()
+
+        # Check if chunks already exist
+        cursor.execute(
+            "SELECT COUNT(*) FROM article_paragraphs WHERE article_id = ?",
+            (article_id,)
+        )
+        if cursor.fetchone()[0] > 0:
+            return 0  # Already chunked
+
+        chunk_ids = []
+        for chunk in chunks:
+            cursor.execute("""
+                INSERT INTO article_paragraphs (article_id, paragraph_index, text, char_start)
+                VALUES (?, ?, ?, ?)
+            """, (article_id, chunk['index'], chunk['text'], chunk.get('char_start', 0)))
+            chunk_ids.append(cursor.lastrowid)
+
+        self.db.conn.commit()
+
+        # Generate embeddings for the chunks if possible
+        if self.db._has_vec and chunk_ids:
+            try:
+                texts = [c['text'] for c in chunks]
+                dense, sparse = encode_texts_hybrid(texts)
+
+                for i, chunk_id in enumerate(chunk_ids):
+                    dense_blob = np.asarray(dense[i], dtype=np.float32).tobytes()
+                    sparse_blob = np.asarray(sparse[i], dtype=np.float32).tobytes()
+
+                    cursor.execute("""
+                        INSERT OR REPLACE INTO paragraph_embeddings_dense (id, embedding)
+                        VALUES (?, ?)
+                    """, (chunk_id, dense_blob))
+
+                    cursor.execute("""
+                        INSERT OR REPLACE INTO paragraph_embeddings_sparse (id, embedding)
+                        VALUES (?, ?)
+                    """, (chunk_id, sparse_blob))
+
+                self.db.conn.commit()
+            except Exception as e:
+                Logger.debug(f"Could not generate chunk embeddings: {e}")
+
+        return len(chunks)
+
     def _parse_rss(self, source_id: str, source_config: Dict) -> List[Dict]:
         """Parse RSS feed and extract articles"""
         import xml.etree.ElementTree as ET
@@ -1628,14 +1803,46 @@ class WebSourceScraper:
         else:
             articles = self._parse_html(source_id, source_config)
 
-        # Save articles
+        # Save articles with content fetching and chunking
         new_articles = 0
+        chunks_created = 0
+
         for article in articles:
+            url = article.get('url')
+
+            # Fetch full article content if not already present
+            if url and not article.get('content'):
+                Logger.debug(f"  Fetching content: {url[:60]}...")
+                content = self._fetch_article_content(url)
+                if content:
+                    article['content'] = content
+                    Logger.debug(f"    Got {len(content)} chars")
+
+            # Save article to database
             is_ai = self.db.save_web_article(article)
             self.articles_scraped += 1
             new_articles += 1
             if is_ai:
                 self.ai_articles_found += 1
+
+            # Create chunks for the article content
+            content = article.get('content', '')
+            if content and len(content) >= 50:
+                # Generate article_id same way as save_web_article
+                article_id = hashlib.md5(url.encode()).hexdigest()[:16]
+                chunks = self._chunk_content(content)
+                if chunks:
+                    saved = self._save_article_chunks(article_id, chunks)
+                    chunks_created += saved
+                    if saved:
+                        Logger.debug(f"    Created {saved} chunks")
+
+            # Small delay between article fetches to be polite
+            if url and not article.get('content'):
+                time.sleep(random.uniform(0.5, 1.5))
+
+        if chunks_created > 0:
+            Logger.info(f"  Created {chunks_created} content chunks")
 
         return new_articles
 
