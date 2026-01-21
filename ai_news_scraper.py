@@ -12,6 +12,7 @@
 #     "scikit-learn>=1.3.0",
 #     "hdbscan>=0.8.33",
 #     "beautifulsoup4>=4.12.0",
+#     "python-dateutil>=2.8.0",
 # ]
 # ///
 
@@ -44,11 +45,44 @@ import hashlib
 from dotenv import load_dotenv
 import numpy as np
 
+# Date parsing for various formats found in web articles
+from dateutil import parser as date_parser
+
 # Lazy imports for heavy ML libraries
 _sentence_transformer = None
 _hybrid_embedder = None
 _hdbscan = None
 _sklearn_umap = None
+
+
+def normalize_date(date_str: Optional[str], fallback_to_now: bool = True) -> Optional[str]:
+    """
+    Normalize various date formats to ISO 8601 (YYYY-MM-DDTHH:MM:SS+00:00).
+
+    Handles formats like:
+    - "12 Nov 2025", "Nov 12, 2025"
+    - "Wed, 29 Oct 2025 00:00:00 GMT"
+    - "2025-11-12T10:30:00Z"
+    - "2025-11-12"
+    - Relative dates are not supported (use fallback)
+
+    Args:
+        date_str: Raw date string from scraper
+        fallback_to_now: If True, return current time when parsing fails
+
+    Returns:
+        ISO 8601 formatted date string, or None if parsing fails and no fallback
+    """
+    if not date_str:
+        return datetime.utcnow().isoformat() + 'Z' if fallback_to_now else None
+
+    try:
+        # dateutil.parser handles most formats automatically
+        parsed = date_parser.parse(date_str, fuzzy=True)
+        # Normalize to UTC ISO format
+        return parsed.strftime('%Y-%m-%dT%H:%M:%S') + 'Z'
+    except Exception:
+        return datetime.utcnow().isoformat() + 'Z' if fallback_to_now else None
 
 
 def get_sentence_transformer():
@@ -881,6 +915,9 @@ class AINewsDatabase:
         is_ai_relevant = any(kw.lower() in text for kw in AI_KEYWORDS)
         relevance_score = sum(1 for kw in AI_KEYWORDS if kw.lower() in text) / len(AI_KEYWORDS)
 
+        # Normalize date to ISO 8601 format
+        published_at = normalize_date(article_data.get('published_at'), fallback_to_now=True)
+
         try:
             cursor.execute('''
                 INSERT OR REPLACE INTO web_articles (
@@ -897,7 +934,7 @@ class AINewsDatabase:
                 article_data.get('description'),
                 article_data.get('content'),
                 article_data.get('author'),
-                article_data.get('published_at'),
+                published_at,
                 article_data.get('category'),
                 is_ai_relevant,
                 relevance_score
