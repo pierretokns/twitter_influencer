@@ -1596,6 +1596,20 @@ HTML_TEMPLATE = '''
             height: 6px;
             background: var(--text-secondary);
             border-radius: 50%;
+        }
+
+        /* Typewriter cursor effect */
+        .chat-message-bubble.typing::after {
+            content: '▋';
+            display: inline;
+            animation: blink 0.7s step-end infinite;
+            color: var(--linkedin-blue);
+            margin-left: 1px;
+        }
+
+        @keyframes blink {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0; }
             animation: bounce 1.4s infinite ease-in-out;
         }
 
@@ -1851,6 +1865,57 @@ HTML_TEMPLATE = '''
         let lastQuery = '';  // Track last query for suggestions
         let lastSources = [];  // Track last sources for suggestions
 
+        // Typewriter effect state
+        let typewriterQueue = '';  // Buffer of text to type out
+        let typewriterDisplayed = '';  // Text already displayed
+        let typewriterInterval = null;  // Animation interval
+        let typewriterElement = null;  // Current element being typed into
+        let typewriterSpeed = 12;  // ms per character (adjust for speed)
+
+        // Typewriter animation function
+        function startTypewriter(element) {
+            typewriterElement = element;
+            typewriterDisplayed = '';
+            typewriterQueue = '';
+            element.classList.add('typing');
+
+            if (typewriterInterval) clearInterval(typewriterInterval);
+
+            typewriterInterval = setInterval(() => {
+                if (typewriterQueue.length > 0) {
+                    // Type next character from queue
+                    typewriterDisplayed += typewriterQueue[0];
+                    typewriterQueue = typewriterQueue.slice(1);
+                    typewriterElement.textContent = typewriterDisplayed;
+
+                    // Auto-scroll as content grows
+                    const container = document.getElementById('chat-messages');
+                    container.scrollTop = container.scrollHeight;
+                }
+            }, typewriterSpeed);
+        }
+
+        function addToTypewriter(text) {
+            typewriterQueue += text;
+        }
+
+        function stopTypewriter() {
+            if (typewriterInterval) {
+                clearInterval(typewriterInterval);
+                typewriterInterval = null;
+            }
+            if (typewriterElement) {
+                // Flush remaining queue immediately
+                typewriterDisplayed += typewriterQueue;
+                typewriterQueue = '';
+                typewriterElement.classList.remove('typing');
+            }
+        }
+
+        function getTypewriterFullText() {
+            return typewriterDisplayed + typewriterQueue;
+        }
+
         // Fix #48: Toast notification utility
         function showToast(message, type = 'info') {
             const toast = document.getElementById('chat-toast');
@@ -1989,6 +2054,9 @@ HTML_TEMPLATE = '''
                 assistantDiv.appendChild(messageBubble);
                 messagesContainer.appendChild(assistantDiv);
 
+                // Start typewriter effect
+                startTypewriter(messageBubble);
+
                 while (true) {
                     const { done, value } = await reader.read();
 
@@ -2019,10 +2087,12 @@ HTML_TEMPLATE = '''
                                     // Fix #36: Show warning toast
                                     showToast(data.message, 'warning');
                                 } else if (eventType === 'token') {
+                                    // Add token to typewriter queue for smooth animation
+                                    addToTypewriter(data.token);
                                     fullResponse += data.token;
-                                    messageBubble.textContent = fullResponse;
                                 } else if (eventType === 'citation') {
-                                    // Re-render message with citations
+                                    // Stop typewriter and render with citations
+                                    stopTypewriter();
                                     messageBubble.innerHTML = renderMessageWithCitations(fullResponse, sourcesList);
                                 } else if (eventType === 'done') {
                                     showSuggestions(data.suggested_followups || []);
@@ -2037,11 +2107,13 @@ HTML_TEMPLATE = '''
                     buffer = lines[lines.length - 1];
                 }
 
-                // Final re-render with all citations
+                // Stop typewriter and final re-render with all citations
+                stopTypewriter();
                 messageBubble.innerHTML = renderMessageWithCitations(fullResponse, sourcesList);
 
             } catch (err) {
                 console.error('Chat error:', err);
+                stopTypewriter();  // Clean up on error
                 // Fix #42: Error recovery UI with retry button
                 const errorDiv = document.createElement('div');
                 errorDiv.className = 'chat-message assistant';
