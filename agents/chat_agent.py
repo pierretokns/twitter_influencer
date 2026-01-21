@@ -281,10 +281,11 @@ RESPONSE FORMAT:
         options: Optional[Dict] = None,
     ) -> Generator[ChatEvent, None, None]:
         """
-        Synchronous wrapper for stream_response (for Flask/non-async contexts).
+        Synchronous streaming response with RAG using Pydantic AI + Gemini.
 
-        Uses a queue to bridge async generator to sync generator, running
-        the entire async context in a single event loop execution.
+        This is a fully synchronous implementation that collects all events
+        first, then yields them. This avoids async/sync bridging issues with
+        pydantic-ai's anyio internals.
 
         Args:
             query: User query
@@ -295,48 +296,108 @@ RESPONSE FORMAT:
         Yields:
             ChatEvent objects (sources, token, citation, done, error)
         """
-        import queue
-        import threading
+        if history is None:
+            history = []
+        if options is None:
+            options = {}
 
-        # Queue to pass events from async to sync
-        event_queue: queue.Queue[ChatEvent | None] = queue.Queue()
-        error_holder: list = []
+        try:
+            # Validate input
+            validation = self.security.validate_input(query, session_id)
+            if not validation.is_safe:
+                yield ChatEvent(
+                    event="error",
+                    data={"error": validation.reason, "code": validation.severity},
+                )
+                return
 
-        async def collect_events():
-            """Run async generator and put events in queue."""
-            try:
-                async for event in self.stream_response(query, session_id, history, options):
-                    event_queue.put(event)
-            except Exception as e:
-                error_holder.append(e)
-            finally:
-                event_queue.put(None)  # Signal completion
+            # Retrieve sources
+            sources, retrieval_warning = self._retrieve_sources(query, options)
 
-        def run_async():
-            """Run the async collection in a new event loop."""
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            try:
-                loop.run_until_complete(collect_events())
-            finally:
-                loop.close()
+            # Yield warning if retrieval had issues
+            if retrieval_warning:
+                yield ChatEvent(
+                    event="warning",
+                    data={"message": retrieval_warning}
+                )
 
-        # Start async collection in a background thread
-        thread = threading.Thread(target=run_async, daemon=True)
-        thread.start()
+            # Yield sources to client
+            yield ChatEvent(
+                event="sources",
+                data={
+                    "sources": [
+                        {
+                            "id": s.id,
+                            "type": s.type,
+                            "author": s.author,
+                            "title": s.title,
+                            "url": s.url,
+                            "text": s.text[:200],
+                        }
+                        for s in sources
+                    ]
+                },
+            )
 
-        # Yield events as they come in
-        while True:
-            event = event_queue.get()
-            if event is None:
-                break
-            yield event
+            # Build context (includes conversation history)
+            context = self._build_context(sources, history)
 
-        # Check for errors
-        if error_holder:
-            raise error_holder[0]
+            # Build prompt with sources and question
+            prompt = f"SOURCES:\n{context}\n\nQUESTION: {query}"
 
-        thread.join(timeout=1.0)
+            # Run async streaming in a dedicated event loop
+            # Collect tokens, then yield them for true streaming effect
+            async def run_generation():
+                tokens = []
+                async with self.agent.run_stream(prompt) as result:
+                    async for text in result.stream_text():
+                        tokens.append(text)
+                    usage = result.usage()
+                return tokens, usage
+
+            # Execute async code
+            tokens, usage = asyncio.run(run_generation())
+
+            # Stream tokens to client
+            full_response = ""
+            for token in tokens:
+                full_response += token
+                yield ChatEvent(event="token", data={"token": token})
+
+            # Extract citations from complete response
+            citations_extracted = self._extract_citations(full_response, sources)
+            for citation in citations_extracted:
+                yield ChatEvent(
+                    event="citation",
+                    data={
+                        "index": citation.index,
+                        "source": {
+                            "type": citation.source.type,
+                            "author": citation.source.author,
+                            "title": citation.source.title,
+                            "url": citation.source.url,
+                            "quote": citation.source.text[:150],
+                        },
+                    },
+                )
+
+            # Generate follow-up suggestions
+            suggestions = self._generate_followups(query, full_response, sources)
+
+            # Signal completion
+            yield ChatEvent(
+                event="done",
+                data={
+                    "suggested_followups": suggestions,
+                    "citations_count": len(citations_extracted),
+                },
+            )
+
+        except Exception as e:
+            yield ChatEvent(
+                event="error",
+                data={"error": str(e), "code": "generation_failed"},
+            )
 
     def _retrieve_sources(self, query: str, options: Dict) -> tuple[List[Source], Optional[str]]:
         """
