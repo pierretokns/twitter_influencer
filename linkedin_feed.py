@@ -2045,14 +2045,11 @@ HTML_TEMPLATE = '''
                 // Fix #42: Error recovery UI with retry button
                 const errorDiv = document.createElement('div');
                 errorDiv.className = 'chat-message assistant';
-                errorDiv.innerHTML = `
-                    <div class="chat-message-bubble" style="color: #d32f2f;">
-                        Error: ${escapeHtml(err.message)}
-                        <button onclick="retryLastMessage('${escapeHtml(message)}')" class="retry-btn" style="margin-left: 8px; padding: 2px 8px; font-size: 11px; cursor: pointer;">
-                            Retry
-                        </button>
-                    </div>
-                `;
+                const escapedMessage = escapeHtml(message).replace(/'/g, "\\\\'");
+                errorDiv.innerHTML = '<div class="chat-message-bubble" style="color: #d32f2f;">' +
+                    'Error: ' + escapeHtml(err.message) +
+                    '<button onclick="retryLastMessage(\\'' + escapedMessage + '\\')" class="retry-btn" style="margin-left: 8px; padding: 2px 8px; font-size: 11px; cursor: pointer;">' +
+                    'Retry</button></div>';
                 messagesContainer.appendChild(errorDiv);
                 showToast('Message failed to send', 'error');
             } finally {
@@ -2081,7 +2078,7 @@ HTML_TEMPLATE = '''
         function renderMessageWithCitations(text) {
             // Escape HTML and linkify citations
             let html = escapeHtml(text);
-            html = html.replace(/\[(\d+)\]/g, '<span class="citation-marker" data-index="$1">[$1]</span>');
+            html = html.replace(/\\[(\\d+)\\]/g, '<span class="citation-marker" data-index="$1">[$1]</span>');
             return html;
         }
 
