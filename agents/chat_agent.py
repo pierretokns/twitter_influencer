@@ -39,15 +39,18 @@ USAGE:
 """
 
 import asyncio
+import atexit
 import json
 import os
 import re
 import sqlite3
+import threading
 import uuid
+from concurrent.futures import Future
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import AsyncGenerator, Generator, List, Dict, Optional
+from typing import AsyncGenerator, Generator, List, Dict, Optional, Callable, Any
 from pathlib import Path
 
 import numpy as np
@@ -57,6 +60,128 @@ from opentelemetry import trace
 from agents.chat_security import ChatSecurity, ValidationResult
 from agents.telemetry import get_tracer, create_chat_span
 from agents.hybrid_retriever import HybridRetriever, encode_texts_hybrid
+
+
+# =============================================================================
+# Persistent Event Loop Thread
+# =============================================================================
+# Fix for "Event loop is closed" error with Google Gemini/httpx:
+# https://github.com/pydantic/pydantic-ai/issues/748
+# https://github.com/googleapis/python-genai/issues/1518
+#
+# The problem: Each asyncio.run() creates and closes a new event loop.
+# Google's genai client uses httpx with connection pooling. When the loop
+# closes, httpx connections become stale. On subsequent requests, the
+# client tries to reuse connections tied to the closed loop → error.
+#
+# The solution: Use a single persistent event loop running in a dedicated
+# thread. All async operations are submitted to this loop via thread-safe
+# mechanisms. The loop stays open for the lifetime of the process.
+# =============================================================================
+
+
+class _AsyncLoopThread:
+    """
+    A dedicated thread running a persistent asyncio event loop.
+
+    This allows sync code (like Flask) to submit async tasks without
+    creating/destroying event loops, avoiding httpx connection issues.
+    """
+
+    _instance: Optional["_AsyncLoopThread"] = None
+    _lock = threading.Lock()
+
+    def __init__(self):
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
+        self._thread: Optional[threading.Thread] = None
+        self._started = threading.Event()
+
+    @classmethod
+    def get_instance(cls) -> "_AsyncLoopThread":
+        """Get or create the singleton async loop thread."""
+        if cls._instance is None:
+            with cls._lock:
+                if cls._instance is None:
+                    cls._instance = cls()
+                    cls._instance._start()
+        return cls._instance
+
+    def _start(self):
+        """Start the event loop thread."""
+        def run_loop():
+            self._loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(self._loop)
+            self._started.set()
+            self._loop.run_forever()
+
+        self._thread = threading.Thread(target=run_loop, daemon=True, name="AsyncLoopThread")
+        self._thread.start()
+        self._started.wait()  # Block until loop is ready
+
+    def run_coroutine(self, coro) -> Any:
+        """
+        Run a coroutine in the persistent event loop and wait for result.
+
+        Args:
+            coro: The coroutine to run
+
+        Returns:
+            The result of the coroutine
+        """
+        if self._loop is None:
+            raise RuntimeError("Event loop not started")
+        future = asyncio.run_coroutine_threadsafe(coro, self._loop)
+        return future.result()
+
+    def run_coroutine_with_callback(
+        self,
+        coro,
+        on_item: Callable[[Any], None],
+        on_done: Callable[[], None],
+        on_error: Callable[[Exception], None],
+    ):
+        """
+        Run a coroutine that yields items, calling back for each item.
+
+        This is used for streaming - each yielded item triggers on_item().
+
+        Args:
+            coro: An async generator coroutine
+            on_item: Called for each yielded item
+            on_done: Called when the generator completes
+            on_error: Called if an exception occurs
+        """
+        if self._loop is None:
+            raise RuntimeError("Event loop not started")
+
+        async def wrapper():
+            try:
+                async for item in coro:
+                    on_item(item)
+                on_done()
+            except Exception as e:
+                on_error(e)
+
+        asyncio.run_coroutine_threadsafe(wrapper(), self._loop)
+
+    def stop(self):
+        """Stop the event loop (called at process exit)."""
+        if self._loop is not None:
+            self._loop.call_soon_threadsafe(self._loop.stop)
+            if self._thread is not None:
+                self._thread.join(timeout=5)
+
+
+def _get_async_loop() -> _AsyncLoopThread:
+    """Get the persistent async loop thread."""
+    return _AsyncLoopThread.get_instance()
+
+
+# Register cleanup at process exit
+@atexit.register
+def _cleanup_async_loop():
+    if _AsyncLoopThread._instance is not None:
+        _AsyncLoopThread._instance.stop()
 
 
 @dataclass
@@ -310,8 +435,8 @@ RESPONSE FORMAT:
         """
         Synchronous streaming response with RAG using Pydantic AI + Gemini.
 
-        Uses Pydantic AI's run_sync with event_stream_handler for true streaming
-        without async/sync bridging issues.
+        Uses a persistent event loop thread to avoid "Event loop is closed" errors.
+        See: https://github.com/pydantic/pydantic-ai/issues/748
 
         Args:
             query: User query
@@ -323,8 +448,6 @@ RESPONSE FORMAT:
             ChatEvent objects (sources, token, citation, done, error)
         """
         from queue import Queue, Empty
-        from pydantic_ai.messages import PartDeltaEvent, FinalResultEvent
-        import threading
 
         if history is None:
             history = []
@@ -376,87 +499,52 @@ RESPONSE FORMAT:
             # Build prompt with sources and question
             prompt = f"SOURCES:\n{context}\n\nQUESTION: {query}"
 
-            # Use queue-based streaming to enable true token-by-token output
-            # while maintaining sync interface for Flask
+            # Use queue-based streaming with persistent event loop
+            # This avoids "Event loop is closed" errors from httpx connection reuse
             token_queue: Queue = Queue()
-            generation_error = None
-            full_response_holder = [""]  # Use list for mutable reference in closure
+            full_response_holder = [""]
+            done_event = threading.Event()
+            error_holder = [None]
 
-            def run_generation():
-                """Run async generation in dedicated thread, pushing tokens to queue.
-
-                Fix: Create a fresh Agent per request to avoid "Event loop is closed" error.
-                The shared Agent's httpx client holds connections tied to previous event loops.
-                When we create a new loop, those stale connections cause the error.
-                See: https://github.com/pydantic/pydantic-ai/issues/748
-                """
-                nonlocal generation_error
-                loop = None
+            async def stream_tokens():
+                """Async generator that streams tokens to the queue."""
                 try:
-                    async def generate():
-                        # Create a fresh Agent for this request to avoid stale httpx connections
-                        # The shared self.agent's httpx client may hold connections from a
-                        # previous event loop, causing "Event loop is closed" on reuse
-                        fresh_agent = Agent(
-                            self.model_id,
-                            system_prompt=self.SYSTEM_PROMPT,
-                        )
-                        async with fresh_agent.run_stream(prompt) as result:
-                            async for text in result.stream_text():
-                                token_queue.put(("token", text))
-                                full_response_holder[0] += text
-                            # Signal completion
-                            token_queue.put(("done", result.usage()))
-
-                    # Create a new event loop for this thread
-                    loop = asyncio.new_event_loop()
-                    asyncio.set_event_loop(loop)
-                    loop.run_until_complete(generate())
+                    async with self.agent.run_stream(prompt) as result:
+                        async for text in result.stream_text():
+                            token_queue.put(("token", text))
+                            full_response_holder[0] += text
+                        token_queue.put(("done", result.usage()))
                 except Exception as e:
-                    generation_error = e
                     token_queue.put(("error", str(e)))
+                    error_holder[0] = e
                 finally:
-                    # Proper cleanup: run pending callbacks before closing
-                    # This allows httpx to clean up connections gracefully
-                    if loop is not None:
-                        try:
-                            # Cancel any pending tasks
-                            pending = asyncio.all_tasks(loop)
-                            for task in pending:
-                                task.cancel()
-                            # Allow cancelled tasks to complete
-                            if pending:
-                                loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
-                            # Shutdown async generators
-                            loop.run_until_complete(loop.shutdown_asyncgens())
-                            # Shutdown default executor (Python 3.9+)
-                            loop.run_until_complete(loop.shutdown_default_executor())
-                        except Exception:
-                            pass  # Ignore cleanup errors
-                        finally:
-                            loop.close()
+                    done_event.set()
 
-            # Start generation in background thread
-            gen_thread = threading.Thread(target=run_generation, daemon=True)
-            gen_thread.start()
+            # Submit to persistent event loop (doesn't create/destroy loops)
+            loop_thread = _get_async_loop()
+            asyncio.run_coroutine_threadsafe(stream_tokens(), loop_thread._loop)
 
-            # Stream tokens as they arrive (true streaming!)
-            while True:
+            # Stream tokens as they arrive
+            while not done_event.is_set() or not token_queue.empty():
                 try:
-                    msg_type, msg_data = token_queue.get(timeout=120)
+                    msg_type, msg_data = token_queue.get(timeout=1)
                     if msg_type == "token":
                         yield ChatEvent(event="token", data={"token": msg_data})
                     elif msg_type == "done":
-                        # Generation complete, break to post-process
                         break
                     elif msg_type == "error":
                         raise RuntimeError(msg_data)
                 except Empty:
-                    raise TimeoutError("Generation timed out after 120 seconds")
+                    # Check if done without receiving message (error case)
+                    if done_event.is_set():
+                        break
+                    continue
 
-            # Wait for thread cleanup
-            gen_thread.join(timeout=5)
             full_response = full_response_holder[0]
+
+            # Check for errors
+            if error_holder[0] is not None:
+                raise error_holder[0]
 
             # Extract citations from complete response
             citations_extracted = self._extract_citations(full_response, sources)
