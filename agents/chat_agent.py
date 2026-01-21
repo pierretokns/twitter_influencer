@@ -363,6 +363,7 @@ RESPONSE FORMAT:
                             "title": s.title,
                             "url": s.url,
                             "text": s.text[:200],
+                            "published_at": s.published_at,
                         }
                         for s in sources
                     ]
