@@ -383,8 +383,6 @@ RESPONSE FORMAT:
             def run_generation():
                 """Run async generation in dedicated thread, pushing tokens to queue."""
                 nonlocal generation_error
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
                 try:
                     async def generate():
                         async with self.agent.run_stream(prompt) as result:
@@ -394,23 +392,12 @@ RESPONSE FORMAT:
                             # Signal completion
                             token_queue.put(("done", result.usage()))
 
-                    loop.run_until_complete(generate())
+                    # Use asyncio.run() for proper event loop lifecycle management
+                    # This creates, runs, and cleanly closes the loop automatically
+                    asyncio.run(generate())
                 except Exception as e:
                     generation_error = e
                     token_queue.put(("error", str(e)))
-                finally:
-                    # Clean up event loop safely
-                    try:
-                        if not loop.is_closed():
-                            pending = asyncio.all_tasks(loop)
-                            for task in pending:
-                                task.cancel()
-                            if pending:
-                                loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
-                            loop.run_until_complete(loop.shutdown_asyncgens())
-                            loop.close()
-                    except Exception:
-                        pass  # Ignore cleanup errors
 
             # Start generation in background thread
             gen_thread = threading.Thread(target=run_generation, daemon=True)
