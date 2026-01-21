@@ -44,6 +44,7 @@ import os
 import re
 import sqlite3
 import uuid
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import AsyncGenerator, Generator, List, Dict, Optional
@@ -154,6 +155,22 @@ RESPONSE FORMAT:
             print(f"[ChatAgent] Warning: Could not load sqlite-vec: {e}")
 
         return conn
+
+    @contextmanager
+    def _connection(self):
+        """
+        Context manager for database connections - ensures cleanup on error.
+
+        Usage:
+            with self._connection() as conn:
+                cursor = conn.cursor()
+                # operations...
+        """
+        conn = self._get_connection()
+        try:
+            yield conn
+        finally:
+            conn.close()
 
     async def stream_response(
         self,
@@ -292,9 +309,8 @@ RESPONSE FORMAT:
         """
         Synchronous streaming response with RAG using Pydantic AI + Gemini.
 
-        This is a fully synchronous implementation that collects all events
-        first, then yields them. This avoids async/sync bridging issues with
-        pydantic-ai's anyio internals.
+        Uses Pydantic AI's run_sync with event_stream_handler for true streaming
+        without async/sync bridging issues.
 
         Args:
             query: User query
@@ -305,6 +321,10 @@ RESPONSE FORMAT:
         Yields:
             ChatEvent objects (sources, token, citation, done, error)
         """
+        from queue import Queue, Empty
+        from pydantic_ai.messages import PartDeltaEvent, FinalResultEvent
+        import threading
+
         if history is None:
             history = []
         if options is None:
@@ -354,46 +374,61 @@ RESPONSE FORMAT:
             # Build prompt with sources and question
             prompt = f"SOURCES:\n{context}\n\nQUESTION: {query}"
 
-            # Run async streaming in a dedicated thread with its own event loop
-            # This completely isolates the async execution from Flask's context
-            import concurrent.futures
+            # Use queue-based streaming to enable true token-by-token output
+            # while maintaining sync interface for Flask
+            token_queue: Queue = Queue()
+            generation_error = None
+            full_response_holder = [""]  # Use list for mutable reference in closure
 
-            def run_in_thread():
-                """Execute async generation in a separate thread with isolated event loop."""
+            def run_generation():
+                """Run async generation in dedicated thread, pushing tokens to queue."""
+                nonlocal generation_error
                 loop = asyncio.new_event_loop()
                 asyncio.set_event_loop(loop)
                 try:
                     async def generate():
-                        tokens = []
-                        usage_data = None
                         async with self.agent.run_stream(prompt) as result:
                             async for text in result.stream_text():
-                                tokens.append(text)
-                            usage_data = result.usage()
-                        return tokens, usage_data
+                                token_queue.put(("token", text))
+                                full_response_holder[0] += text
+                            # Signal completion
+                            token_queue.put(("done", result.usage()))
 
-                    return loop.run_until_complete(generate())
+                    loop.run_until_complete(generate())
+                except Exception as e:
+                    generation_error = e
+                    token_queue.put(("error", str(e)))
                 finally:
-                    # Clean up all pending tasks
+                    # Clean up event loop
                     pending = asyncio.all_tasks(loop)
                     for task in pending:
                         task.cancel()
-                    # Allow cancellation to propagate
                     if pending:
                         loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
                     loop.run_until_complete(loop.shutdown_asyncgens())
                     loop.close()
 
-            # Execute in thread pool to isolate event loop
-            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-                future = executor.submit(run_in_thread)
-                tokens, usage = future.result(timeout=120)  # 2 minute timeout
+            # Start generation in background thread
+            gen_thread = threading.Thread(target=run_generation, daemon=True)
+            gen_thread.start()
 
-            # Stream tokens to client
-            full_response = ""
-            for token in tokens:
-                full_response += token
-                yield ChatEvent(event="token", data={"token": token})
+            # Stream tokens as they arrive (true streaming!)
+            while True:
+                try:
+                    msg_type, msg_data = token_queue.get(timeout=120)
+                    if msg_type == "token":
+                        yield ChatEvent(event="token", data={"token": msg_data})
+                    elif msg_type == "done":
+                        # Generation complete, break to post-process
+                        break
+                    elif msg_type == "error":
+                        raise RuntimeError(msg_data)
+                except Empty:
+                    raise TimeoutError("Generation timed out after 120 seconds")
+
+            # Wait for thread cleanup
+            gen_thread.join(timeout=5)
+            full_response = full_response_holder[0]
 
             # Extract citations from complete response
             citations_extracted = self._extract_citations(full_response, sources)
@@ -454,11 +489,11 @@ RESPONSE FORMAT:
             query_sparse = query_sparse[0] if query_sparse.ndim > 1 else query_sparse
 
             sources = []
+            use_chunks = options.get("use_chunks", True)  # Default to chunk-level search
 
-            # Get thread-safe connection (Fix #34)
-            conn = self._get_connection()
-            try:
-                # Search tweets
+            # Use context manager for thread-safe connection with automatic cleanup
+            with self._connection() as conn:
+                # Search tweets (always full-document, tweets are short)
                 tweet_scores = self._search_table(
                     conn,
                     "tweets",
@@ -482,56 +517,148 @@ RESPONSE FORMAT:
                         )
                     )
 
-                # Search web articles
-                article_scores = self._search_table(
-                    conn,
-                    "web_articles",
-                    "web_article_embeddings_dense",
-                    "web_article_embeddings_sparse",
-                    query_dense,
-                    query_sparse,
-                    retriever,
-                    max_sources,
-                )
-
-                for row in article_scores:
-                    sources.append(
-                        Source(
-                            id=row["article_id"],
-                            type="web",
-                            title=row["title"],
-                            text=row["content"][:300] if row["content"] else "",
-                            url=row["url"],
-                            published_at=row["published_at"],
-                        )
+                # Search web articles - prefer chunk search for better relevance
+                if use_chunks:
+                    # Try chunk-level search first
+                    article_chunks = self._search_chunks(
+                        conn,
+                        "paragraph",
+                        query_dense,
+                        query_sparse,
+                        retriever,
+                        max_sources,
                     )
-
-                # Search YouTube videos
-                video_scores = self._search_table(
-                    conn,
-                    "youtube_videos",
-                    "youtube_video_embeddings_dense",
-                    "youtube_video_embeddings_sparse",
-                    query_dense,
-                    query_sparse,
-                    retriever,
-                    max_sources,
-                )
-
-                for row in video_scores:
-                    sources.append(
-                        Source(
-                            id=row["video_id"],
-                            type="youtube",
-                            author=row["channel_name"],
-                            title=row["title"],
-                            text=row["transcript"][:300] if row["transcript"] else "",
-                            url=row["url"],
-                            published_at=row["published_at"],
+                    for chunk in article_chunks:
+                        sources.append(
+                            Source(
+                                id=chunk.get("article_id", ""),
+                                type="web",
+                                title=chunk.get("title", ""),
+                                text=chunk.get("text", "")[:300],  # Chunk text, not full content
+                                url=chunk.get("url", ""),
+                                published_at=chunk.get("published_at"),
+                            )
                         )
+
+                    # Fall back to full-document if no chunks found
+                    if not article_chunks:
+                        article_scores = self._search_table(
+                            conn,
+                            "web_articles",
+                            "web_article_embeddings_dense",
+                            "web_article_embeddings_sparse",
+                            query_dense,
+                            query_sparse,
+                            retriever,
+                            max_sources,
+                        )
+                        for row in article_scores:
+                            sources.append(
+                                Source(
+                                    id=row["article_id"],
+                                    type="web",
+                                    title=row["title"],
+                                    text=row["content"][:300] if row["content"] else "",
+                                    url=row["url"],
+                                    published_at=row["published_at"],
+                                )
+                            )
+                else:
+                    # Legacy full-document search
+                    article_scores = self._search_table(
+                        conn,
+                        "web_articles",
+                        "web_article_embeddings_dense",
+                        "web_article_embeddings_sparse",
+                        query_dense,
+                        query_sparse,
+                        retriever,
+                        max_sources,
                     )
-            finally:
-                conn.close()
+                    for row in article_scores:
+                        sources.append(
+                            Source(
+                                id=row["article_id"],
+                                type="web",
+                                title=row["title"],
+                                text=row["content"][:300] if row["content"] else "",
+                                url=row["url"],
+                                published_at=row["published_at"],
+                            )
+                        )
+
+                # Search YouTube videos - prefer chunk search for better relevance
+                if use_chunks:
+                    # Try chunk-level search first
+                    video_chunks = self._search_chunks(
+                        conn,
+                        "segment",
+                        query_dense,
+                        query_sparse,
+                        retriever,
+                        max_sources,
+                    )
+                    for chunk in video_chunks:
+                        sources.append(
+                            Source(
+                                id=chunk.get("video_id", ""),
+                                type="youtube",
+                                author=chunk.get("channel_name", ""),
+                                title=chunk.get("title", ""),
+                                text=chunk.get("text", "")[:300],  # Chunk text, not full transcript
+                                url=chunk.get("url", ""),
+                                published_at=chunk.get("published_at"),
+                            )
+                        )
+
+                    # Fall back to full-document if no chunks found
+                    if not video_chunks:
+                        video_scores = self._search_table(
+                            conn,
+                            "youtube_videos",
+                            "youtube_video_embeddings_dense",
+                            "youtube_video_embeddings_sparse",
+                            query_dense,
+                            query_sparse,
+                            retriever,
+                            max_sources,
+                        )
+                        for row in video_scores:
+                            sources.append(
+                                Source(
+                                    id=row["video_id"],
+                                    type="youtube",
+                                    author=row["channel_name"],
+                                    title=row["title"],
+                                    text=row["transcript"][:300] if row["transcript"] else "",
+                                    url=row["url"],
+                                    published_at=row["published_at"],
+                                )
+                            )
+                else:
+                    # Legacy full-document search
+                    video_scores = self._search_table(
+                        conn,
+                        "youtube_videos",
+                        "youtube_video_embeddings_dense",
+                        "youtube_video_embeddings_sparse",
+                        query_dense,
+                        query_sparse,
+                        retriever,
+                        max_sources,
+                    )
+                    for row in video_scores:
+                        sources.append(
+                            Source(
+                                id=row["video_id"],
+                                type="youtube",
+                                author=row["channel_name"],
+                                title=row["title"],
+                                text=row["transcript"][:300] if row["transcript"] else "",
+                                url=row["url"],
+                                published_at=row["published_at"],
+                            )
+                        )
 
             # Fix #36: Return warning if no sources found
             if not sources:
@@ -576,12 +703,12 @@ RESPONSE FORMAT:
             cursor = conn.cursor()
 
             # Query dense embeddings (sqlite-vec KNN search)
-            # vec0 tables use MATCH for KNN search and return id (not rowid)
+            # vec0 tables require k=? constraint in WHERE clause for KNN queries
             cursor.execute(f"""
                 SELECT id, distance, embedding
                 FROM {dense_table}
-                WHERE embedding MATCH ?
-                ORDER BY distance LIMIT ?
+                WHERE embedding MATCH ? AND k = ?
+                ORDER BY distance
             """, (query_dense.tobytes(), limit * 3))
 
             dense_results = cursor.fetchall()
@@ -672,6 +799,121 @@ RESPONSE FORMAT:
 
         except Exception as e:
             print(f"[ChatAgent] Search error in {table}: {e}")
+            return []
+
+    def _search_chunks(
+        self,
+        conn: sqlite3.Connection,
+        chunk_type: str,  # 'paragraph' or 'segment'
+        query_dense: np.ndarray,
+        query_sparse: np.ndarray,
+        retriever: HybridRetriever,
+        limit: int,
+    ) -> List[Dict]:
+        """
+        Search chunk embeddings for granular RAG retrieval.
+
+        Args:
+            conn: Database connection
+            chunk_type: 'paragraph' (articles) or 'segment' (YouTube)
+            query_dense: Query dense embedding
+            query_sparse: Query sparse embedding
+            retriever: HybridRetriever instance
+            limit: Max results
+
+        Returns:
+            List of dicts with chunk info and parent document info
+        """
+        try:
+            cursor = conn.cursor()
+
+            # Map chunk type to tables
+            if chunk_type == 'paragraph':
+                chunk_table = 'article_paragraphs'
+                parent_table = 'web_articles'
+                parent_id_col = 'article_id'
+            elif chunk_type == 'segment':
+                chunk_table = 'youtube_segments'
+                parent_table = 'youtube_videos'
+                parent_id_col = 'video_id'
+            else:
+                return []
+
+            dense_table = f'{chunk_type}_embeddings_dense'
+            sparse_table = f'{chunk_type}_embeddings_sparse'
+
+            # Query dense embeddings (KNN search)
+            cursor.execute(f"""
+                SELECT id, distance
+                FROM {dense_table}
+                WHERE embedding MATCH ? AND k = ?
+                ORDER BY distance
+            """, (query_dense.tobytes(), limit * 3))
+
+            dense_results = cursor.fetchall()
+            if not dense_results:
+                return []
+
+            # Get sparse embeddings for hybrid scoring
+            chunk_ids = [r[0] for r in dense_results]
+            placeholders = ",".join("?" * len(chunk_ids))
+
+            sparse_embeddings = {}
+            try:
+                cursor.execute(f"""
+                    SELECT id, embedding FROM {sparse_table}
+                    WHERE id IN ({placeholders})
+                """, chunk_ids)
+                for row in cursor.fetchall():
+                    sparse_embeddings[row[0]] = np.frombuffer(row[1], dtype=np.float32)
+            except Exception:
+                pass  # Sparse not required
+
+            # Compute hybrid scores
+            scored_results = []
+            for dense_row in dense_results:
+                chunk_id = dense_row[0]
+                dense_dist = dense_row[1]
+                dense_score = 1.0 / (1.0 + dense_dist)
+
+                if chunk_id in sparse_embeddings:
+                    doc_sparse = sparse_embeddings[chunk_id]
+                    sparse_norm_q = query_sparse / (np.linalg.norm(query_sparse) + 1e-8)
+                    sparse_norm_d = doc_sparse / (np.linalg.norm(doc_sparse) + 1e-8)
+                    sparse_score = float(np.dot(sparse_norm_q, sparse_norm_d))
+                    hybrid_score = retriever.alpha * dense_score + (1 - retriever.alpha) * sparse_score
+                else:
+                    hybrid_score = dense_score
+
+                scored_results.append((chunk_id, hybrid_score))
+
+            # Sort and take top results
+            scored_results.sort(key=lambda x: x[1], reverse=True)
+            top_chunk_ids = [r[0] for r in scored_results[:limit]]
+
+            if not top_chunk_ids:
+                return []
+
+            # Get chunk details with parent info
+            placeholders = ",".join("?" * len(top_chunk_ids))
+            cursor.execute(f"""
+                SELECT c.id, c.{parent_id_col}, c.text,
+                       p.*
+                FROM {chunk_table} c
+                JOIN {parent_table} p ON c.{parent_id_col} = p.{parent_id_col}
+                WHERE c.id IN ({placeholders})
+            """, top_chunk_ids)
+
+            rows = cursor.fetchall()
+
+            # Re-order by score
+            id_to_row = {r['id']: dict(r) for r in rows}
+            results = [id_to_row[cid] for cid in top_chunk_ids if cid in id_to_row]
+
+            return results
+
+        except Exception as e:
+            print(f"[ChatAgent] Chunk search error ({chunk_type}): {e}")
             return []
 
     def _build_context(self, sources: List[Source], history: List[Dict]) -> str:

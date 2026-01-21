@@ -107,44 +107,47 @@ def encode_texts_hybrid(texts: List[str], max_length: int = 512) -> Tuple[np.nda
         - dense_embeddings: (N, 1024)
         - sparse_embeddings: (N, 256) - top-K representation
 
-        Falls back to (384 dim, None) if BGE-M3 not available.
+    Raises:
+        RuntimeError: If BGE-M3 model is not available or encoding fails.
     """
     embedder = get_hybrid_embedder()
 
-    if embedder is not None:
-        try:
-            # Use BGE-M3 for hybrid embeddings
-            embedding_results = embedder.encode(
-                texts,
-                batch_size=32,
-                max_length=max_length,
-                return_dense=True,
-                return_sparse=True,
-                return_colbert_vecs=False
-            )
+    if embedder is None:
+        raise RuntimeError(
+            "BGE-M3 model not available. Install FlagEmbedding: pip install FlagEmbedding"
+        )
 
-            dense_embeddings = np.array(embedding_results['dense_vecs'], dtype=np.float32)
+    # Use BGE-M3 for hybrid embeddings
+    embedding_results = embedder.encode(
+        texts,
+        batch_size=32,
+        max_length=max_length,
+        return_dense=True,
+        return_sparse=True,
+        return_colbert_vecs=False
+    )
 
-            # Convert sparse embeddings to fixed-size dense
-            sparse_list = []
-            for sparse_dict in embedding_results['lexical_weights']:
-                # Sort by weight, take top-256
-                sorted_items = sorted(sparse_dict.items(), key=lambda x: x[1], reverse=True)[:256]
-                sparse_dense = np.zeros(256, dtype=np.float32)
-                for i, (token_id, weight) in enumerate(sorted_items):
-                    sparse_dense[i] = weight
-                sparse_list.append(sparse_dense)
+    dense_embeddings = np.array(embedding_results['dense_vecs'], dtype=np.float32)
 
-            sparse_embeddings = np.array(sparse_list, dtype=np.float32)
-            return dense_embeddings, sparse_embeddings
+    # Convert sparse embeddings to fixed-size dense
+    sparse_list = []
+    for sparse_dict in embedding_results['lexical_weights']:
+        # Sort by weight, take top-256
+        sorted_items = sorted(sparse_dict.items(), key=lambda x: x[1], reverse=True)[:256]
+        sparse_dense = np.zeros(256, dtype=np.float32)
+        for i, (token_id, weight) in enumerate(sorted_items):
+            sparse_dense[i] = weight
+        sparse_list.append(sparse_dense)
 
-        except Exception as e:
-            print(f"[WARN] BGE-M3 encoding failed: {e}, falling back to sentence-transformers")
+    sparse_embeddings = np.array(sparse_list, dtype=np.float32)
 
-    # Fallback to sentence-transformers (384 dim, no sparse)
-    embedder = get_sentence_transformer()
-    dense_embeddings = embedder.encode(texts, show_progress_bar=False)
-    return np.array(dense_embeddings, dtype=np.float32), None
+    # Validate dimensions to catch model version mismatches early
+    if dense_embeddings.shape[1] != 1024:
+        raise ValueError(f"Dense embedding dimension mismatch: expected 1024, got {dense_embeddings.shape[1]}")
+    if sparse_embeddings.shape[1] != 256:
+        raise ValueError(f"Sparse embedding dimension mismatch: expected 256, got {sparse_embeddings.shape[1]}")
+
+    return dense_embeddings, sparse_embeddings
 
 
 class FallbackEmbedder:
@@ -530,23 +533,45 @@ class AINewsDatabase:
                 ''')
 
                 # New hybrid embedding tables for BGE-M3
+                # Use cosine distance for normalized embeddings (more appropriate for semantic similarity)
+                # NOTE: IF NOT EXISTS won't modify existing tables. To switch existing DB to cosine,
+                # drop tables (losing data) or regenerate embeddings with regenerate_embeddings.py
                 for source_type in ['tweet', 'web_article', 'youtube_video']:
-                    # Dense embeddings (1024 dimensions)
+                    # Dense embeddings (1024 dimensions) with cosine distance
                     self.conn.execute(f'''
                         CREATE VIRTUAL TABLE IF NOT EXISTS {source_type}_embeddings_dense USING vec0(
                             id TEXT PRIMARY KEY,
-                            embedding float[{self.EMBEDDING_DIM_DENSE}]
+                            embedding float[{self.EMBEDDING_DIM_DENSE}] distance_metric=cosine
                         )
                     ''')
-                    # Sparse embeddings (256 dimensions - top-K representation)
+                    # Sparse embeddings (256 dimensions - top-K representation) with cosine distance
                     self.conn.execute(f'''
                         CREATE VIRTUAL TABLE IF NOT EXISTS {source_type}_embeddings_sparse USING vec0(
                             id TEXT PRIMARY KEY,
-                            embedding float[{self.EMBEDDING_DIM_SPARSE}]
+                            embedding float[{self.EMBEDDING_DIM_SPARSE}] distance_metric=cosine
                         )
                     ''')
 
-                Logger.success("Vector embeddings tables ready (legacy + hybrid)")
+                # Chunk-level embedding tables for granular RAG retrieval
+                # article_paragraphs -> paragraph_embeddings_dense/sparse
+                # youtube_segments -> segment_embeddings_dense/sparse
+                for chunk_type in ['paragraph', 'segment']:
+                    # Dense embeddings for chunks with cosine distance
+                    self.conn.execute(f'''
+                        CREATE VIRTUAL TABLE IF NOT EXISTS {chunk_type}_embeddings_dense USING vec0(
+                            id INTEGER PRIMARY KEY,
+                            embedding float[{self.EMBEDDING_DIM_DENSE}] distance_metric=cosine
+                        )
+                    ''')
+                    # Sparse embeddings for chunks with cosine distance
+                    self.conn.execute(f'''
+                        CREATE VIRTUAL TABLE IF NOT EXISTS {chunk_type}_embeddings_sparse USING vec0(
+                            id INTEGER PRIMARY KEY,
+                            embedding float[{self.EMBEDDING_DIM_SPARSE}] distance_metric=cosine
+                        )
+                    ''')
+
+                Logger.success("Vector embeddings tables ready (legacy + hybrid + chunks)")
             except Exception as e:
                 Logger.warning(f"Could not create vector table: {e}")
                 self._has_vec = False
@@ -685,7 +710,8 @@ class AINewsDatabase:
         cursor = self.conn.cursor()
 
         try:
-            embedding_json = json.dumps(query_embedding.tolist())
+            # sqlite-vec expects binary format for queries (same as storage)
+            embedding_blob = np.asarray(query_embedding, dtype=np.float32).tobytes()
             # sqlite-vec requires k=? constraint in WHERE clause for KNN queries
             cursor.execute(f'''
                 SELECT
@@ -700,7 +726,7 @@ class AINewsDatabase:
                 JOIN tweets t ON e.tweet_id = t.tweet_id
                 WHERE e.embedding MATCH ? AND k = ?
                 ORDER BY e.distance
-            ''', (embedding_json, limit))
+            ''', (embedding_blob, limit))
 
             results = []
             for row in cursor.fetchall():

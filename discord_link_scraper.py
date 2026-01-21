@@ -201,12 +201,13 @@ class DiscordLinksDatabase:
             self._has_vec = False
 
         # Vector embeddings table (handled separately - not in migrations due to extension dependency)
+        # Use cosine distance for normalized embeddings (more appropriate for semantic similarity)
         if self._has_vec:
             try:
                 self.conn.execute(f'''
                     CREATE VIRTUAL TABLE IF NOT EXISTS link_embeddings USING vec0(
                         link_id INTEGER PRIMARY KEY,
-                        embedding float[{self.EMBEDDING_DIM}]
+                        embedding float[{self.EMBEDDING_DIM}] distance_metric=cosine
                     )
                 ''')
                 Logger.success("Vector embeddings table ready")
