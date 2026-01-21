@@ -383,23 +383,58 @@ RESPONSE FORMAT:
             full_response_holder = [""]  # Use list for mutable reference in closure
 
             def run_generation():
-                """Run async generation in dedicated thread, pushing tokens to queue."""
+                """Run async generation in dedicated thread, pushing tokens to queue.
+
+                Fix: Create a fresh Agent per request to avoid "Event loop is closed" error.
+                The shared Agent's httpx client holds connections tied to previous event loops.
+                When we create a new loop, those stale connections cause the error.
+                See: https://github.com/pydantic/pydantic-ai/issues/748
+                """
                 nonlocal generation_error
+                loop = None
                 try:
                     async def generate():
-                        async with self.agent.run_stream(prompt) as result:
+                        # Create a fresh Agent for this request to avoid stale httpx connections
+                        # The shared self.agent's httpx client may hold connections from a
+                        # previous event loop, causing "Event loop is closed" on reuse
+                        fresh_agent = Agent(
+                            self.model_id,
+                            system_prompt=self.SYSTEM_PROMPT,
+                        )
+                        async with fresh_agent.run_stream(prompt) as result:
                             async for text in result.stream_text():
                                 token_queue.put(("token", text))
                                 full_response_holder[0] += text
                             # Signal completion
                             token_queue.put(("done", result.usage()))
 
-                    # Use asyncio.run() for proper event loop lifecycle management
-                    # This creates, runs, and cleanly closes the loop automatically
-                    asyncio.run(generate())
+                    # Create a new event loop for this thread
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                    loop.run_until_complete(generate())
                 except Exception as e:
                     generation_error = e
                     token_queue.put(("error", str(e)))
+                finally:
+                    # Proper cleanup: run pending callbacks before closing
+                    # This allows httpx to clean up connections gracefully
+                    if loop is not None:
+                        try:
+                            # Cancel any pending tasks
+                            pending = asyncio.all_tasks(loop)
+                            for task in pending:
+                                task.cancel()
+                            # Allow cancelled tasks to complete
+                            if pending:
+                                loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+                            # Shutdown async generators
+                            loop.run_until_complete(loop.shutdown_asyncgens())
+                            # Shutdown default executor (Python 3.9+)
+                            loop.run_until_complete(loop.shutdown_default_executor())
+                        except Exception:
+                            pass  # Ignore cleanup errors
+                        finally:
+                            loop.close()
 
             # Start generation in background thread
             gen_thread = threading.Thread(target=run_generation, daemon=True)
