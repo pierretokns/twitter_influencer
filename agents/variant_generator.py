@@ -189,6 +189,10 @@ Write ONLY the post text. No intro, no explanation. Start directly with the hook
         text = re.sub(r'^#+\s*', '', text, flags=re.MULTILINE)
         text = re.sub(r'^>\s*', '', text, flags=re.MULTILINE)
 
+        # Remove "(item [N])" patterns - LLM sometimes includes original news reference
+        # alongside the final citation, e.g., "(item [12])[1]" should become just "[1]"
+        text = re.sub(r'\s*\(item\s*\[\d+\]\)', '', text, flags=re.IGNORECASE)
+
         # Remove intro phrases
         intro_patterns = [
             r"^Here'?s?\s+(a|the|my)\s+.*?:\s*\n*",
