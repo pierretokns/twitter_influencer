@@ -605,6 +605,9 @@ def _find_best_paragraph_tfidf(
 # Singleton for BGE-M3 model (lazy loaded)
 _bge_m3_model = None
 
+# Cache for pre-computed embeddings (query -> (dense, sparse))
+_embedding_cache: Dict[str, Tuple[np.ndarray, np.ndarray]] = {}
+
 
 def get_bge_m3_model():
     """
@@ -640,10 +643,84 @@ def get_bge_m3_model():
     return _bge_m3_model
 
 
+def warmup_embedding_model(precompute_queries: Optional[List[str]] = None) -> bool:
+    """
+    Warm up the BGE-M3 model by loading it and optionally pre-computing embeddings.
+
+    Call this at server startup to eliminate cold-start latency on first chat request.
+
+    Args:
+        precompute_queries: Optional list of common queries to pre-compute embeddings for.
+                           These will be cached and returned instantly on match.
+
+    Returns:
+        True if warmup succeeded, False otherwise
+    """
+    import time
+    start = time.time()
+
+    print("[HybridRetriever] Warming up BGE-M3 model...")
+
+    # Load the model
+    model = get_bge_m3_model()
+    if model is None:
+        print("[HybridRetriever] Warmup failed: model not available")
+        return False
+
+    # Run a dummy encoding to warm up CUDA kernels / JIT compilation
+    try:
+        _ = model.encode(
+            ["warmup query for model initialization"],
+            max_length=64,
+            return_dense=True,
+            return_sparse=True,
+            return_colbert_vecs=False
+        )
+        print(f"[HybridRetriever] Model warmup complete ({time.time() - start:.2f}s)")
+    except Exception as e:
+        print(f"[HybridRetriever] Warmup encoding failed: {e}")
+        return False
+
+    # Pre-compute embeddings for common queries
+    if precompute_queries:
+        print(f"[HybridRetriever] Pre-computing embeddings for {len(precompute_queries)} queries...")
+        precompute_start = time.time()
+
+        dense, sparse = encode_texts_hybrid(precompute_queries, max_length=512)
+        if dense is not None and sparse is not None:
+            for i, query in enumerate(precompute_queries):
+                # Normalize query for cache lookup
+                cache_key = query.lower().strip()
+                _embedding_cache[cache_key] = (dense[i], sparse[i])
+
+            print(f"[HybridRetriever] Pre-computed {len(precompute_queries)} embeddings ({time.time() - precompute_start:.2f}s)")
+        else:
+            print("[HybridRetriever] Pre-computation failed")
+
+    total_time = time.time() - start
+    print(f"[HybridRetriever] Total warmup time: {total_time:.2f}s")
+    return True
+
+
+def get_cached_embedding(query: str) -> Optional[Tuple[np.ndarray, np.ndarray]]:
+    """
+    Get pre-computed embedding from cache if available.
+
+    Args:
+        query: The query text
+
+    Returns:
+        Tuple of (dense, sparse) embeddings if cached, None otherwise
+    """
+    cache_key = query.lower().strip()
+    return _embedding_cache.get(cache_key)
+
+
 def encode_texts_hybrid(
     texts: List[str],
     batch_size: int = 32,
-    max_length: int = 512
+    max_length: int = 512,
+    use_cache: bool = True
 ) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
     """
     Encode texts using BGE-M3 hybrid embeddings.
@@ -652,12 +729,20 @@ def encode_texts_hybrid(
         texts: List of texts to encode
         batch_size: Batch size for encoding
         max_length: Maximum sequence length (512 for tweets, 8192 for articles)
+        use_cache: Whether to check embedding cache for single queries (default True)
 
     Returns:
         Tuple of (dense_embeddings, sparse_embeddings) or (None, None) if failed.
         - dense_embeddings: (N, 1024) array
         - sparse_embeddings: (N, 256) array (top-K representation)
     """
+    # Check cache for single-query requests (common for chat)
+    if use_cache and len(texts) == 1:
+        cached = get_cached_embedding(texts[0])
+        if cached is not None:
+            dense, sparse = cached
+            return dense.reshape(1, -1), sparse.reshape(1, -1)
+
     model = get_bge_m3_model()
 
     if model is None:

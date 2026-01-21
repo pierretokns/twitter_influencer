@@ -2460,12 +2460,59 @@ import json
 import uuid
 from agents.chat_agent import ChatAgent
 from agents.telemetry import setup_telemetry, get_tracer
+from agents.hybrid_retriever import warmup_embedding_model
+
+
+# Common starter questions to pre-compute embeddings for (instant response on these)
+COMMON_CHAT_QUERIES = [
+    # General AI news queries
+    "What's the latest AI news?",
+    "What happened in AI today?",
+    "Tell me about recent AI developments",
+    "What are the top AI stories?",
+    "Any breaking AI news?",
+    # Model-specific queries
+    "What's new with GPT?",
+    "Tell me about Claude updates",
+    "What's happening with Gemini?",
+    "OpenAI news",
+    "Anthropic announcements",
+    "Google AI updates",
+    # Topic-specific queries
+    "AI safety news",
+    "AI agents news",
+    "Large language models news",
+    "AI regulation updates",
+    "Open source AI news",
+    # Follow-up style questions (from _generate_followups)
+    "What about Claude, Gemini, and other AI models?",
+    "How does this compare to GPT and other models?",
+    "When is this expected to be available?",
+    "What's the longer-term outlook?",
+    "What are the limitations or tradeoffs?",
+    "What safeguards are being implemented?",
+    "How does this perform on real-world tasks?",
+    "Tell me more about this",
+    "What are the key implications?",
+    "How does this affect the industry?",
+    "What are experts saying about this?",
+    "Compare perspectives from different sources",
+    "Tell me about the timeline",
+    "What are the key steps involved?",
+    "What's the motivation behind this?",
+]
 
 
 # Initialize telemetry and chat agent
 try:
     setup_telemetry(service_name="linkedin_feed", db_path=str(AI_NEWS_DB))
     chat_agent = ChatAgent(db_path=str(AI_NEWS_DB))
+
+    # Warm up embedding model at startup to eliminate cold-start latency
+    print("\n[Startup] Warming up embedding model...")
+    warmup_embedding_model(precompute_queries=COMMON_CHAT_QUERIES)
+    print("[Startup] Embedding model ready\n")
+
 except Exception as e:
     print(f"[Warning] Failed to initialize chat agent: {e}")
     chat_agent = None
