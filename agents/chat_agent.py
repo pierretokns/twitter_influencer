@@ -585,6 +585,9 @@ RESPONSE FORMAT:
         """
         Retrieve sources via BGE-M3 hybrid search (dense + sparse embeddings).
 
+        Also performs keyword search for brand names/URLs that may not match
+        semantically (e.g., "vectorlab.dev" won't match well in embedding space).
+
         Args:
             query: Search query
             options: Retrieval options (max_sources, alpha, recency_boost)
@@ -605,10 +608,18 @@ RESPONSE FORMAT:
             query_sparse = query_sparse[0] if query_sparse.ndim > 1 else query_sparse
 
             sources = []
+            seen_ids = set()  # Track seen source IDs to avoid duplicates
             use_chunks = options.get("use_chunks", True)  # Default to chunk-level search
 
             # Use context manager for thread-safe connection with automatic cleanup
             with self._connection() as conn:
+                # First: Keyword search for brand names/URLs that don't match semantically
+                # This helps with queries like "vectorlab" or "fireship" that are proper nouns
+                keyword_sources = self._keyword_search(conn, query, max_sources // 2)
+                for src in keyword_sources:
+                    if src.id not in seen_ids:
+                        sources.append(src)
+                        seen_ids.add(src.id)
                 # Search tweets (always full-document, tweets are short)
                 tweet_scores = self._search_table(
                     conn,
@@ -622,16 +633,19 @@ RESPONSE FORMAT:
                 )
 
                 for row in tweet_scores:
-                    sources.append(
-                        Source(
-                            id=row["tweet_id"],
-                            type="twitter",
-                            author=row["username"],
-                            text=row["text"],
-                            url=row["url"],
-                            published_at=row["timestamp"],
+                    tweet_id = row["tweet_id"]
+                    if tweet_id not in seen_ids:
+                        sources.append(
+                            Source(
+                                id=tweet_id,
+                                type="twitter",
+                                author=row["username"],
+                                text=row["text"],
+                                url=row["url"],
+                                published_at=row["timestamp"],
+                            )
                         )
-                    )
+                        seen_ids.add(tweet_id)
 
                 # Search web articles - prefer chunk search for better relevance
                 if use_chunks:
@@ -645,16 +659,19 @@ RESPONSE FORMAT:
                         max_sources,
                     )
                     for chunk in article_chunks:
-                        sources.append(
-                            Source(
-                                id=chunk.get("article_id", ""),
-                                type="web",
-                                title=chunk.get("title", ""),
-                                text=chunk.get("text", "")[:300],  # Chunk text, not full content
-                                url=chunk.get("url", ""),
-                                published_at=chunk.get("published_at"),
+                        article_id = chunk.get("article_id", "")
+                        if article_id not in seen_ids:
+                            sources.append(
+                                Source(
+                                    id=article_id,
+                                    type="web",
+                                    title=chunk.get("title", ""),
+                                    text=chunk.get("text", "")[:300],  # Chunk text, not full content
+                                    url=chunk.get("url", ""),
+                                    published_at=chunk.get("published_at"),
+                                )
                             )
-                        )
+                            seen_ids.add(article_id)
 
                     # Fall back to full-document if no chunks found
                     if not article_chunks:
@@ -1066,6 +1083,87 @@ RESPONSE FORMAT:
         except Exception as e:
             print(f"[ChatAgent] Chunk search error ({chunk_type}): {e}")
             return []
+
+    def _keyword_search(self, conn: sqlite3.Connection, query: str, limit: int) -> List[Source]:
+        """
+        Keyword search fallback for brand names/URLs that don't match semantically.
+
+        BGE-M3 embeddings work well for semantic similarity but struggle with:
+        - Brand names (vectorlab, fireship, etc.)
+        - Domain names (vectorlab.dev)
+        - Proper nouns not in training data
+
+        This method performs LIKE queries to find exact keyword matches.
+
+        Args:
+            conn: Database connection
+            query: Search query
+            limit: Max results
+
+        Returns:
+            List of Source objects from keyword matches
+        """
+        sources = []
+        cursor = conn.cursor()
+
+        # Extract potential keywords (words > 3 chars, likely brand names)
+        words = [w.strip('.,!?()[]"\'').lower() for w in query.split()]
+        keywords = [w for w in words if len(w) > 3 and w not in {
+            'about', 'what', 'tell', 'know', 'have', 'from', 'with', 'that',
+            'this', 'they', 'their', 'there', 'where', 'when', 'which', 'more',
+            'latest', 'news', 'update', 'information'
+        }]
+
+        if not keywords:
+            return []
+
+        try:
+            # Search web articles by URL or title
+            for keyword in keywords[:3]:  # Limit to 3 keywords
+                pattern = f'%{keyword}%'
+                cursor.execute("""
+                    SELECT article_id, title, url, substr(content, 1, 300) as text, published_at
+                    FROM web_articles
+                    WHERE url LIKE ? OR title LIKE ? OR content LIKE ?
+                    ORDER BY published_at DESC
+                    LIMIT ?
+                """, (pattern, pattern, pattern, limit))
+
+                for row in cursor.fetchall():
+                    sources.append(Source(
+                        id=row[0],
+                        type="web",
+                        title=row[1],
+                        text=row[3] or "",
+                        url=row[2],
+                        published_at=row[4],
+                    ))
+
+            # Search tweets
+            for keyword in keywords[:3]:
+                pattern = f'%{keyword}%'
+                cursor.execute("""
+                    SELECT tweet_id, username, text, url, timestamp
+                    FROM tweets
+                    WHERE text LIKE ? OR username LIKE ?
+                    ORDER BY timestamp DESC
+                    LIMIT ?
+                """, (pattern, pattern, limit))
+
+                for row in cursor.fetchall():
+                    sources.append(Source(
+                        id=row[0],
+                        type="twitter",
+                        author=row[1],
+                        text=row[2],
+                        url=row[3],
+                        published_at=row[4],
+                    ))
+
+        except Exception as e:
+            print(f"[ChatAgent] Keyword search error: {e}")
+
+        return sources[:limit]
 
     def _build_context(self, sources: List[Source], history: List[Dict]) -> str:
         """
