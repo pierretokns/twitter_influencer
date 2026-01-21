@@ -134,16 +134,25 @@ RESPONSE FORMAT:
 
     def _get_connection(self) -> sqlite3.Connection:
         """
-        Get a new thread-safe database connection.
+        Get a new thread-safe database connection with sqlite-vec loaded.
 
         Fix #34: Create connection per operation for thread safety
         with Flask's threaded=True mode.
 
         Returns:
-            New SQLite connection with Row factory
+            New SQLite connection with Row factory and sqlite-vec extension
         """
         conn = sqlite3.connect(self.db_path, check_same_thread=False)
         conn.row_factory = sqlite3.Row
+
+        # Load sqlite-vec extension for vector similarity search
+        try:
+            import sqlite_vec
+            conn.enable_load_extension(True)
+            sqlite_vec.load(conn)
+        except Exception as e:
+            print(f"[ChatAgent] Warning: Could not load sqlite-vec: {e}")
+
         return conn
 
     async def stream_response(
