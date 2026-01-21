@@ -544,27 +544,30 @@ RESPONSE FORMAT:
         try:
             cursor = conn.cursor()
 
-            # Query dense embeddings (sqlite-vec) - get more candidates for hybrid scoring
+            # Query dense embeddings (sqlite-vec KNN search)
+            # vec0 tables use MATCH for KNN search and return id (not rowid)
             cursor.execute(f"""
-                SELECT rowid, distance(embedding, ?) as dist, embedding
+                SELECT id, distance, embedding
                 FROM {dense_table}
-                ORDER BY dist LIMIT ?
+                WHERE embedding MATCH ?
+                ORDER BY distance LIMIT ?
             """, (query_dense.tobytes(), limit * 3))
 
             dense_results = cursor.fetchall()
             if not dense_results:
                 return []
 
-            rowids = [r[0] for r in dense_results]
-            placeholders = ",".join("?" * len(rowids))
+            # Extract IDs (these are the actual tweet_id/article_id/video_id values)
+            ids = [r[0] for r in dense_results]
+            placeholders = ",".join("?" * len(ids))
 
             # Fix #35: Query sparse embeddings for same candidates
             sparse_embeddings = {}
             try:
                 cursor.execute(f"""
-                    SELECT rowid, embedding FROM {sparse_table}
-                    WHERE rowid IN ({placeholders})
-                """, rowids)
+                    SELECT id, embedding FROM {sparse_table}
+                    WHERE id IN ({placeholders})
+                """, ids)
                 for row in cursor.fetchall():
                     sparse_embeddings[row[0]] = np.frombuffer(row[1], dtype=np.float32)
             except Exception as sparse_err:
@@ -574,14 +577,14 @@ RESPONSE FORMAT:
             # Fix #35: Compute hybrid scores if sparse embeddings available
             scored_results = []
             for dense_row in dense_results:
-                rowid = dense_row[0]
+                doc_id = dense_row[0]
                 # Convert distance to similarity (sqlite-vec returns L2 distance)
                 dense_dist = dense_row[1]
                 dense_score = 1.0 / (1.0 + dense_dist)  # Convert distance to similarity
 
-                if rowid in sparse_embeddings:
+                if doc_id in sparse_embeddings:
                     # Compute hybrid score
-                    doc_sparse = sparse_embeddings[rowid]
+                    doc_sparse = sparse_embeddings[doc_id]
                     # Normalize and compute sparse similarity
                     sparse_norm_q = query_sparse / (np.linalg.norm(query_sparse) + 1e-8)
                     sparse_norm_d = doc_sparse / (np.linalg.norm(doc_sparse) + 1e-8)
@@ -593,34 +596,34 @@ RESPONSE FORMAT:
                     # Dense-only fallback
                     hybrid_score = dense_score
 
-                scored_results.append((rowid, hybrid_score))
+                scored_results.append((doc_id, hybrid_score))
 
             # Sort by hybrid score descending
             scored_results.sort(key=lambda x: x[1], reverse=True)
-            top_rowids = [r[0] for r in scored_results[:limit]]
+            top_ids = [r[0] for r in scored_results[:limit]]
 
-            if not top_rowids:
+            if not top_ids:
                 return []
 
-            # Join with original table
-            placeholders = ",".join("?" * len(top_rowids))
+            # Join with original table using the actual ID column
+            placeholders = ",".join("?" * len(top_ids))
 
             if table == "tweets":
                 query_sql = f"""
-                    SELECT * FROM tweets WHERE rowid IN ({placeholders})
+                    SELECT * FROM tweets WHERE tweet_id IN ({placeholders})
                 """
             elif table == "web_articles":
                 query_sql = f"""
-                    SELECT * FROM web_articles WHERE rowid IN ({placeholders})
+                    SELECT * FROM web_articles WHERE article_id IN ({placeholders})
                 """
             elif table == "youtube_videos":
                 query_sql = f"""
-                    SELECT * FROM youtube_videos WHERE rowid IN ({placeholders})
+                    SELECT * FROM youtube_videos WHERE video_id IN ({placeholders})
                 """
             else:
                 return []
 
-            cursor.execute(query_sql, top_rowids)
+            cursor.execute(query_sql, top_ids)
             rows = cursor.fetchall()
 
             # Re-order rows by hybrid score
