@@ -283,6 +283,9 @@ RESPONSE FORMAT:
         """
         Synchronous wrapper for stream_response (for Flask/non-async contexts).
 
+        Uses a queue to bridge async generator to sync generator, running
+        the entire async context in a single event loop execution.
+
         Args:
             query: User query
             session_id: Chat session ID
@@ -292,26 +295,48 @@ RESPONSE FORMAT:
         Yields:
             ChatEvent objects (sources, token, citation, done, error)
         """
-        # Create a new event loop for this thread if needed
-        try:
-            loop = asyncio.get_running_loop()
-            # We're in an async context - this shouldn't happen in Flask
-            raise RuntimeError("Cannot use sync wrapper in async context")
-        except RuntimeError:
-            # No running loop - create one
+        import queue
+        import threading
+
+        # Queue to pass events from async to sync
+        event_queue: queue.Queue[ChatEvent | None] = queue.Queue()
+        error_holder: list = []
+
+        async def collect_events():
+            """Run async generator and put events in queue."""
+            try:
+                async for event in self.stream_response(query, session_id, history, options):
+                    event_queue.put(event)
+            except Exception as e:
+                error_holder.append(e)
+            finally:
+                event_queue.put(None)  # Signal completion
+
+        def run_async():
+            """Run the async collection in a new event loop."""
             loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                loop.run_until_complete(collect_events())
+            finally:
+                loop.close()
 
-        async_gen = self.stream_response(query, session_id, history, options)
+        # Start async collection in a background thread
+        thread = threading.Thread(target=run_async, daemon=True)
+        thread.start()
 
-        try:
-            while True:
-                try:
-                    event = loop.run_until_complete(async_gen.__anext__())
-                    yield event
-                except StopAsyncIteration:
-                    break
-        finally:
-            loop.close()
+        # Yield events as they come in
+        while True:
+            event = event_queue.get()
+            if event is None:
+                break
+            yield event
+
+        # Check for errors
+        if error_holder:
+            raise error_holder[0]
+
+        thread.join(timeout=1.0)
 
     def _retrieve_sources(self, query: str, options: Dict) -> tuple[List[Source], Optional[str]]:
         """
