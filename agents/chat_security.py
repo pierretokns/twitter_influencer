@@ -41,7 +41,22 @@ class ValidationResult:
 
 
 class RateLimiter:
-    """Token bucket rate limiter per user/session"""
+    """
+    Token bucket rate limiter per user/session.
+
+    LIMITATION (Fix #50): This rate limiter stores state in-memory, which means:
+    - Rate limit state is lost on server restart
+    - Users can burst requests immediately after restart
+    - Not suitable for distributed deployments (multiple server instances)
+
+    For production use, consider migrating to a persistent backend:
+    - SQLite table with expiring entries
+    - Redis with TTL keys
+    - Memcached
+
+    The current implementation is suitable for single-server deployments
+    where occasional rate limit resets are acceptable.
+    """
 
     def __init__(self, max_requests: int = 30, max_tokens: int = 50000):
         """
@@ -50,6 +65,8 @@ class RateLimiter:
         Args:
             max_requests: Max requests per minute per user
             max_tokens: Max tokens per hour per user
+
+        Note: State is stored in-memory and will be lost on restart.
         """
         self.max_requests = max_requests
         self.max_tokens = max_tokens

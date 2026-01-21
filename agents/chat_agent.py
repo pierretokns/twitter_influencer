@@ -34,6 +34,7 @@ USAGE:
 """
 
 import json
+import os
 import re
 import sqlite3
 import uuid
@@ -112,9 +113,26 @@ RESPONSE FORMAT:
         self.tracer = get_tracer("chat")
         self.security = ChatSecurity()
 
-        # Connect to database for queries
-        self.conn = sqlite3.connect(db_path)
-        self.conn.row_factory = sqlite3.Row
+        # Model configuration from environment (Fix #49)
+        self.model = os.getenv("CHAT_MODEL", "claude-sonnet-4-5")
+        self.max_tokens = int(os.getenv("CHAT_MAX_TOKENS", "2048"))
+
+        # Hybrid retrieval alpha parameter
+        self.alpha = float(os.getenv("CHAT_RETRIEVAL_ALPHA", "0.5"))
+
+    def _get_connection(self) -> sqlite3.Connection:
+        """
+        Get a new thread-safe database connection.
+
+        Fix #34: Create connection per operation for thread safety
+        with Flask's threaded=True mode.
+
+        Returns:
+            New SQLite connection with Row factory
+        """
+        conn = sqlite3.connect(self.db_path, check_same_thread=False)
+        conn.row_factory = sqlite3.Row
+        return conn
 
     def stream_response(
         self,
@@ -154,8 +172,15 @@ RESPONSE FORMAT:
 
                 # Retrieve sources
                 with self.tracer.start_as_current_span("chat.retrieve_sources") as retrieval_span:
-                    sources = self._retrieve_sources(query, options)
+                    sources, retrieval_warning = self._retrieve_sources(query, options)
                     retrieval_span.set_attribute("retrieval.source_count", len(sources))
+
+                    # Fix #36: Yield warning if retrieval had issues
+                    if retrieval_warning:
+                        yield ChatEvent(
+                            event="warning",
+                            data={"message": retrieval_warning}
+                        )
 
                     # Yield sources to client
                     yield ChatEvent(
@@ -184,8 +209,8 @@ RESPONSE FORMAT:
                     citations_extracted = []
 
                     with self.client.messages.stream(
-                        model="claude-sonnet-4-5",
-                        max_tokens=2048,
+                        model=self.model,  # Fix #49: Configurable model
+                        max_tokens=self.max_tokens,
                         system=self.SYSTEM_PROMPT,
                         messages=history
                         + [
@@ -245,7 +270,7 @@ RESPONSE FORMAT:
                     data={"error": str(e), "code": "generation_failed"},
                 )
 
-    def _retrieve_sources(self, query: str, options: Dict) -> List[Source]:
+    def _retrieve_sources(self, query: str, options: Dict) -> tuple[List[Source], Optional[str]]:
         """
         Retrieve sources via BGE-M3 hybrid search (dense + sparse embeddings).
 
@@ -254,10 +279,10 @@ RESPONSE FORMAT:
             options: Retrieval options (max_sources, alpha, recency_boost)
 
         Returns:
-            List of Source objects ranked by relevance
+            Tuple of (List of Source objects ranked by relevance, optional warning message)
         """
         max_sources = options.get("max_sources", 10)
-        alpha = options.get("alpha", 0.5)
+        alpha = options.get("alpha", self.alpha)
         recency_boost = options.get("recency_boost", True)
 
         retriever = HybridRetriever(alpha=alpha)
@@ -270,85 +295,99 @@ RESPONSE FORMAT:
 
             sources = []
 
-            # Search tweets
-            tweet_scores = self._search_table(
-                "tweets",
-                "tweet_embeddings_dense",
-                "tweet_embeddings_sparse",
-                query_dense,
-                query_sparse,
-                retriever,
-                max_sources,
-            )
-
-            for row in tweet_scores:
-                sources.append(
-                    Source(
-                        id=row["tweet_id"],
-                        type="twitter",
-                        author=row["username"],
-                        text=row["text"],
-                        url=row["url"],
-                        published_at=row["timestamp"],
-                    )
+            # Get thread-safe connection (Fix #34)
+            conn = self._get_connection()
+            try:
+                # Search tweets
+                tweet_scores = self._search_table(
+                    conn,
+                    "tweets",
+                    "tweet_embeddings_dense",
+                    "tweet_embeddings_sparse",
+                    query_dense,
+                    query_sparse,
+                    retriever,
+                    max_sources,
                 )
 
-            # Search web articles
-            article_scores = self._search_table(
-                "web_articles",
-                "web_article_embeddings_dense",
-                "web_article_embeddings_sparse",
-                query_dense,
-                query_sparse,
-                retriever,
-                max_sources,
-            )
-
-            for row in article_scores:
-                sources.append(
-                    Source(
-                        id=row["article_id"],
-                        type="web",
-                        title=row["title"],
-                        text=row["content"][:300],
-                        url=row["url"],
-                        published_at=row["published_at"],
+                for row in tweet_scores:
+                    sources.append(
+                        Source(
+                            id=row["tweet_id"],
+                            type="twitter",
+                            author=row["username"],
+                            text=row["text"],
+                            url=row["url"],
+                            published_at=row["timestamp"],
+                        )
                     )
+
+                # Search web articles
+                article_scores = self._search_table(
+                    conn,
+                    "web_articles",
+                    "web_article_embeddings_dense",
+                    "web_article_embeddings_sparse",
+                    query_dense,
+                    query_sparse,
+                    retriever,
+                    max_sources,
                 )
 
-            # Search YouTube videos
-            video_scores = self._search_table(
-                "youtube_videos",
-                "youtube_video_embeddings_dense",
-                "youtube_video_embeddings_sparse",
-                query_dense,
-                query_sparse,
-                retriever,
-                max_sources,
-            )
-
-            for row in video_scores:
-                sources.append(
-                    Source(
-                        id=row["video_id"],
-                        type="youtube",
-                        author=row["channel_name"],
-                        title=row["title"],
-                        text=row["transcript"][:300],
-                        url=row["url"],
-                        published_at=row["published_at"],
+                for row in article_scores:
+                    sources.append(
+                        Source(
+                            id=row["article_id"],
+                            type="web",
+                            title=row["title"],
+                            text=row["content"][:300] if row["content"] else "",
+                            url=row["url"],
+                            published_at=row["published_at"],
+                        )
                     )
+
+                # Search YouTube videos
+                video_scores = self._search_table(
+                    conn,
+                    "youtube_videos",
+                    "youtube_video_embeddings_dense",
+                    "youtube_video_embeddings_sparse",
+                    query_dense,
+                    query_sparse,
+                    retriever,
+                    max_sources,
                 )
+
+                for row in video_scores:
+                    sources.append(
+                        Source(
+                            id=row["video_id"],
+                            type="youtube",
+                            author=row["channel_name"],
+                            title=row["title"],
+                            text=row["transcript"][:300] if row["transcript"] else "",
+                            url=row["url"],
+                            published_at=row["published_at"],
+                        )
+                    )
+            finally:
+                conn.close()
+
+            # Fix #36: Return warning if no sources found
+            if not sources:
+                return [], "No relevant sources found for your query"
 
             # Sort by relevance and return top K
-            return sources[:max_sources]
+            return sources[:max_sources], None
 
         except Exception as e:
             print(f"[ChatAgent] Retrieval error: {e}")
-            return []
+            # Fix #36: Return error message instead of silent failure
+            return [], f"Retrieval error: {str(e)}"
 
     def _search_table(
         self,
+        conn: sqlite3.Connection,
         table: str,
         dense_table: str,
         sparse_table: str,
@@ -358,9 +397,10 @@ RESPONSE FORMAT:
         limit: int,
     ) -> List[sqlite3.Row]:
         """
-        Search a single table using hybrid embeddings.
+        Search a single table using hybrid embeddings (Fix #35).
 
         Args:
+            conn: Database connection (thread-safe)
             table: Main table to search
             dense_table: Dense embeddings virtual table
             sparse_table: Sparse embeddings virtual table
@@ -370,47 +410,95 @@ RESPONSE FORMAT:
             limit: Max results to return
 
         Returns:
-            List of rows from table
+            List of rows from table, sorted by hybrid score
         """
         try:
-            # Query dense embeddings (sqlite-vec)
-            cursor = self.conn.cursor()
+            cursor = conn.cursor()
+
+            # Query dense embeddings (sqlite-vec) - get more candidates for hybrid scoring
             cursor.execute(f"""
-                SELECT rowid, embedding FROM {dense_table}
-                ORDER BY distance(embedding, ?) LIMIT ?
-            """, (query_dense.tobytes(), limit * 2))
+                SELECT rowid, distance(embedding, ?) as dist, embedding
+                FROM {dense_table}
+                ORDER BY dist LIMIT ?
+            """, (query_dense.tobytes(), limit * 3))
 
             dense_results = cursor.fetchall()
             if not dense_results:
                 return []
 
-            # TODO: Query sparse embeddings and combine scores
-            # For now, return dense-only results
-
-            # Join with original table
             rowids = [r[0] for r in dense_results]
             placeholders = ",".join("?" * len(rowids))
+
+            # Fix #35: Query sparse embeddings for same candidates
+            sparse_embeddings = {}
+            try:
+                cursor.execute(f"""
+                    SELECT rowid, embedding FROM {sparse_table}
+                    WHERE rowid IN ({placeholders})
+                """, rowids)
+                for row in cursor.fetchall():
+                    sparse_embeddings[row[0]] = np.frombuffer(row[1], dtype=np.float32)
+            except Exception as sparse_err:
+                # Sparse table may not exist - fall back to dense-only
+                print(f"[ChatAgent] Sparse embeddings unavailable for {table}: {sparse_err}")
+
+            # Fix #35: Compute hybrid scores if sparse embeddings available
+            scored_results = []
+            for dense_row in dense_results:
+                rowid = dense_row[0]
+                # Convert distance to similarity (sqlite-vec returns L2 distance)
+                dense_dist = dense_row[1]
+                dense_score = 1.0 / (1.0 + dense_dist)  # Convert distance to similarity
+
+                if rowid in sparse_embeddings:
+                    # Compute hybrid score
+                    doc_sparse = sparse_embeddings[rowid]
+                    # Normalize and compute sparse similarity
+                    sparse_norm_q = query_sparse / (np.linalg.norm(query_sparse) + 1e-8)
+                    sparse_norm_d = doc_sparse / (np.linalg.norm(doc_sparse) + 1e-8)
+                    sparse_score = float(np.dot(sparse_norm_q, sparse_norm_d))
+
+                    # Weighted combination
+                    hybrid_score = retriever.alpha * dense_score + (1 - retriever.alpha) * sparse_score
+                else:
+                    # Dense-only fallback
+                    hybrid_score = dense_score
+
+                scored_results.append((rowid, hybrid_score))
+
+            # Sort by hybrid score descending
+            scored_results.sort(key=lambda x: x[1], reverse=True)
+            top_rowids = [r[0] for r in scored_results[:limit]]
+
+            if not top_rowids:
+                return []
+
+            # Join with original table
+            placeholders = ",".join("?" * len(top_rowids))
 
             if table == "tweets":
                 query_sql = f"""
                     SELECT * FROM tweets WHERE rowid IN ({placeholders})
-                    ORDER BY timestamp DESC LIMIT ?
                 """
             elif table == "web_articles":
                 query_sql = f"""
                     SELECT * FROM web_articles WHERE rowid IN ({placeholders})
-                    ORDER BY published_at DESC LIMIT ?
                 """
             elif table == "youtube_videos":
                 query_sql = f"""
                     SELECT * FROM youtube_videos WHERE rowid IN ({placeholders})
-                    ORDER BY published_at DESC LIMIT ?
                 """
             else:
                 return []
 
-            cursor.execute(query_sql, rowids + [limit])
-            return cursor.fetchall()
+            cursor.execute(query_sql, top_rowids)
+            rows = cursor.fetchall()
+
+            # Re-order rows by hybrid score
+            rowid_to_row = {r["rowid"] if "rowid" in r.keys() else r[0]: r for r in rows}
+            ordered_rows = [rowid_to_row[rid] for rid in top_rowids if rid in rowid_to_row]
+
+            return ordered_rows
 
         except Exception as e:
             print(f"[ChatAgent] Search error in {table}: {e}")
@@ -535,10 +623,8 @@ RESPONSE FORMAT:
 
         return suggestions[:3]  # Return max 3
 
-    def __del__(self):
-        """Clean up database connection"""
-        if hasattr(self, "conn"):
-            self.conn.close()
+    # Note: No __del__ needed - connections are created and closed per-operation
+    # for thread safety (Fix #34)
 
 
 __all__ = [

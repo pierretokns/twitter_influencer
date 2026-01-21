@@ -1164,17 +1164,77 @@ HTML_TEMPLATE = '''
             `;
         }
 
-        function openPublish(runId) {
+        // Fix #54: Track the element that opened the modal for focus return
+        let modalTriggerElement = null;
+
+        function openPublish(runId, triggerEl) {
             selectedPost = postsData[runId];
             if (selectedPost) {
+                // Fix #54: Remember what triggered the modal
+                modalTriggerElement = triggerEl || document.activeElement;
+
                 document.getElementById('modalContent').textContent = selectedPost.winner_content;
-                document.getElementById('publishModal').classList.add('active');
+                const modal = document.getElementById('publishModal');
+                modal.classList.add('active');
+
+                // Fix #54: Set up focus trap
+                setupModalFocusTrap(modal);
+
+                // Fix #54: Add escape key handler
+                document.addEventListener('keydown', handleModalEscape);
             }
         }
 
         function closeModal() {
             document.getElementById('publishModal').classList.remove('active');
             selectedPost = null;
+
+            // Fix #54: Remove escape handler
+            document.removeEventListener('keydown', handleModalEscape);
+
+            // Fix #54: Return focus to trigger element
+            if (modalTriggerElement) {
+                modalTriggerElement.focus();
+                modalTriggerElement = null;
+            }
+        }
+
+        // Fix #54: Escape key handler
+        function handleModalEscape(e) {
+            if (e.key === 'Escape') {
+                closeModal();
+            }
+        }
+
+        // Fix #54: Focus trap for modal accessibility
+        function setupModalFocusTrap(modal) {
+            const focusable = modal.querySelectorAll(
+                'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
+            );
+            if (focusable.length === 0) return;
+
+            const firstFocusable = focusable[0];
+            const lastFocusable = focusable[focusable.length - 1];
+
+            // Focus first element
+            firstFocusable.focus();
+
+            // Trap focus within modal
+            modal.addEventListener('keydown', function trapFocus(e) {
+                if (e.key !== 'Tab') return;
+
+                if (e.shiftKey) {
+                    if (document.activeElement === firstFocusable) {
+                        e.preventDefault();
+                        lastFocusable.focus();
+                    }
+                } else {
+                    if (document.activeElement === lastFocusable) {
+                        e.preventDefault();
+                        firstFocusable.focus();
+                    }
+                }
+            });
         }
 
         function copyContent() {
@@ -1398,6 +1458,7 @@ HTML_TEMPLATE = '''
             background: var(--bg-secondary);
             max-height: 60px;
             overflow: hidden;
+            display: none;  /* Hidden by default, shown via JS */
         }
 
         .sources-label {
@@ -1516,8 +1577,12 @@ HTML_TEMPLATE = '''
             color: var(--linkedin-blue);
         }
 
+        /* Fix #44: Improved citation marker contrast for WCAG AA compliance */
         .chat-message.user .citation-marker {
-            color: rgba(255, 255, 255, 0.8);
+            color: #ffffff;
+            background: rgba(0, 0, 0, 0.2);
+            padding: 0 3px;
+            border-radius: 3px;
         }
 
         .typing-indicator {
@@ -1659,6 +1724,7 @@ HTML_TEMPLATE = '''
             transform: none;
         }
 
+        /* Fix #48: Toast notification styles */
         .chat-toast {
             position: fixed;
             bottom: 240px;
@@ -1671,24 +1737,103 @@ HTML_TEMPLATE = '''
             font-size: 12px;
             box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
             opacity: 0;
-            animation: slideUp 0.2s ease forwards;
+            transition: opacity 0.3s ease;
             pointer-events: none;
+            z-index: 10000;
         }
 
-        @keyframes slideUp {
-            to { opacity: 1; }
+        .chat-toast-info {
+            background: var(--bg-card);
+            border-color: var(--linkedin-blue);
+            color: var(--text-primary);
+        }
+
+        .chat-toast-success {
+            background: #e8f5e9;
+            border-color: #4caf50;
+            color: #2e7d32;
+        }
+
+        .chat-toast-warning {
+            background: #fff3e0;
+            border-color: #ff9800;
+            color: #e65100;
+        }
+
+        .chat-toast-error {
+            background: #ffebee;
+            border-color: #f44336;
+            color: #c62828;
+        }
+
+        /* Fix #42: Retry button styles */
+        .retry-btn {
+            background: transparent;
+            border: 1px solid currentColor;
+            border-radius: 4px;
+            color: inherit;
+            cursor: pointer;
+            font-size: 11px;
+            padding: 2px 8px;
+            margin-left: 8px;
+        }
+
+        .retry-btn:hover {
+            background: rgba(0, 0, 0, 0.1);
+        }
+
+        /* Fix #43: Source chip label styles */
+        .source-chip .source-label {
+            font-size: 11px;
+            color: var(--text-primary);
+            max-width: 100px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        /* Fix #52: Visible scrollbar for textarea */
+        .chat-textarea::-webkit-scrollbar {
+            width: 6px;
+        }
+
+        .chat-textarea::-webkit-scrollbar-thumb {
+            background: rgba(0, 0, 0, 0.2);
+            border-radius: 3px;
+        }
+
+        .chat-textarea::-webkit-scrollbar-track {
+            background: transparent;
+        }
+
+        /* Fix #53: Source panel animation */
+        .sources-panel {
+            transform: translateY(-100%);
+            opacity: 0;
+            transition: transform 0.3s ease-out, opacity 0.3s ease-out;
+        }
+
+        .sources-panel.visible {
+            transform: translateY(0);
+            opacity: 1;
         }
 
         /* Mobile Responsive */
         @media (max-width: 768px) {
+            /* Fix #40: Chat widget above virtual keyboard */
             .chat-widget {
                 width: 100%;
                 height: 60vh;
                 max-width: 100%;
                 right: 0;
                 left: 0;
-                bottom: 0;
+                bottom: env(safe-area-inset-bottom, 0);
                 border-radius: 16px 16px 0 0;
+            }
+
+            /* Fix #40: Reduced height when keyboard is open */
+            .chat-widget.keyboard-open {
+                height: 40vh;
             }
 
             .suggestion-chips {
@@ -1702,20 +1847,67 @@ HTML_TEMPLATE = '''
         // Chat Widget JavaScript
         let chatSessionId = null;
         let isStreaming = false;
+        let messageIdCounter = 0;  // Fix #51: Counter for message IDs
+        let lastQuery = '';  // Track last query for suggestions
+        let lastSources = [];  // Track last sources for suggestions
 
+        // Fix #48: Toast notification utility
+        function showToast(message, type = 'info') {
+            const toast = document.getElementById('chat-toast');
+            toast.textContent = message;
+            toast.className = `chat-toast chat-toast-${type}`;
+            toast.style.display = 'block';
+            toast.style.opacity = '1';
+
+            setTimeout(() => {
+                toast.style.opacity = '0';
+                setTimeout(() => { toast.style.display = 'none'; }, 300);
+            }, 3000);
+        }
+
+        // Fix #41: Session init with loading state and error recovery
         async function initChatSession() {
+            const messagesContainer = document.getElementById('chat-messages');
+            const sendBtn = document.getElementById('chat-send-btn');
+            sendBtn.disabled = true;
+
             try {
+                // Show loading state
+                const loadingDiv = document.createElement('div');
+                loadingDiv.id = 'session-loading';
+                loadingDiv.className = 'chat-welcome';
+                loadingDiv.innerHTML = '<p>Initializing chat...</p>';
+                messagesContainer.appendChild(loadingDiv);
+
                 const response = await fetch('/api/chat/session', { method: 'POST' });
+                if (!response.ok) throw new Error('Session creation failed');
                 const data = await response.json();
                 chatSessionId = data.session_id;
+
+                // Remove loading state
+                loadingDiv.remove();
+                sendBtn.disabled = false;
+
             } catch (err) {
                 console.error('Failed to initialize chat session:', err);
+                // Fix #42: Show retry button on error
+                const loadingDiv = document.getElementById('session-loading');
+                if (loadingDiv) {
+                    loadingDiv.innerHTML = `
+                        <p style="color: #d32f2f;">Failed to start chat</p>
+                        <button onclick="initChatSession()" class="suggestion-chip" style="margin-top: 8px;">
+                            Retry
+                        </button>
+                    `;
+                }
+                showToast('Failed to initialize chat session', 'error');
             }
         }
 
         function chatSendMessage() {
             const input = document.getElementById('chat-input');
             const message = input.value.trim();
+            const sendBtn = document.getElementById('chat-send-btn');
 
             if (!message || isStreaming || !chatSessionId) return;
 
@@ -1723,6 +1915,8 @@ HTML_TEMPLATE = '''
             const messagesContainer = document.getElementById('chat-messages');
             const userMsg = document.createElement('div');
             userMsg.className = 'chat-message user';
+            // Fix #51: Add message ID
+            userMsg.setAttribute('data-message-id', `msg-${++messageIdCounter}`);
             userMsg.innerHTML = `<div class="chat-message-bubble">${escapeHtml(message)}</div>`;
             messagesContainer.appendChild(userMsg);
 
@@ -1732,6 +1926,9 @@ HTML_TEMPLATE = '''
 
             // Scroll to bottom
             messagesContainer.scrollTop = messagesContainer.scrollHeight;
+
+            // Track for suggestions
+            lastQuery = message;
 
             // Send message with streaming
             chatStreamMessage(message);
@@ -1748,6 +1945,14 @@ HTML_TEMPLATE = '''
 
             isStreaming = true;
             const messagesContainer = document.getElementById('chat-messages');
+            const sendBtn = document.getElementById('chat-send-btn');
+
+            // Fix #39: Disable send button during streaming
+            sendBtn.disabled = true;
+            sendBtn.style.opacity = '0.5';
+
+            // Fix #45: Set aria-busy for accessibility
+            messagesContainer.setAttribute('aria-busy', 'true');
 
             // Hide welcome message
             const welcome = document.querySelector('.chat-welcome');
@@ -1777,6 +1982,8 @@ HTML_TEMPLATE = '''
                 // Create assistant message container
                 const assistantDiv = document.createElement('div');
                 assistantDiv.className = 'chat-message assistant';
+                // Fix #51: Add message ID
+                assistantDiv.setAttribute('data-message-id', `msg-${++messageIdCounter}`);
                 const messageBubble = document.createElement('div');
                 messageBubble.className = 'chat-message-bubble';
                 assistantDiv.appendChild(messageBubble);
@@ -1794,16 +2001,23 @@ HTML_TEMPLATE = '''
                     for (let i = 0; i < lines.length - 1; i++) {
                         const line = lines[i];
 
+                        // Skip heartbeat comments
+                        if (line.startsWith(':')) continue;
+
                         if (line.startsWith('event: ')) {
                             const eventType = line.slice(7);
                             const dataLine = lines[++i];
 
-                            if (dataLine.startsWith('data: ')) {
+                            if (dataLine && dataLine.startsWith('data: ')) {
                                 const data = JSON.parse(dataLine.slice(6));
 
                                 if (eventType === 'sources') {
                                     sourcesList = data.sources || [];
+                                    lastSources = sourcesList;  // Track for suggestions
                                     displaySources(sourcesList);
+                                } else if (eventType === 'warning') {
+                                    // Fix #36: Show warning toast
+                                    showToast(data.message, 'warning');
                                 } else if (eventType === 'token') {
                                     fullResponse += data.token;
                                     messageBubble.textContent = fullResponse;
@@ -1812,6 +2026,8 @@ HTML_TEMPLATE = '''
                                     messageBubble.innerHTML = renderMessageWithCitations(fullResponse);
                                 } else if (eventType === 'done') {
                                     showSuggestions(data.suggested_followups || []);
+                                } else if (eventType === 'error') {
+                                    throw new Error(data.error || 'Unknown error');
                                 }
                             }
                         }
@@ -1826,15 +2042,40 @@ HTML_TEMPLATE = '''
 
             } catch (err) {
                 console.error('Chat error:', err);
+                // Fix #42: Error recovery UI with retry button
                 const errorDiv = document.createElement('div');
                 errorDiv.className = 'chat-message assistant';
-                errorDiv.innerHTML = `<div class="chat-message-bubble" style="color: #d32f2f;">Error: ${escapeHtml(err.message)}</div>`;
+                errorDiv.innerHTML = `
+                    <div class="chat-message-bubble" style="color: #d32f2f;">
+                        Error: ${escapeHtml(err.message)}
+                        <button onclick="retryLastMessage('${escapeHtml(message)}')" class="retry-btn" style="margin-left: 8px; padding: 2px 8px; font-size: 11px; cursor: pointer;">
+                            Retry
+                        </button>
+                    </div>
+                `;
                 messagesContainer.appendChild(errorDiv);
+                showToast('Message failed to send', 'error');
             } finally {
                 isStreaming = false;
+                // Fix #39: Re-enable send button
+                sendBtn.disabled = false;
+                sendBtn.style.opacity = '1';
+                // Fix #45: Clear aria-busy
+                messagesContainer.setAttribute('aria-busy', 'false');
                 messagesContainer.scrollTop = messagesContainer.scrollHeight;
                 document.getElementById('chat-input').focus();
             }
+        }
+
+        // Fix #42: Retry function
+        function retryLastMessage(message) {
+            // Remove the error message
+            const messages = document.querySelectorAll('.chat-message');
+            const lastMsg = messages[messages.length - 1];
+            if (lastMsg && lastMsg.querySelector('.retry-btn')) {
+                lastMsg.remove();
+            }
+            chatStreamMessage(message);
         }
 
         function renderMessageWithCitations(text) {
@@ -1844,6 +2085,7 @@ HTML_TEMPLATE = '''
             return html;
         }
 
+        // Fix #43: Show author/title in source chips
         function displaySources(sources) {
             const panel = document.getElementById('sources-panel');
             const list = document.getElementById('sources-list');
@@ -1854,14 +2096,25 @@ HTML_TEMPLATE = '''
                 const chip = document.createElement('div');
                 chip.className = 'source-chip';
                 const icon = source.type === 'twitter' ? '🐦' : source.type === 'youtube' ? '📺' : '📰';
+                // Fix #43: Show truncated author/title
+                const label = source.author || source.title || source.type;
+                const truncated = label.length > 15 ? label.slice(0, 12) + '...' : label;
                 chip.innerHTML = `
                     <span>${icon}</span>
-                    <span class="source-type">${source.type}</span>
+                    <span class="source-label" title="${escapeHtml(label)}">${escapeHtml(truncated)}</span>
                 `;
+                chip.title = label;  // Full name on hover
                 list.appendChild(chip);
             });
 
-            panel.style.display = sources.length > 0 ? 'block' : 'none';
+            // Fix #53: Animate panel visibility
+            if (sources.length > 0) {
+                panel.style.display = 'block';
+                setTimeout(() => panel.classList.add('visible'), 10);
+            } else {
+                panel.classList.remove('visible');
+                setTimeout(() => { panel.style.display = 'none'; }, 300);
+            }
         }
 
         function showSuggestions(suggestions) {
@@ -1907,6 +2160,18 @@ HTML_TEMPLATE = '''
         document.getElementById('chat-input').addEventListener('input', (e) => {
             e.target.style.height = 'auto';
             e.target.style.height = Math.min(e.target.scrollHeight, 120) + 'px';
+        });
+
+        // Fix #40: Handle mobile keyboard
+        const chatInput = document.getElementById('chat-input');
+        const chatWidget = document.getElementById('chat-widget');
+
+        chatInput.addEventListener('focus', () => {
+            chatWidget.classList.add('keyboard-open');
+        });
+
+        chatInput.addEventListener('blur', () => {
+            chatWidget.classList.remove('keyboard-open');
         });
 
         document.getElementById('chat-toggle-btn').onclick = () => {
@@ -2224,6 +2489,17 @@ def get_chat_history(session_id):
     try:
         conn = get_db()
         cursor = conn.cursor()
+        user_id = get_user_id()
+
+        # Fix #37: Verify session ownership before returning data
+        cursor.execute("""
+            SELECT user_id FROM chat_sessions WHERE session_id = ?
+        """, (session_id,))
+        session = cursor.fetchone()
+
+        if not session or session["user_id"] != user_id:
+            conn.close()
+            return jsonify({"error": "Session not found"}), 404
 
         # Get messages in chronological order
         cursor.execute("""
@@ -2347,7 +2623,11 @@ def chat_stream():
     if not session_id:
         return jsonify({"error": "session_id required"}), 400
 
+    import time
+
     def generate():
+        # Fix #38: Use try/finally to ensure connection cleanup
+        conn = None
         try:
             # Get conversation history
             conn = get_db()
@@ -2378,11 +2658,15 @@ def chat_stream():
             full_response = ""
             citations_extracted = []
             sources_list = []
+            last_heartbeat = time.time()
 
             for event in chat_agent.stream_response(query, session_id, history):
                 if event.event == "sources":
                     sources_list = event.data.get("sources", [])
                     yield f"event: sources\ndata: {json.dumps(event.data)}\n\n"
+                elif event.event == "warning":
+                    # Fix #36: Forward warning events to client
+                    yield f"event: warning\ndata: {json.dumps(event.data)}\n\n"
                 elif event.event == "token":
                     full_response += event.data["token"]
                     yield f"event: token\ndata: {json.dumps(event.data)}\n\n"
@@ -2393,6 +2677,11 @@ def chat_stream():
                     yield f"event: done\ndata: {json.dumps(event.data)}\n\n"
                 elif event.event == "error":
                     yield f"event: error\ndata: {json.dumps(event.data)}\n\n"
+
+                # Fix #47: Send heartbeat every 15 seconds to prevent timeout
+                if time.time() - last_heartbeat > 15:
+                    yield ": heartbeat\n\n"
+                    last_heartbeat = time.time()
 
             # Store assistant response in database
             response_id = str(uuid.uuid4())
@@ -2409,10 +2698,13 @@ def chat_stream():
             """, (datetime.now().isoformat(), session_id))
 
             conn.commit()
-            conn.close()
 
         except Exception as e:
             yield f"event: error\ndata: {json.dumps({'error': str(e)})}\n\n"
+        finally:
+            # Fix #38: Always close connection
+            if conn:
+                conn.close()
 
     return app.response_class(
         generate(),
@@ -2450,20 +2742,38 @@ def delete_chat_session(session_id):
 @app.route('/api/chat/suggest', methods=['POST'])
 def suggest_followups():
     """Generate follow-up question suggestions based on response context"""
+    # Fix #46: Reuse global chat_agent instance
+    if not chat_agent:
+        return jsonify({"error": "Chat not available"}), 503
+
     try:
         data = request.json
         last_response = data.get('last_response', '')
+        last_query = data.get('last_query', '')  # Fix #33: Add missing query param
         context_sources = data.get('context_sources', [])
 
         if not last_response:
             return jsonify({"error": "last_response is required"}), 400
 
-        # Initialize chat agent for suggestion generation
-        agent = ChatAgent()
-        suggestions = agent._generate_followups(
+        # Fix #33: Convert source dicts to Source objects
+        from agents.chat_agent import Source
+        source_objects = [
+            Source(
+                id=s.get('id', ''),
+                type=s.get('type', 'unknown'),
+                author=s.get('author'),
+                title=s.get('title'),
+                text=s.get('text', ''),
+                url=s.get('url', '')
+            )
+            for s in context_sources
+        ]
+
+        # Fix #33: Use correct parameter signature
+        suggestions = chat_agent._generate_followups(
+            query=last_query,
             response=last_response,
-            sources=context_sources,
-            max_suggestions=3
+            sources=source_objects
         )
 
         return jsonify({"suggestions": suggestions})
