@@ -762,30 +762,65 @@ RESPONSE FORMAT:
                 query_sql = f"""
                     SELECT * FROM tweets WHERE tweet_id IN ({placeholders})
                 """
+                id_key = "tweet_id"
+                timestamp_key = "timestamp"
             elif table == "web_articles":
                 query_sql = f"""
                     SELECT * FROM web_articles WHERE article_id IN ({placeholders})
                 """
+                id_key = "article_id"
+                timestamp_key = "published_at"
             elif table == "youtube_videos":
                 query_sql = f"""
                     SELECT * FROM youtube_videos WHERE video_id IN ({placeholders})
                 """
+                id_key = "video_id"
+                timestamp_key = "published_at"
             else:
                 return []
 
             cursor.execute(query_sql, top_ids)
             rows = cursor.fetchall()
 
-            # Re-order rows by hybrid score using the correct ID column
-            if table == "tweets":
-                id_key = "tweet_id"
-            elif table == "web_articles":
-                id_key = "article_id"
-            else:
-                id_key = "video_id"
+            # Apply recency boost: content from last 7 days gets full score,
+            # older content gets progressively penalized
+            from datetime import datetime, timedelta
+            now = datetime.now()
+            score_map = {doc_id: score for doc_id, score in scored_results}
 
-            id_to_row = {r[id_key]: r for r in rows}
-            ordered_rows = [id_to_row[doc_id] for doc_id in top_ids if doc_id in id_to_row]
+            boosted_results = []
+            for row in rows:
+                doc_id = row[id_key]
+                base_score = score_map.get(doc_id, 0)
+
+                # Parse timestamp and apply recency boost
+                recency_boost = 1.0
+                try:
+                    ts = row[timestamp_key]
+                    if ts:
+                        # Parse ISO timestamp
+                        if isinstance(ts, str):
+                            ts = datetime.fromisoformat(ts.replace('Z', '+00:00').replace('+00:00', ''))
+                        days_old = (now - ts).days
+                        if days_old <= 7:
+                            recency_boost = 1.0  # Full score for last 7 days
+                        elif days_old <= 30:
+                            recency_boost = 0.8  # 80% for last month
+                        elif days_old <= 90:
+                            recency_boost = 0.6  # 60% for last 3 months
+                        elif days_old <= 365:
+                            recency_boost = 0.4  # 40% for last year
+                        else:
+                            recency_boost = 0.2  # 20% for older content
+                except Exception:
+                    pass  # Keep default boost of 1.0
+
+                boosted_score = base_score * recency_boost
+                boosted_results.append((row, boosted_score))
+
+            # Sort by boosted score descending
+            boosted_results.sort(key=lambda x: x[1], reverse=True)
+            ordered_rows = [r[0] for r in boosted_results[:limit]]
 
             return ordered_rows
 
