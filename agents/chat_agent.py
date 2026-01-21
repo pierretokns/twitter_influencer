@@ -635,9 +635,16 @@ RESPONSE FORMAT:
             cursor.execute(query_sql, top_ids)
             rows = cursor.fetchall()
 
-            # Re-order rows by hybrid score
-            rowid_to_row = {r["rowid"] if "rowid" in r.keys() else r[0]: r for r in rows}
-            ordered_rows = [rowid_to_row[rid] for rid in top_rowids if rid in rowid_to_row]
+            # Re-order rows by hybrid score using the correct ID column
+            if table == "tweets":
+                id_key = "tweet_id"
+            elif table == "web_articles":
+                id_key = "article_id"
+            else:
+                id_key = "video_id"
+
+            id_to_row = {r[id_key]: r for r in rows}
+            ordered_rows = [id_to_row[doc_id] for doc_id in top_ids if doc_id in id_to_row]
 
             return ordered_rows
 
