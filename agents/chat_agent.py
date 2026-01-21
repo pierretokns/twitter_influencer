@@ -1,7 +1,7 @@
 # /// script
 # requires-python = ">=3.12"
 # dependencies = [
-#     "anthropic>=0.40.0",
+#     "pydantic-ai[google]>=0.1.0",
 #     "opentelemetry-api>=1.20.0",
 #     "FlagEmbedding>=1.2.0",
 #     "sqlite-vec>=0.1.0",
@@ -9,30 +9,36 @@
 # ]
 # ///
 """
-Chat Agent - RAG Chatbot with Claude SDK Streaming
-==================================================
+Chat Agent - RAG Chatbot with Gemini Flash Streaming via Pydantic AI
+====================================================================
 
 Retrieval-Augmented Generation pipeline for the AI News chatbot:
 1. Query Validation - Security checks
 2. Hybrid Retrieval - BGE-M3 search across tweets, articles, YouTube
 3. Context Building - Format sources with [N] citations
-4. Generation - Claude SDK with streaming
+4. Generation - Gemini Flash with async streaming (Pydantic AI)
 5. Citation Extraction - Map [N] to sources
 6. Follow-up Suggestions - Context-aware questions
 
 USAGE:
     from agents.chat_agent import ChatAgent
+    import asyncio
 
     agent = ChatAgent()
 
-    # Stream response token-by-token
-    for event in agent.stream_response(query, session_id, history):
-        if event['event'] == 'token':
-            print(event['data']['token'], end='', flush=True)
-        elif event['event'] == 'done':
-            print(f"\\nSuggestions: {event['data']['suggested_followups']}")
+    # Stream response token-by-token (async)
+    async for event in agent.stream_response(query, session_id, history):
+        if event.event == 'token':
+            print(event.data['token'], end='', flush=True)
+        elif event.event == 'done':
+            print(f"\\nSuggestions: {event.data['suggested_followups']}")
+
+    # Or use synchronous wrapper
+    for event in agent.stream_response_sync(query, session_id, history):
+        ...
 """
 
+import asyncio
 import json
 import os
 import re
@@ -40,11 +46,11 @@ import sqlite3
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Generator, List, Dict, Optional
+from typing import AsyncGenerator, Generator, List, Dict, Optional
 from pathlib import Path
 
 import numpy as np
-from anthropic import Anthropic
+from pydantic_ai import Agent
 from opentelemetry import trace
 
 from agents.chat_security import ChatSecurity, ValidationResult
@@ -82,7 +88,7 @@ class ChatEvent:
 
 
 class ChatAgent:
-    """RAG chat agent with Claude SDK streaming"""
+    """RAG chat agent with Pydantic AI + Gemini Flash streaming"""
 
     # System prompt - isolated from user content
     SYSTEM_PROMPT = """You are a helpful AI news assistant specializing in AI industry news. Answer questions about AI news using ONLY the provided sources.
@@ -103,19 +109,25 @@ RESPONSE FORMAT:
 
     def __init__(self, db_path: str = "output_data/ai_news.db"):
         """
-        Initialize chat agent.
+        Initialize chat agent with Pydantic AI + Gemini Flash.
 
         Args:
             db_path: Path to SQLite database with embeddings
         """
         self.db_path = db_path
-        self.client = Anthropic()
         self.tracer = get_tracer("chat")
         self.security = ChatSecurity()
 
-        # Model configuration from environment (Fix #49)
-        self.model = os.getenv("CHAT_MODEL", "claude-sonnet-4-5")
+        # Model configuration from environment
+        model_name = os.getenv("CHAT_MODEL", "gemini-2.5-flash")
+        self.model_id = f"google-gla:{model_name}"
         self.max_tokens = int(os.getenv("CHAT_MAX_TOKENS", "2048"))
+
+        # Initialize Pydantic AI agent
+        self.agent = Agent(
+            self.model_id,
+            system_prompt=self.SYSTEM_PROMPT,
+        )
 
         # Hybrid retrieval alpha parameter
         self.alpha = float(os.getenv("CHAT_RETRIEVAL_ALPHA", "0.5"))
@@ -134,15 +146,15 @@ RESPONSE FORMAT:
         conn.row_factory = sqlite3.Row
         return conn
 
-    def stream_response(
+    async def stream_response(
         self,
         query: str,
         session_id: str,
         history: Optional[List[Dict]] = None,
         options: Optional[Dict] = None,
-    ) -> Generator[ChatEvent, None, None]:
+    ) -> AsyncGenerator[ChatEvent, None]:
         """
-        Generate streaming response with RAG.
+        Generate streaming response with RAG using Pydantic AI + Gemini.
 
         Args:
             query: User query
@@ -200,36 +212,27 @@ RESPONSE FORMAT:
                         },
                     )
 
-                # Build context
+                # Build context (includes conversation history)
                 context = self._build_context(sources, history)
 
-                # Generate response with streaming
+                # Build prompt with sources and question
+                prompt = f"SOURCES:\n{context}\n\nQUESTION: {query}"
+
+                # Generate response with async streaming (Pydantic AI)
                 with self.tracer.start_as_current_span("chat.generate_response") as gen_span:
                     full_response = ""
                     citations_extracted = []
 
-                    with self.client.messages.stream(
-                        model=self.model,  # Fix #49: Configurable model
-                        max_tokens=self.max_tokens,
-                        system=self.SYSTEM_PROMPT,
-                        messages=history
-                        + [
-                            {
-                                "role": "user",
-                                "content": f"SOURCES:\n{context}\n\nQUESTION: {query}",
-                            }
-                        ],
-                    ) as stream:
+                    async with self.agent.run_stream(prompt) as result:
                         # Stream tokens
-                        for text in stream.text_stream:
+                        async for text in result.stream_text():
                             full_response += text
                             yield ChatEvent(event="token", data={"token": text})
 
-                        # Get final message for token counts
-                        final_msg = stream.get_final_message()
-                        usage = final_msg.usage
-                        gen_span.set_attribute("gen_ai.usage.input_tokens", usage.input_tokens)
-                        gen_span.set_attribute("gen_ai.usage.output_tokens", usage.output_tokens)
+                        # Get usage stats from result
+                        usage = result.usage()
+                        gen_span.set_attribute("gen_ai.usage.input_tokens", usage.request_tokens or 0)
+                        gen_span.set_attribute("gen_ai.usage.output_tokens", usage.response_tokens or 0)
 
                 # Extract citations from complete response
                 with self.tracer.start_as_current_span("chat.extract_citations"):
@@ -269,6 +272,46 @@ RESPONSE FORMAT:
                     event="error",
                     data={"error": str(e), "code": "generation_failed"},
                 )
+
+    def stream_response_sync(
+        self,
+        query: str,
+        session_id: str,
+        history: Optional[List[Dict]] = None,
+        options: Optional[Dict] = None,
+    ) -> Generator[ChatEvent, None, None]:
+        """
+        Synchronous wrapper for stream_response (for Flask/non-async contexts).
+
+        Args:
+            query: User query
+            session_id: Chat session ID
+            history: Previous messages in conversation
+            options: Retrieval options
+
+        Yields:
+            ChatEvent objects (sources, token, citation, done, error)
+        """
+        # Create a new event loop for this thread if needed
+        try:
+            loop = asyncio.get_running_loop()
+            # We're in an async context - this shouldn't happen in Flask
+            raise RuntimeError("Cannot use sync wrapper in async context")
+        except RuntimeError:
+            # No running loop - create one
+            loop = asyncio.new_event_loop()
+
+        async_gen = self.stream_response(query, session_id, history, options)
+
+        try:
+            while True:
+                try:
+                    event = loop.run_until_complete(async_gen.__anext__())
+                    yield event
+                except StopAsyncIteration:
+                    break
+        finally:
+            loop.close()
 
     def _retrieve_sources(self, query: str, options: Dict) -> tuple[List[Source], Optional[str]]:
         """
@@ -639,9 +682,22 @@ if __name__ == "__main__":
     # Quick test
     agent = ChatAgent()
 
-    print("Testing chat agent...")
-    for event in agent.stream_response("What's the latest on GPT-5?", "test_session_123"):
-        print(f"Event: {event.event}")
+    async def test_chat():
+        print(f"Testing chat agent with model: {agent.model_id}")
+        async for event in agent.stream_response("What's the latest on GPT-5?", "test_session_123"):
+            print(f"Event: {event.event}")
+            if event.event == "token":
+                print(event.data["token"], end="", flush=True)
+            elif event.event == "done":
+                print(f"\nDone! Suggestions: {event.data['suggested_followups']}")
+            elif event.event == "error":
+                print(f"Error: {event.data['error']}")
+
+    print("Testing chat agent (async)...")
+    asyncio.run(test_chat())
+
+    print("\n\nTesting sync wrapper...")
+    for event in agent.stream_response_sync("Tell me about AI safety", "test_session_456"):
         if event.event == "token":
             print(event.data["token"], end="", flush=True)
         elif event.event == "done":

@@ -2564,7 +2564,7 @@ def chat_non_streaming():
         citations_extracted = []
         sources_list = []
 
-        for event in chat_agent.stream_response(query, session_id, history):
+        for event in chat_agent.stream_response_sync(query, session_id, history):
             if event.event == "sources":
                 sources_list = event.data.get("sources", [])
             elif event.event == "token":
@@ -2657,7 +2657,7 @@ def chat_stream():
             sources_list = []
             last_heartbeat = time.time()
 
-            for event in chat_agent.stream_response(query, session_id, history):
+            for event in chat_agent.stream_response_sync(query, session_id, history):
                 if event.event == "sources":
                     sources_list = event.data.get("sources", [])
                     yield f"event: sources\ndata: {json.dumps(event.data)}\n\n"
