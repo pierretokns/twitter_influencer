@@ -1995,7 +1995,7 @@ HTML_TEMPLATE = '''
                     if (done) break;
 
                     buffer += decoder.decode(value, { stream: true });
-                    const lines = buffer.split('\n');
+                    const lines = buffer.split('\\n');
 
                     // Process complete lines
                     for (let i = 0; i < lines.length - 1; i++) {
