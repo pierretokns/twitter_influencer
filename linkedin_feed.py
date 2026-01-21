@@ -604,6 +604,11 @@ HTML_TEMPLATE = '''
             word-break: break-all;
             margin-top: 8px;
         }
+        .popover-date {
+            font-size: 11px;
+            color: var(--text-secondary);
+            margin-bottom: 6px;
+        }
         .popover-timestamp {
             display: inline-block;
             background: rgba(255, 0, 0, 0.1);
@@ -1288,6 +1293,17 @@ HTML_TEMPLATE = '''
                             html += '<span class="popover-timestamp">' + mins + ':' + secs.toString().padStart(2, '0') + '</span>';
                         }
                         html += '</div>';
+
+                        // Show published date if available
+                        if (data.published_at) {
+                            const date = new Date(data.published_at);
+                            const formatted = date.toLocaleDateString('en-US', {
+                                year: 'numeric',
+                                month: 'short',
+                                day: 'numeric'
+                            });
+                            html += '<div class="popover-date">📅 ' + formatted + '</div>';
+                        }
 
                         if (data.quote) {
                             html += '<div class="popover-quote">"' + escapeHtml(data.quote) + '"</div>';
@@ -2166,7 +2182,8 @@ HTML_TEMPLATE = '''
                         url: source.url,
                         author: source.author || 'source',
                         type: source.type || 'web',
-                        quote: (source.text || '').slice(0, 150)
+                        quote: (source.text || '').slice(0, 150),
+                        published_at: source.published_at || null
                     }).replace(/"/g, '&quot;');
 
                     return '<a href="' + escapeHtml(source.url) + '" target="_blank" rel="noopener" ' +
