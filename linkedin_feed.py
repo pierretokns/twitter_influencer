@@ -2079,48 +2079,60 @@ HTML_TEMPLATE = '''
                     if (done) break;
 
                     buffer += decoder.decode(value, { stream: true });
-                    const lines = buffer.split('\\n');
 
-                    // Process complete lines
-                    for (let i = 0; i < lines.length - 1; i++) {
-                        const line = lines[i];
+                    // SSE events are delimited by double newlines
+                    // Split on \\n\\n to get complete events
+                    const events = buffer.split('\\n\\n');
+
+                    // Keep the last incomplete event in buffer
+                    buffer = events.pop() || '';
+
+                    for (const eventBlock of events) {
+                        if (!eventBlock.trim()) continue;
 
                         // Skip heartbeat comments
-                        if (line.startsWith(':')) continue;
+                        if (eventBlock.startsWith(':')) continue;
 
-                        if (line.startsWith('event: ')) {
-                            const eventType = line.slice(7);
-                            const dataLine = lines[++i];
+                        // Parse event type and data from block
+                        let eventType = null;
+                        let eventData = null;
 
-                            if (dataLine && dataLine.startsWith('data: ')) {
-                                const data = JSON.parse(dataLine.slice(6));
-
-                                if (eventType === 'sources') {
-                                    sourcesList = data.sources || [];
-                                    lastSources = sourcesList;  // Track for suggestions
-                                    displaySources(sourcesList);
-                                } else if (eventType === 'warning') {
-                                    // Fix #36: Show warning toast
-                                    showToast(data.message, 'warning');
-                                } else if (eventType === 'token') {
-                                    // Add token to typewriter queue for smooth animation
-                                    addToTypewriter(data.token);
-                                    fullResponse += data.token;
-                                } else if (eventType === 'citation') {
-                                    // Stop typewriter and render with citations
-                                    stopTypewriter();
-                                    messageBubble.innerHTML = renderMessageWithCitations(fullResponse, sourcesList);
-                                } else if (eventType === 'done') {
-                                    showSuggestions(data.suggested_followups || []);
-                                } else if (eventType === 'error') {
-                                    throw new Error(data.error || 'Unknown error');
+                        for (const line of eventBlock.split('\\n')) {
+                            if (line.startsWith('event: ')) {
+                                eventType = line.slice(7);
+                            } else if (line.startsWith('data: ')) {
+                                try {
+                                    eventData = JSON.parse(line.slice(6));
+                                } catch (parseErr) {
+                                    console.error('Failed to parse SSE data:', line, parseErr);
+                                    continue;
                                 }
                             }
                         }
-                    }
 
-                    // Keep incomplete line in buffer
-                    buffer = lines[lines.length - 1];
+                        if (!eventType || !eventData) continue;
+
+                        if (eventType === 'sources') {
+                            sourcesList = eventData.sources || [];
+                            lastSources = sourcesList;  // Track for suggestions
+                            displaySources(sourcesList);
+                        } else if (eventType === 'warning') {
+                            // Fix #36: Show warning toast
+                            showToast(eventData.message, 'warning');
+                        } else if (eventType === 'token') {
+                            // Add token to typewriter queue for smooth animation
+                            addToTypewriter(eventData.token);
+                            fullResponse += eventData.token;
+                        } else if (eventType === 'citation') {
+                            // Stop typewriter and render with citations
+                            stopTypewriter();
+                            messageBubble.innerHTML = renderMessageWithCitations(fullResponse, sourcesList);
+                        } else if (eventType === 'done') {
+                            showSuggestions(eventData.suggested_followups || []);
+                        } else if (eventType === 'error') {
+                            throw new Error(eventData.error || 'Unknown error');
+                        }
+                    }
                 }
 
                 // Stop typewriter and final re-render with all citations
