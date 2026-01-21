@@ -411,6 +411,7 @@ AI_KEYWORDS = [
 BLOCKED_KEYWORDS = [
     "military", "armed forces", "troops", "defense contractor",
     "air force", "navy", "usmc", "marines",
+    "trump", "president",
 ]
 
 
