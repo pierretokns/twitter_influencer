@@ -2023,7 +2023,7 @@ HTML_TEMPLATE = '''
                                     messageBubble.textContent = fullResponse;
                                 } else if (eventType === 'citation') {
                                     // Re-render message with citations
-                                    messageBubble.innerHTML = renderMessageWithCitations(fullResponse);
+                                    messageBubble.innerHTML = renderMessageWithCitations(fullResponse, sourcesList);
                                 } else if (eventType === 'done') {
                                     showSuggestions(data.suggested_followups || []);
                                 } else if (eventType === 'error') {
@@ -2038,7 +2038,7 @@ HTML_TEMPLATE = '''
                 }
 
                 // Final re-render with all citations
-                messageBubble.innerHTML = renderMessageWithCitations(fullResponse);
+                messageBubble.innerHTML = renderMessageWithCitations(fullResponse, sourcesList);
 
             } catch (err) {
                 console.error('Chat error:', err);
@@ -2075,10 +2075,34 @@ HTML_TEMPLATE = '''
             chatStreamMessage(message);
         }
 
-        function renderMessageWithCitations(text) {
-            // Escape HTML and linkify citations
+        function renderMessageWithCitations(text, sources) {
+            // Escape HTML and linkify citations with source data
             let html = escapeHtml(text);
-            html = html.replace(/\\[(\\d+)\\]/g, '<span class="citation-marker" data-index="$1">[$1]</span>');
+
+            // Build source map from sources array (1-indexed)
+            const sourceMap = {};
+            if (sources && Array.isArray(sources)) {
+                sources.forEach((source, idx) => {
+                    sourceMap[idx + 1] = source;  // Citations are 1-indexed
+                });
+            }
+
+            html = html.replace(/\\[(\\d+)\\]/g, (match, num) => {
+                const source = sourceMap[parseInt(num)];
+                if (source && source.url) {
+                    const sourceData = JSON.stringify({
+                        url: source.url,
+                        author: source.author || 'source',
+                        type: source.type || 'web',
+                        quote: (source.text || '').slice(0, 150)
+                    }).replace(/"/g, '&quot;');
+
+                    return '<a href="' + escapeHtml(source.url) + '" target="_blank" rel="noopener" ' +
+                           'class="citation-marker" data-source="' + sourceData + '">' + match + '</a>';
+                }
+                // No source found - render as plain span
+                return '<span class="citation-marker" style="cursor: default; opacity: 0.6;">' + match + '</span>';
+            });
             return html;
         }
 
