@@ -355,17 +355,29 @@ RESPONSE FORMAT:
             prompt = f"SOURCES:\n{context}\n\nQUESTION: {query}"
 
             # Run async streaming in a dedicated event loop
-            # Collect tokens, then yield them for true streaming effect
+            # Use get_event_loop pattern for better compatibility with Pydantic AI
             async def run_generation():
                 tokens = []
-                async with self.agent.run_stream(prompt) as result:
-                    async for text in result.stream_text():
-                        tokens.append(text)
-                    usage = result.usage()
-                return tokens, usage
+                usage_data = None
+                try:
+                    async with self.agent.run_stream(prompt) as result:
+                        async for text in result.stream_text():
+                            tokens.append(text)
+                        usage_data = result.usage()
+                except Exception as e:
+                    print(f"[ChatAgent] Generation error: {e}")
+                    raise
+                return tokens, usage_data
 
-            # Execute async code
-            tokens, usage = asyncio.run(run_generation())
+            # Execute async code with proper event loop handling
+            try:
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                tokens, usage = loop.run_until_complete(run_generation())
+            finally:
+                # Give pending callbacks a chance to run before closing
+                loop.run_until_complete(asyncio.sleep(0.1))
+                loop.close()
 
             # Stream tokens to client
             full_response = ""
