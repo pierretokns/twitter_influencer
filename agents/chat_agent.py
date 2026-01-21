@@ -399,14 +399,18 @@ RESPONSE FORMAT:
                     generation_error = e
                     token_queue.put(("error", str(e)))
                 finally:
-                    # Clean up event loop
-                    pending = asyncio.all_tasks(loop)
-                    for task in pending:
-                        task.cancel()
-                    if pending:
-                        loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
-                    loop.run_until_complete(loop.shutdown_asyncgens())
-                    loop.close()
+                    # Clean up event loop safely
+                    try:
+                        if not loop.is_closed():
+                            pending = asyncio.all_tasks(loop)
+                            for task in pending:
+                                task.cancel()
+                            if pending:
+                                loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+                            loop.run_until_complete(loop.shutdown_asyncgens())
+                            loop.close()
+                    except Exception:
+                        pass  # Ignore cleanup errors
 
             # Start generation in background thread
             gen_thread = threading.Thread(target=run_generation, daemon=True)
