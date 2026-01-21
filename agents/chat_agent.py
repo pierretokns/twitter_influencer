@@ -354,30 +354,40 @@ RESPONSE FORMAT:
             # Build prompt with sources and question
             prompt = f"SOURCES:\n{context}\n\nQUESTION: {query}"
 
-            # Run async streaming in a dedicated event loop
-            # Use get_event_loop pattern for better compatibility with Pydantic AI
-            async def run_generation():
-                tokens = []
-                usage_data = None
-                try:
-                    async with self.agent.run_stream(prompt) as result:
-                        async for text in result.stream_text():
-                            tokens.append(text)
-                        usage_data = result.usage()
-                except Exception as e:
-                    print(f"[ChatAgent] Generation error: {e}")
-                    raise
-                return tokens, usage_data
+            # Run async streaming in a dedicated thread with its own event loop
+            # This completely isolates the async execution from Flask's context
+            import concurrent.futures
 
-            # Execute async code with proper event loop handling
-            try:
+            def run_in_thread():
+                """Execute async generation in a separate thread with isolated event loop."""
                 loop = asyncio.new_event_loop()
                 asyncio.set_event_loop(loop)
-                tokens, usage = loop.run_until_complete(run_generation())
-            finally:
-                # Give pending callbacks a chance to run before closing
-                loop.run_until_complete(asyncio.sleep(0.1))
-                loop.close()
+                try:
+                    async def generate():
+                        tokens = []
+                        usage_data = None
+                        async with self.agent.run_stream(prompt) as result:
+                            async for text in result.stream_text():
+                                tokens.append(text)
+                            usage_data = result.usage()
+                        return tokens, usage_data
+
+                    return loop.run_until_complete(generate())
+                finally:
+                    # Clean up all pending tasks
+                    pending = asyncio.all_tasks(loop)
+                    for task in pending:
+                        task.cancel()
+                    # Allow cancellation to propagate
+                    if pending:
+                        loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+                    loop.run_until_complete(loop.shutdown_asyncgens())
+                    loop.close()
+
+            # Execute in thread pool to isolate event loop
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(run_in_thread)
+                tokens, usage = future.result(timeout=120)  # 2 minute timeout
 
             # Stream tokens to client
             full_response = ""
