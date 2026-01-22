@@ -4249,6 +4249,7 @@ dependencies = [
     { name = "setuptools" },
     { name = "sqlite-vec" },
     { name = "undetected-chromedriver" },
+    { name = "wordninja" },
     { name = "youtube-transcript-api" },
 ]
 
@@ -4277,6 +4278,7 @@ requires-dist = [
     { name = "setuptools", specifier = ">=65.0.0" },
     { name = "sqlite-vec", specifier = ">=0.1.0" },
     { name = "undetected-chromedriver", specifier = ">=3.5.0" },
+    { name = "wordninja", specifier = ">=2.0.0" },
     { name = "youtube-transcript-api", specifier = ">=1.0.0" },
 ]
 
@@ -4480,6 +4482,12 @@ sdist = { url = "https://files.pythonhosted.org/packages/45/ea/b0f8eeb287f8df906
 wheels = [
     { url = "https://files.pythonhosted.org/packages/2f/f9/9e082990c2585c744734f85bec79b5dae5df9c974ffee58fe421652c8e91/werkzeug-3.1.4-py3-none-any.whl", hash = "sha256:2ad50fb9ed09cc3af22c54698351027ace879a0b60a3b5edf5730b2f7d876905", size = 224960, upload-time = "2025-11-29T02:15:21.13Z" },
 ]
+
+[[package]]
+name = "wordninja"
+version = "2.0.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/30/15/abe4af50f4be92b60c25e43c1c64d08453b51e46c32981d80b3aebec0260/wordninja-2.0.0.tar.gz", hash = "sha256:1a1cc7ec146ad19d6f71941ee82aef3d31221700f0d8bf844136cf8df79d281a", size = 541572, upload-time = "2019-08-10T02:16:54.944Z" }
 
 [[package]]
 name = "wrapt"
