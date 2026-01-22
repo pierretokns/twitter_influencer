@@ -1155,6 +1155,52 @@ RESPONSE FORMAT:
 
             return None
 
+        def extract_snippet(content: str, keywords: list, max_len: int = 400) -> str:
+            """Extract a snippet from content around the first keyword match.
+
+            Instead of just taking the first N characters, this finds where the
+            keyword appears and extracts text around it for better context.
+            """
+            if not content:
+                return ""
+
+            content_lower = content.lower()
+
+            # Find the first occurrence of any keyword (including space-separated versions)
+            best_pos = -1
+            for kw in keywords:
+                pos = content_lower.find(kw.lower())
+                if pos != -1 and (best_pos == -1 or pos < best_pos):
+                    best_pos = pos
+                # Also check space-separated version
+                space_ver = split_camel_or_concat(kw)
+                if space_ver:
+                    pos = content_lower.find(space_ver.lower())
+                    if pos != -1 and (best_pos == -1 or pos < best_pos):
+                        best_pos = pos
+
+            if best_pos == -1:
+                # No match found, return beginning of content
+                return content[:max_len]
+
+            # Extract snippet centered around the match
+            start = max(0, best_pos - max_len // 4)  # Some context before
+            end = min(len(content), start + max_len)
+
+            # Adjust start to not cut words
+            if start > 0:
+                space_pos = content.find(' ', start)
+                if space_pos != -1 and space_pos < start + 30:
+                    start = space_pos + 1
+
+            snippet = content[start:end]
+            if start > 0:
+                snippet = "..." + snippet
+            if end < len(content):
+                snippet = snippet + "..."
+
+            return snippet
+
         try:
             # If multiple keywords, first try to find articles matching ALL keywords
             if len(keywords) >= 2:
@@ -1178,7 +1224,7 @@ RESPONSE FORMAT:
 
                 where_clause = " AND ".join(where_conditions)
                 cursor.execute(f"""
-                    SELECT article_id, title, url, substr(content, 1, 300) as text, published_at
+                    SELECT article_id, title, url, content, published_at
                     FROM web_articles
                     WHERE {where_clause}
                     ORDER BY published_at DESC
@@ -1187,11 +1233,12 @@ RESPONSE FORMAT:
 
                 for row in cursor.fetchall():
                     if row[0] not in seen_ids:
+                        snippet = extract_snippet(row[3], keywords)
                         sources.append(Source(
                             id=row[0],
                             type="web",
                             title=row[1],
-                            text=row[3] or "",
+                            text=snippet,
                             url=row[2],
                             published_at=row[4],
                         ))
@@ -1207,7 +1254,7 @@ RESPONSE FORMAT:
                 if space_version and space_version != keyword:
                     space_pattern = f'%{space_version}%'
                     cursor.execute("""
-                        SELECT article_id, title, url, substr(content, 1, 300) as text, published_at
+                        SELECT article_id, title, url, content, published_at
                         FROM web_articles
                         WHERE url LIKE ? OR title LIKE ? OR content LIKE ? OR content LIKE ?
                         ORDER BY published_at DESC
@@ -1215,7 +1262,7 @@ RESPONSE FORMAT:
                     """, (pattern, pattern, pattern, space_pattern, limit))
                 else:
                     cursor.execute("""
-                        SELECT article_id, title, url, substr(content, 1, 300) as text, published_at
+                        SELECT article_id, title, url, content, published_at
                         FROM web_articles
                         WHERE url LIKE ? OR title LIKE ? OR content LIKE ?
                         ORDER BY published_at DESC
@@ -1224,11 +1271,12 @@ RESPONSE FORMAT:
 
                 for row in cursor.fetchall():
                     if row[0] not in seen_ids:
+                        snippet = extract_snippet(row[3], [keyword])
                         sources.append(Source(
                             id=row[0],
                             type="web",
                             title=row[1],
-                            text=row[3] or "",
+                            text=snippet,
                             url=row[2],
                             published_at=row[4],
                         ))
