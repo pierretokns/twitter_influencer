@@ -1094,6 +1094,7 @@ RESPONSE FORMAT:
         - Proper nouns not in training data
 
         This method performs LIKE queries to find exact keyword matches.
+        When multiple keywords are present, prioritizes articles matching ALL keywords.
 
         Args:
             conn: Database connection
@@ -1104,22 +1105,66 @@ RESPONSE FORMAT:
             List of Source objects from keyword matches
         """
         sources = []
+        seen_ids = set()
         cursor = conn.cursor()
 
         # Extract potential keywords (words > 3 chars, likely brand names)
+        # Also extract URLs/domains from the query
         words = [w.strip('.,!?()[]"\'').lower() for w in query.split()]
         keywords = [w for w in words if len(w) > 3 and w not in {
             'about', 'what', 'tell', 'know', 'have', 'from', 'with', 'that',
             'this', 'they', 'their', 'there', 'where', 'when', 'which', 'more',
-            'latest', 'news', 'update', 'information'
+            'latest', 'news', 'update', 'information', 'does', 'says', 'said'
         }]
+
+        # Also check for URLs in query and extract domain
+        import re
+        url_match = re.search(r'https?://([^\s/]+)', query)
+        if url_match:
+            domain = url_match.group(1).replace('www.', '')
+            # Add domain parts as keywords (e.g., artificialanalysis.ai -> artificialanalysis)
+            domain_parts = domain.split('.')
+            keywords.extend([p for p in domain_parts if len(p) > 3 and p not in {'com', 'org', 'net', 'dev'}])
 
         if not keywords:
             return []
 
         try:
-            # Search web articles by URL or title
-            for keyword in keywords[:3]:  # Limit to 3 keywords
+            # If multiple keywords, first try to find articles matching ALL keywords
+            if len(keywords) >= 2:
+                # Build dynamic WHERE clause for all keywords
+                where_conditions = []
+                params = []
+                for kw in keywords[:4]:  # Limit to 4 keywords
+                    pattern = f'%{kw}%'
+                    where_conditions.append("(url LIKE ? OR title LIKE ? OR content LIKE ?)")
+                    params.extend([pattern, pattern, pattern])
+
+                where_clause = " AND ".join(where_conditions)
+                cursor.execute(f"""
+                    SELECT article_id, title, url, substr(content, 1, 300) as text, published_at
+                    FROM web_articles
+                    WHERE {where_clause}
+                    ORDER BY published_at DESC
+                    LIMIT ?
+                """, params + [limit])
+
+                for row in cursor.fetchall():
+                    if row[0] not in seen_ids:
+                        sources.append(Source(
+                            id=row[0],
+                            type="web",
+                            title=row[1],
+                            text=row[3] or "",
+                            url=row[2],
+                            published_at=row[4],
+                        ))
+                        seen_ids.add(row[0])
+
+            # Then search for individual keywords (for remaining slots)
+            for keyword in keywords[:3]:
+                if len(sources) >= limit:
+                    break
                 pattern = f'%{keyword}%'
                 cursor.execute("""
                     SELECT article_id, title, url, substr(content, 1, 300) as text, published_at
@@ -1130,17 +1175,21 @@ RESPONSE FORMAT:
                 """, (pattern, pattern, pattern, limit))
 
                 for row in cursor.fetchall():
-                    sources.append(Source(
-                        id=row[0],
-                        type="web",
-                        title=row[1],
-                        text=row[3] or "",
-                        url=row[2],
-                        published_at=row[4],
-                    ))
+                    if row[0] not in seen_ids:
+                        sources.append(Source(
+                            id=row[0],
+                            type="web",
+                            title=row[1],
+                            text=row[3] or "",
+                            url=row[2],
+                            published_at=row[4],
+                        ))
+                        seen_ids.add(row[0])
 
             # Search tweets
             for keyword in keywords[:3]:
+                if len(sources) >= limit:
+                    break
                 pattern = f'%{keyword}%'
                 cursor.execute("""
                     SELECT tweet_id, username, text, url, timestamp
@@ -1151,14 +1200,16 @@ RESPONSE FORMAT:
                 """, (pattern, pattern, limit))
 
                 for row in cursor.fetchall():
-                    sources.append(Source(
-                        id=row[0],
-                        type="twitter",
-                        author=row[1],
-                        text=row[2],
-                        url=row[3],
-                        published_at=row[4],
-                    ))
+                    if row[0] not in seen_ids:
+                        sources.append(Source(
+                            id=row[0],
+                            type="twitter",
+                            author=row[1],
+                            text=row[2],
+                            url=row[3],
+                            published_at=row[4],
+                        ))
+                        seen_ids.add(row[0])
 
         except Exception as e:
             print(f"[ChatAgent] Keyword search error: {e}")
