@@ -57,6 +57,7 @@ from pathlib import Path
 import numpy as np
 from pydantic_ai import Agent
 from pydantic_ai.models.instrumented import InstrumentationSettings
+from pydantic_ai.messages import ModelRequest, ModelResponse, UserPromptPart, TextPart
 from opentelemetry import trace
 import wordninja
 
@@ -376,18 +377,24 @@ RESPONSE FORMAT:
                         },
                     )
 
-                # Build context (includes conversation history)
-                context = self._build_context(sources, history)
+                # Build context with sources (no longer includes history as text)
+                context = self._build_context(sources, [])
 
                 # Build prompt with sources and question
                 prompt = f"SOURCES:\n{context}\n\nQUESTION: {query}"
+
+                # Convert history to pydantic-ai message format for proper multi-turn
+                message_history = self._build_message_history(history) if history else None
 
                 # Generate response with async streaming (Pydantic AI)
                 with self.tracer.start_as_current_span("chat.generate_response") as gen_span:
                     full_response = ""
                     citations_extracted = []
 
-                    async with self.agent.run_stream(prompt) as result:
+                    async with self.agent.run_stream(
+                        prompt,
+                        message_history=message_history,
+                    ) as result:
                         # Stream tokens
                         async for text in result.stream_text():
                             full_response += text
@@ -505,11 +512,14 @@ RESPONSE FORMAT:
                 },
             )
 
-            # Build context (includes conversation history)
-            context = self._build_context(sources, history)
+            # Build context with sources (no longer includes history as text)
+            context = self._build_context(sources, [])
 
             # Build prompt with sources and question
             prompt = f"SOURCES:\n{context}\n\nQUESTION: {query}"
+
+            # Convert history to pydantic-ai message format for proper multi-turn
+            message_history = self._build_message_history(history) if history else None
 
             # Use queue-based streaming with persistent event loop
             # This avoids "Event loop is closed" errors from httpx connection reuse
@@ -521,7 +531,10 @@ RESPONSE FORMAT:
             async def stream_tokens():
                 """Async generator that streams tokens to the queue."""
                 try:
-                    async with self.agent.run_stream(prompt) as result:
+                    async with self.agent.run_stream(
+                        prompt,
+                        message_history=message_history,
+                    ) as result:
                         async for text in result.stream_text():
                             token_queue.put(("token", text))
                             full_response_holder[0] += text
@@ -1355,9 +1368,13 @@ RESPONSE FORMAT:
         """
         Build context string with source formatting.
 
+        Note: History is now handled via pydantic-ai's message_history parameter
+        for proper multi-turn conversations. The history param is kept for
+        backwards compatibility but is no longer used.
+
         Args:
             sources: Retrieved sources
-            history: Conversation history
+            history: Deprecated - history now passed via message_history
 
         Returns:
             Formatted context string
@@ -1373,13 +1390,32 @@ RESPONSE FORMAT:
             context += f"    {source.text[:300]}\n"
             context += f"    {source.url}\n\n"
 
-        # Add conversation history
-        if history:
-            context += "CONVERSATION HISTORY:\n"
-            for msg in history[-5:]:  # Last 5 messages
-                context += f"{msg['role'].upper()}: {msg['content'][:150]}\n"
-
         return context
+
+    def _build_message_history(self, history: List[Dict]) -> List:
+        """
+        Convert conversation history to pydantic-ai message format.
+
+        This enables proper multi-turn conversations where the LLM sees
+        previous messages as actual conversation turns, not just text.
+
+        Args:
+            history: List of {"role": "user"|"assistant", "content": str}
+
+        Returns:
+            List of ModelRequest/ModelResponse for pydantic-ai message_history
+        """
+        messages = []
+        for msg in history[-10:]:  # Last 10 messages (5 turns)
+            role = msg.get("role", "").lower()
+            content = msg.get("content", "")
+
+            if role == "user":
+                messages.append(ModelRequest(parts=[UserPromptPart(content=content)]))
+            elif role == "assistant":
+                messages.append(ModelResponse(parts=[TextPart(content=content)]))
+
+        return messages
 
     def _extract_citations(self, response: str, sources: List[Source]) -> List[Citation]:
         """
