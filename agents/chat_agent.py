@@ -1307,6 +1307,35 @@ RESPONSE FORMAT:
                         ))
                         seen_ids.add(row[0])
 
+            # Search YouTube videos by channel name, title, or transcript
+            for keyword in keywords[:3]:
+                if len(sources) >= limit:
+                    break
+                pattern = f'%{keyword}%'
+                cursor.execute("""
+                    SELECT video_id, channel_name, title, url, published_at, transcript
+                    FROM youtube_videos
+                    WHERE channel_name LIKE ? OR title LIKE ? OR transcript LIKE ?
+                    ORDER BY published_at DESC
+                    LIMIT ?
+                """, (pattern, pattern, pattern, limit))
+
+                for row in cursor.fetchall():
+                    if row[0] not in seen_ids:
+                        # Extract snippet from transcript if available
+                        transcript = row[5] or ""
+                        snippet = extract_snippet(transcript, [keyword]) if transcript else row[2]
+                        sources.append(Source(
+                            id=row[0],
+                            type="youtube",
+                            author=row[1],
+                            title=row[2],
+                            text=snippet,
+                            url=row[3],
+                            published_at=row[4],
+                        ))
+                        seen_ids.add(row[0])
+
         except Exception as e:
             print(f"[ChatAgent] Keyword search error: {e}")
 
