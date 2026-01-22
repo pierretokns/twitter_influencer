@@ -2752,10 +2752,11 @@ def chat_non_streaming():
         """, (message_id, session_id, "user", query))
 
         response_id = str(uuid.uuid4())
+        retrieval_context = json.dumps(sources_list) if sources_list else None
         cursor.execute("""
-            INSERT INTO chat_messages (message_id, session_id, role, content, citations)
-            VALUES (?, ?, ?, ?, ?)
-        """, (response_id, session_id, "assistant", full_response, json.dumps(citations_extracted)))
+            INSERT INTO chat_messages (message_id, session_id, role, content, citations, retrieval_context)
+            VALUES (?, ?, ?, ?, ?, ?)
+        """, (response_id, session_id, "assistant", full_response, json.dumps(citations_extracted), retrieval_context))
 
         cursor.execute("""
             UPDATE chat_sessions
@@ -2852,12 +2853,13 @@ def chat_stream():
                     yield ": heartbeat\n\n"
                     last_heartbeat = time.time()
 
-            # Store assistant response in database
+            # Store assistant response in database with retrieval context
             response_id = str(uuid.uuid4())
+            retrieval_context = json.dumps(sources_list) if sources_list else None
             cursor.execute("""
-                INSERT INTO chat_messages (message_id, session_id, role, content, citations)
-                VALUES (?, ?, ?, ?, ?)
-            """, (response_id, session_id, "assistant", full_response, json.dumps(citations_extracted)))
+                INSERT INTO chat_messages (message_id, session_id, role, content, citations, retrieval_context)
+                VALUES (?, ?, ?, ?, ?, ?)
+            """, (response_id, session_id, "assistant", full_response, json.dumps(citations_extracted), retrieval_context))
 
             cursor.execute("""
                 UPDATE chat_sessions
