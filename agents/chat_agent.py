@@ -1110,6 +1110,7 @@ RESPONSE FORMAT:
 
         # Extract potential keywords (words > 3 chars, likely brand names)
         # Also extract URLs/domains from the query
+        import re
         words = [w.strip('.,!?()[]"\'').lower() for w in query.split()]
         keywords = [w for w in words if len(w) > 3 and w not in {
             'about', 'what', 'tell', 'know', 'have', 'from', 'with', 'that',
@@ -1118,7 +1119,6 @@ RESPONSE FORMAT:
         }]
 
         # Also check for URLs in query and extract domain
-        import re
         url_match = re.search(r'https?://([^\s/]+)', query)
         if url_match:
             domain = url_match.group(1).replace('www.', '')
@@ -1129,16 +1129,42 @@ RESPONSE FORMAT:
         if not keywords:
             return []
 
+        # For camelCase or concatenated brand names, also try space-separated version
+        # e.g., "artificialanalysis" -> also search for "artificial analysis"
+        def split_camel_or_concat(word):
+            """Split camelCase or concatenated words into space-separated form."""
+            # Try camelCase split
+            parts = re.findall(r'[A-Z]?[a-z]+|[A-Z]+(?=[A-Z]|$)', word)
+            if len(parts) > 1:
+                return ' '.join(parts).lower()
+            # Try common word boundary detection for lowercase concat
+            # Match known patterns like "artificial" + "analysis"
+            for i in range(4, len(word) - 3):
+                left, right = word[:i], word[i:]
+                if len(left) >= 4 and len(right) >= 4:
+                    return f'{left} {right}'
+            return None
+
         try:
             # If multiple keywords, first try to find articles matching ALL keywords
             if len(keywords) >= 2:
                 # Build dynamic WHERE clause for all keywords
+                # For each keyword, also try space-separated version
                 where_conditions = []
                 params = []
                 for kw in keywords[:4]:  # Limit to 4 keywords
                     pattern = f'%{kw}%'
-                    where_conditions.append("(url LIKE ? OR title LIKE ? OR content LIKE ?)")
-                    params.extend([pattern, pattern, pattern])
+                    # Also try space-separated version
+                    space_version = split_camel_or_concat(kw)
+                    if space_version and space_version != kw:
+                        space_pattern = f'%{space_version}%'
+                        where_conditions.append(
+                            "(url LIKE ? OR title LIKE ? OR content LIKE ? OR content LIKE ?)"
+                        )
+                        params.extend([pattern, pattern, pattern, space_pattern])
+                    else:
+                        where_conditions.append("(url LIKE ? OR title LIKE ? OR content LIKE ?)")
+                        params.extend([pattern, pattern, pattern])
 
                 where_clause = " AND ".join(where_conditions)
                 cursor.execute(f"""
@@ -1166,13 +1192,25 @@ RESPONSE FORMAT:
                 if len(sources) >= limit:
                     break
                 pattern = f'%{keyword}%'
-                cursor.execute("""
-                    SELECT article_id, title, url, substr(content, 1, 300) as text, published_at
-                    FROM web_articles
-                    WHERE url LIKE ? OR title LIKE ? OR content LIKE ?
-                    ORDER BY published_at DESC
-                    LIMIT ?
-                """, (pattern, pattern, pattern, limit))
+                # Also try space-separated version for concatenated brand names
+                space_version = split_camel_or_concat(keyword)
+                if space_version and space_version != keyword:
+                    space_pattern = f'%{space_version}%'
+                    cursor.execute("""
+                        SELECT article_id, title, url, substr(content, 1, 300) as text, published_at
+                        FROM web_articles
+                        WHERE url LIKE ? OR title LIKE ? OR content LIKE ? OR content LIKE ?
+                        ORDER BY published_at DESC
+                        LIMIT ?
+                    """, (pattern, pattern, pattern, space_pattern, limit))
+                else:
+                    cursor.execute("""
+                        SELECT article_id, title, url, substr(content, 1, 300) as text, published_at
+                        FROM web_articles
+                        WHERE url LIKE ? OR title LIKE ? OR content LIKE ?
+                        ORDER BY published_at DESC
+                        LIMIT ?
+                    """, (pattern, pattern, pattern, limit))
 
                 for row in cursor.fetchall():
                     if row[0] not in seen_ids:
