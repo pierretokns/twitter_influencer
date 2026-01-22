@@ -395,10 +395,14 @@ RESPONSE FORMAT:
                         prompt,
                         message_history=message_history,
                     ) as result:
-                        # Stream tokens
+                        # Stream tokens - stream_text() returns cumulative text,
+                        # so we need to extract only the new delta each iteration
                         async for text in result.stream_text():
-                            full_response += text
-                            yield ChatEvent(event="token", data={"token": text})
+                            # Extract only the new text since last iteration
+                            delta = text[len(full_response):]
+                            full_response = text
+                            if delta:
+                                yield ChatEvent(event="token", data={"token": delta})
 
                         # Get usage stats from result
                         usage = result.usage()
@@ -535,9 +539,13 @@ RESPONSE FORMAT:
                         prompt,
                         message_history=message_history,
                     ) as result:
+                        # stream_text() returns cumulative text, extract deltas
                         async for text in result.stream_text():
-                            token_queue.put(("token", text))
-                            full_response_holder[0] += text
+                            # Extract only the new text since last iteration
+                            delta = text[len(full_response_holder[0]):]
+                            full_response_holder[0] = text
+                            if delta:
+                                token_queue.put(("token", delta))
                         token_queue.put(("done", result.usage()))
                 except Exception as e:
                     token_queue.put(("error", str(e)))
