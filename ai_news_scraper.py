@@ -267,6 +267,13 @@ AI_INFLUENCERS = {
         "iaborsa",          # Ilya Sutskever - OpenAI co-founder (if active)
         "goodfellow_ian",   # Ian Goodfellow - GAN inventor
         "geoffreyhinton",   # Geoffrey Hinton - Godfather of Deep Learning
+        "SchmidhuberAI",    # Jürgen Schmidhuber - LSTM/Transformers pioneer
+        "GuggerSylvain",    # Sylvain Gugger - fast.ai, Hugging Face
+        "lilianweng",       # Lilian Weng - OpenAI, excellent technical blog
+        "dpkingma",         # Durk Kingma - Anthropic, VAE & Adam inventor
+        "sarahookr",        # Sara Hooker - CohereForAI lead, ML efficiency
+        "SebastianRuder",   # Sebastian Ruder - NLP, transfer learning
+        "chipro",           # Chip Huyen - ML systems author
     ],
 
     # -------------------------------------------------------------------------
@@ -287,6 +294,8 @@ AI_INFLUENCERS = {
         "CohereAI",         # Cohere AI
         "scale_AI",         # Scale AI - data labeling
         "peraborsa",        # Perplexity AI - search
+        "GeminiApp",        # Google Gemini app updates
+        "berkeley_ai",      # Berkeley AI Research (BAIR)
     ],
 
     # -------------------------------------------------------------------------
@@ -301,6 +310,11 @@ AI_INFLUENCERS = {
         "oaborsa",          # Elvis Saravia - ML papers & news
         "_akaborsa",        # Aakash Kumar - AI news aggregator
         "ai_breakfast",     # AI Breakfast - daily AI news
+        "ykilcher",         # Yannic Kilcher - ML paper analysis videos
+        "AravSrinivas",     # Aravind Srinivas - Perplexity CEO
+        "kaifulee",         # Kai-Fu Lee - AI investor & author
+        "DataChaz",         # Charly Wargnier - AI agents, Streamlit
+        "bcherny",          # Boris Cherny - Claude Code author
     ],
 
     # -------------------------------------------------------------------------
@@ -359,6 +373,80 @@ WEB_SOURCES = {
         "type": "rss",
         "category": "ai_engineering",
         "description": "AI coding tools, LLM quality, agent design",
+    },
+
+    # -------------------------------------------------------------------------
+    # Individual Researcher Blogs (Highest Signal)
+    # -------------------------------------------------------------------------
+    "lilianweng": {
+        "name": "Lil'Log (Lilian Weng)",
+        "url": "https://lilianweng.github.io/",
+        "rss_url": "https://lilianweng.github.io/index.xml",
+        "type": "rss",
+        "category": "ai_research",
+        "description": "OpenAI researcher, deep technical posts on LLMs & RL",
+    },
+    "jalammar": {
+        "name": "Jay Alammar",
+        "url": "https://jalammar.github.io/",
+        "rss_url": "https://jalammar.github.io/feed.xml",
+        "type": "rss",
+        "category": "ai_education",
+        "description": "Visual explanations of transformers & attention",
+    },
+    "chiphuyen": {
+        "name": "Chip Huyen",
+        "url": "https://huyenchip.com/",
+        "rss_url": "https://huyenchip.com/feed.xml",
+        "type": "rss",
+        "category": "ml_systems",
+        "description": "ML systems, LLMOps, practical AI engineering",
+    },
+    "eugeneyan": {
+        "name": "Eugene Yan",
+        "url": "https://eugeneyan.com/",
+        "rss_url": "https://eugeneyan.com/rss/",
+        "type": "rss",
+        "category": "applied_ml",
+        "description": "Applied ML at Amazon, RecSys, practical AI",
+    },
+    "sebastianraschka": {
+        "name": "Sebastian Raschka",
+        "url": "https://sebastianraschka.com/blog/",
+        "rss_url": "https://sebastianraschka.com/rss_feed.xml",
+        "type": "rss",
+        "category": "ai_research",
+        "description": "LLM research, ML fundamentals, book author",
+    },
+
+    # -------------------------------------------------------------------------
+    # Company Engineering Blogs (High Signal Applied ML)
+    # -------------------------------------------------------------------------
+    "netflix_tech": {
+        "name": "Netflix TechBlog",
+        "url": "https://netflixtechblog.com/",
+        "rss_url": "https://netflixtechblog.com/feed",
+        "type": "rss",
+        "category": "applied_ml",
+        "filter_keywords": ["machine learning", "ml", "ai", "recommendation", "model", "neural"],
+        "description": "ML at scale, recommendations, A/B testing",
+    },
+    "spotify_engineering": {
+        "name": "Spotify Engineering",
+        "url": "https://engineering.atspotify.com/",
+        "rss_url": "https://engineering.atspotify.com/feed/",
+        "type": "rss",
+        "category": "applied_ml",
+        "filter_keywords": ["machine learning", "ml", "ai", "recommendation", "model", "personalization"],
+        "description": "ML for music recommendations, audio analysis",
+    },
+    "the_gradient": {
+        "name": "The Gradient",
+        "url": "https://thegradient.pub/",
+        "rss_url": "https://thegradient.pub/rss/",
+        "type": "rss",
+        "category": "ai_research",
+        "description": "AI research journalism, interviews, analysis",
     },
 
     # -------------------------------------------------------------------------
