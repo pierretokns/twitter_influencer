@@ -56,6 +56,7 @@ from pathlib import Path
 
 import numpy as np
 from pydantic_ai import Agent
+from pydantic_ai.models.instrumented import InstrumentationSettings
 from opentelemetry import trace
 import wordninja
 
@@ -251,10 +252,19 @@ RESPONSE FORMAT:
         self.model_id = f"google-gla:{model_name}"
         self.max_tokens = int(os.getenv("CHAT_MAX_TOKENS", "2048"))
 
-        # Initialize Pydantic AI agent
+        # Configure pydantic-ai instrumentation settings
+        # This enables automatic OTEL spans for model calls with GenAI semantic conventions
+        # See: https://ai.pydantic.dev/logfire/
+        instrument_settings = InstrumentationSettings(
+            include_content=True,  # Capture prompts and completions
+            include_binary_content=False,  # Skip binary data
+        )
+
+        # Initialize Pydantic AI agent with instrumentation
         self.agent = Agent(
             self.model_id,
             system_prompt=self.SYSTEM_PROMPT,
+            instrument=instrument_settings,
         )
 
         # Hybrid retrieval alpha parameter
