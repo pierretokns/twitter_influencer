@@ -6,6 +6,7 @@
 #     "FlagEmbedding>=1.2.0",
 #     "sqlite-vec>=0.1.0",
 #     "numpy>=1.24.0",
+#     "wordninja>=2.0.0",
 # ]
 # ///
 """
@@ -56,6 +57,7 @@ from pathlib import Path
 import numpy as np
 from pydantic_ai import Agent
 from opentelemetry import trace
+import wordninja
 
 from agents.chat_security import ChatSecurity, ValidationResult
 from agents.telemetry import get_tracer, create_chat_span
@@ -1131,18 +1133,26 @@ RESPONSE FORMAT:
 
         # For camelCase or concatenated brand names, also try space-separated version
         # e.g., "artificialanalysis" -> also search for "artificial analysis"
+        # Uses wordninja for probabilistic word segmentation based on Wikipedia unigrams
         def split_camel_or_concat(word):
-            """Split camelCase or concatenated words into space-separated form."""
-            # Try camelCase split
+            """Split camelCase or concatenated words into space-separated form.
+
+            Uses wordninja for probabilistic word segmentation when simple
+            camelCase detection fails. Returns None if no meaningful split found.
+            """
+            # Try camelCase split first (e.g., "ArtificialAnalysis" -> "artificial analysis")
             parts = re.findall(r'[A-Z]?[a-z]+|[A-Z]+(?=[A-Z]|$)', word)
             if len(parts) > 1:
                 return ' '.join(parts).lower()
-            # Try common word boundary detection for lowercase concat
-            # Match known patterns like "artificial" + "analysis"
-            for i in range(4, len(word) - 3):
-                left, right = word[:i], word[i:]
-                if len(left) >= 4 and len(right) >= 4:
-                    return f'{left} {right}'
+
+            # Use wordninja for probabilistic word segmentation
+            # e.g., "artificialanalysis" -> ["artificial", "analysis"]
+            split_words = wordninja.split(word.lower())
+            if len(split_words) > 1:
+                # Only return if we got meaningful words (not single chars)
+                if all(len(w) >= 2 for w in split_words):
+                    return ' '.join(split_words)
+
             return None
 
         try:
