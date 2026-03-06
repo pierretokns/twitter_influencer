@@ -8,6 +8,7 @@ User=erki
 WorkingDirectory=/home/erki/twitter_influencer
 Environment=PATH=/home/erki/.local/bin:/usr/bin
 Environment=DISPLAY=:20
+Environment=AI_NEWS_DB_PATH=/home/appuser/twitter_influencer/output_data/ai_news.db
 EnvironmentFile=/home/erki/twitter_influencer/.env
 ExecStart=/home/erki/.local/bin/uv run python linkedin_feed.py
 Restart=always

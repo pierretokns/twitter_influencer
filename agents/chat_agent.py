@@ -830,8 +830,33 @@ RESPONSE FORMAT:
             if not sources:
                 return [], "No relevant sources found for your query"
 
-            # Sort by relevance and return top K
-            return sources[:max_sources], None
+            # Ensure source type diversity: if a type exists in results but
+            # would be cut off by max_sources, swap in its best result
+            if len(sources) > max_sources:
+                top = sources[:max_sources]
+                rest = sources[max_sources:]
+                top_types = {s.type for s in top}
+
+                # Find types that exist in rest but not in top
+                for s in rest:
+                    if s.type not in top_types and len(top) <= max_sources:
+                        # Replace the last item of the most common type
+                        type_counts = {}
+                        for t in top:
+                            type_counts[t.type] = type_counts.get(t.type, 0) + 1
+                        most_common = max(type_counts, key=type_counts.get)
+                        if type_counts[most_common] > 2:
+                            # Find last item of most common type and replace
+                            for i in range(len(top) - 1, -1, -1):
+                                if top[i].type == most_common:
+                                    top[i] = s
+                                    top_types.add(s.type)
+                                    break
+                sources = top
+            else:
+                sources = sources[:max_sources]
+
+            return sources, None
 
         except Exception as e:
             print(f"[ChatAgent] Retrieval error: {e}")
@@ -1145,11 +1170,63 @@ RESPONSE FORMAT:
         # Also extract URLs/domains from the query
         import re
         words = [w.strip('.,!?()[]"\'').lower() for w in query.split()]
-        keywords = [w for w in words if len(w) > 3 and w not in {
+        # Known acronyms/short terms that should be kept as keywords
+        KNOWN_SHORT_TERMS = {
+            'mcp', 'rag', 'llm', 'api', 'gpu', 'tpu', 'rnn', 'cnn',
+            'gpt', 'vr', 'ar', 'xr', 'nlp', 'agi', 'asi', 'rlhf',
+            'dpo', 'sft', 'lora', 'qlora',
+        }
+        keywords = [w for w in words if (len(w) > 3 or w in KNOWN_SHORT_TERMS) and w not in {
             'about', 'what', 'tell', 'know', 'have', 'from', 'with', 'that',
             'this', 'they', 'their', 'there', 'where', 'when', 'which', 'more',
-            'latest', 'news', 'update', 'information', 'does', 'says', 'said'
+            'latest', 'news', 'update', 'information', 'does', 'says', 'said',
+            'been', 'saying', 'thoughts', 'happening', 'experts',
         }]
+
+        # Detect person name queries and add username variants
+        # Maps common names to Twitter usernames for direct matching
+        PERSON_TO_USERNAME = {
+            'karpathy': 'karpathy', 'andrej karpathy': 'karpathy',
+            'andrew ng': 'andrewyng',
+            'yann lecun': 'ylecun', 'lecun': 'ylecun',
+            'geoffrey hinton': 'geoffreyhinton', 'hinton': 'geoffreyhinton',
+            'yoshua bengio': 'yoshua_bengio', 'bengio': 'yoshua_bengio',
+            'elon musk': 'elonmusk', 'musk': 'elonmusk',
+            'sam altman': 'sama', 'altman': 'sama',
+            'demis hassabis': 'demaborsa', 'hassabis': 'demaborsa',
+            'gary marcus': 'garymarcus', 'marcus': 'garymarcus',
+            'fei-fei li': 'drfeifei', 'fei-fei': 'drfeifei', 'feifei': 'drfeifei',
+            'jeremy howard': 'jeremyphoward',
+            'emad mostaque': 'emostaque', 'mostaque': 'emostaque',
+        }
+        query_lower = query.lower()
+        matched_usernames = set()
+        for name, username in PERSON_TO_USERNAME.items():
+            if name in query_lower:
+                matched_usernames.add(username)
+
+        # Person queries: search tweets by username FIRST (highest priority)
+        if matched_usernames:
+            username_placeholders = ",".join("?" * len(matched_usernames))
+            cursor.execute(f"""
+                SELECT tweet_id, username, text, url, timestamp
+                FROM tweets
+                WHERE username IN ({username_placeholders})
+                ORDER BY timestamp DESC
+                LIMIT ?
+            """, list(matched_usernames) + [limit])
+
+            for row in cursor.fetchall():
+                if row[0] not in seen_ids:
+                    sources.append(Source(
+                        id=row[0],
+                        type="twitter",
+                        author=row[1],
+                        text=row[2],
+                        url=row[3],
+                        published_at=row[4],
+                    ))
+                    seen_ids.add(row[0])
 
         # Also check for URLs in query and extract domain
         url_match = re.search(r'https?://([^\s/]+)', query)
@@ -1276,7 +1353,9 @@ RESPONSE FORMAT:
                         seen_ids.add(row[0])
 
             # Then search for individual keywords (for remaining slots)
-            for keyword in keywords[:3]:
+            # Prioritize acronyms and short specific terms over generic words
+            sorted_kw = sorted(keywords, key=lambda w: (w not in KNOWN_SHORT_TERMS, len(w)))
+            for keyword in sorted_kw[:3]:
                 if len(sources) >= limit:
                     break
                 pattern = f'%{keyword}%'
@@ -1313,7 +1392,7 @@ RESPONSE FORMAT:
                         ))
                         seen_ids.add(row[0])
 
-            # Search tweets
+            # Keyword search in tweet text/username
             for keyword in keywords[:3]:
                 if len(sources) >= limit:
                     break
