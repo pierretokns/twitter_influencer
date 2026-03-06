@@ -1754,7 +1754,19 @@ class WebSourceScraper:
             options.add_argument('--disable-dev-shm-usage')
             options.add_argument('--disable-gpu')
 
-            driver = uc.Chrome(options=options)
+            # Detect Chrome version for UC compatibility
+            _chrome_ver = None
+            try:
+                import subprocess as _sp
+                _r = _sp.run(['google-chrome', '--version'], capture_output=True, text=True)
+                if _r.returncode == 0:
+                    _m = re.search(r'(\d+)\.', _r.stdout)
+                    if _m:
+                        _chrome_ver = int(_m.group(1))
+            except Exception:
+                pass
+
+            driver = uc.Chrome(options=options, version_main=_chrome_ver)
             driver.get(url)
 
             # Wait for content to load
@@ -2276,9 +2288,22 @@ class AINewsScraper:
         self.profile_dir.mkdir(parents=True, exist_ok=True)
         options.add_argument(f'--user-data-dir={self.profile_dir}')
 
-        # Let undetected-chromedriver auto-detect Chrome version
+        # Detect Chrome major version to pass to UC (auto-detect can mismatch)
+        chrome_version = None
         try:
-            self.driver = uc.Chrome(options=options)
+            import subprocess
+            result = subprocess.run(['google-chrome', '--version'], capture_output=True, text=True)
+            if result.returncode == 0:
+                import re
+                match = re.search(r'(\d+)\.', result.stdout)
+                if match:
+                    chrome_version = int(match.group(1))
+                    Logger.info(f"Detected Chrome version: {chrome_version}")
+        except Exception:
+            pass
+
+        try:
+            self.driver = uc.Chrome(options=options, version_main=chrome_version)
         except Exception as e:
             Logger.error(f"Could not start Chrome: {e}")
             raise
