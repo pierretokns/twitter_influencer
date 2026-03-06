@@ -2284,9 +2284,8 @@ class AINewsScraper:
         options.add_argument('--disable-dev-shm-usage')
         options.add_argument('--disable-gpu')
 
-        # Use a persistent profile directory for session persistence
-        self.profile_dir.mkdir(parents=True, exist_ok=True)
-        options.add_argument(f'--user-data-dir={self.profile_dir}')
+        # Skip persistent profile - it causes corruption and "chrome not reachable" errors
+        # Session cookies are saved/loaded separately via cookies_path
 
         # Detect Chrome major version to pass to UC (auto-detect can mismatch)
         chrome_version = None
