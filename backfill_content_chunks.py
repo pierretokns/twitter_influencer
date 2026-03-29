@@ -7,14 +7,16 @@
 #     "FlagEmbedding>=1.2.0",
 #     "scikit-learn>=1.3.0",
 #     "numpy>=1.24.0",
+#     "sqlite-vec>=0.1.0",
 # ]
 # ///
 """
-Backfill Content Chunks for Citation Quote Extraction
-======================================================
+Backfill Content Chunks for Citation Quote Extraction + Chunk Embeddings
+=========================================================================
 
 Re-ingests historical web articles and YouTube videos with proper semantic chunking.
 Populates article_paragraphs and youtube_segments tables for granular citation quotes.
+Generates BGE-M3 hybrid embeddings for each chunk for vector search.
 
 Usage:
     uv run python backfill_content_chunks.py              # Process all
@@ -22,6 +24,7 @@ Usage:
     uv run python backfill_content_chunks.py --youtube-only  # Only YouTube
     uv run python backfill_content_chunks.py --limit 50   # Limit items processed
     uv run python backfill_content_chunks.py --dry-run    # Preview without saving
+    uv run python backfill_content_chunks.py --embeddings-only  # Only generate embeddings
 
 Based on:
 - Meta-Chunking (arXiv 2410.12788): Semantic boundary detection
@@ -65,11 +68,115 @@ class ChunkStats:
     articles_processed: int = 0
     articles_skipped: int = 0
     article_chunks_created: int = 0
+    article_embeddings_created: int = 0
     videos_processed: int = 0
     videos_skipped: int = 0
     video_chunks_created: int = 0
+    video_embeddings_created: int = 0
     transcripts_fetched: int = 0
     transcript_errors: int = 0
+
+
+# =============================================================================
+# EMBEDDING GENERATION
+# =============================================================================
+
+def load_sqlite_vec(conn: sqlite3.Connection) -> bool:
+    """Load sqlite-vec extension for vector embeddings."""
+    try:
+        import sqlite_vec
+        conn.enable_load_extension(True)
+        sqlite_vec.load(conn)
+        return True
+    except Exception as e:
+        print(f"[WARN] Could not load sqlite-vec: {e}")
+        return False
+
+
+def generate_chunk_embeddings(
+    conn: sqlite3.Connection,
+    chunk_type: str,  # 'paragraph' or 'segment'
+    batch_size: int = 32,
+    dry_run: bool = False
+) -> int:
+    """
+    Generate BGE-M3 embeddings for chunks that don't have them yet.
+
+    Args:
+        conn: Database connection with sqlite-vec loaded
+        chunk_type: 'paragraph' for articles, 'segment' for YouTube
+        batch_size: Number of chunks to process at once
+        dry_run: If True, don't save embeddings
+
+    Returns:
+        Number of embeddings created
+    """
+    from ai_news_scraper import encode_texts_hybrid
+
+    cursor = conn.cursor()
+
+    # Map chunk type to source table and columns
+    if chunk_type == 'paragraph':
+        source_table = 'article_paragraphs'
+        id_col = 'id'
+    elif chunk_type == 'segment':
+        source_table = 'youtube_segments'
+        id_col = 'id'
+    else:
+        raise ValueError(f"Unknown chunk type: {chunk_type}")
+
+    dense_table = f'{chunk_type}_embeddings_dense'
+    sparse_table = f'{chunk_type}_embeddings_sparse'
+
+    # Get chunks without embeddings
+    cursor.execute(f"""
+        SELECT c.{id_col}, c.text
+        FROM {source_table} c
+        LEFT JOIN {dense_table} e ON c.{id_col} = e.id
+        WHERE e.id IS NULL AND c.text IS NOT NULL AND LENGTH(c.text) > 10
+    """)
+    rows = cursor.fetchall()
+
+    if not rows:
+        print(f"[{chunk_type}] No chunks need embeddings")
+        return 0
+
+    print(f"[{chunk_type}] Found {len(rows)} chunks needing embeddings")
+
+    if dry_run:
+        print(f"[{chunk_type}] Dry run - no embeddings created")
+        return len(rows)
+
+    total = 0
+    for i in range(0, len(rows), batch_size):
+        batch = rows[i:i + batch_size]
+        ids = [row[0] for row in batch]
+        texts = [row[1] for row in batch]
+
+        try:
+            dense, sparse = encode_texts_hybrid(texts)
+        except Exception as e:
+            print(f"[{chunk_type}] Batch {i//batch_size + 1} failed: {e}")
+            continue
+
+        # Insert embeddings
+        for j, chunk_id in enumerate(ids):
+            dense_blob = np.asarray(dense[j], dtype=np.float32).tobytes()
+            sparse_blob = np.asarray(sparse[j], dtype=np.float32).tobytes()
+
+            cursor.execute(f"""
+                INSERT OR REPLACE INTO {dense_table} (id, embedding) VALUES (?, ?)
+            """, (chunk_id, dense_blob))
+
+            cursor.execute(f"""
+                INSERT OR REPLACE INTO {sparse_table} (id, embedding) VALUES (?, ?)
+            """, (chunk_id, sparse_blob))
+
+        conn.commit()
+        total += len(batch)
+        print(f"[{chunk_type}] Embeddings: {total}/{len(rows)} ({100*total//len(rows)}%)")
+
+    return total
 
 
 # =============================================================================
@@ -518,6 +625,8 @@ def main():
     parser.add_argument('--dry-run', action='store_true', help='Preview without saving')
     parser.add_argument('--refetch', action='store_true', help='Re-fetch web article content from URLs')
     parser.add_argument('--no-transcripts', action='store_true', help='Skip transcript fetching')
+    parser.add_argument('--embeddings-only', action='store_true', help='Only generate embeddings (skip chunking)')
+    parser.add_argument('--no-embeddings', action='store_true', help='Skip embedding generation')
     parser.add_argument('--db', type=str, default=str(DB_PATH), help='Database path')
 
     args = parser.parse_args()
@@ -528,43 +637,74 @@ def main():
         return
 
     print("=" * 60)
-    print("Content Chunk Backfill")
+    print("Content Chunk Backfill + Embeddings")
     print("=" * 60)
     print(f"Database: {db_path}")
     print(f"Dry run: {args.dry_run}")
     print(f"Limit: {args.limit or 'none'}")
+    print(f"Embeddings: {'only' if args.embeddings_only else ('skip' if args.no_embeddings else 'yes')}")
 
     conn = sqlite3.connect(str(db_path))
     conn.row_factory = sqlite3.Row
 
+    # Load sqlite-vec for embedding storage
+    has_vec = load_sqlite_vec(conn)
+    if not has_vec and not args.no_embeddings:
+        print("[WARN] sqlite-vec not available, skipping embeddings")
+        args.no_embeddings = True
+
     total_stats = ChunkStats()
 
     try:
-        # Process web articles
-        if not args.youtube_only:
-            web_stats = process_web_articles(
-                conn,
-                limit=args.limit,
-                dry_run=args.dry_run,
-                refetch=args.refetch
-            )
-            total_stats.articles_processed = web_stats.articles_processed
-            total_stats.articles_skipped = web_stats.articles_skipped
-            total_stats.article_chunks_created = web_stats.article_chunks_created
+        # Skip chunking if --embeddings-only
+        if not args.embeddings_only:
+            # Process web articles
+            if not args.youtube_only:
+                web_stats = process_web_articles(
+                    conn,
+                    limit=args.limit,
+                    dry_run=args.dry_run,
+                    refetch=args.refetch
+                )
+                total_stats.articles_processed = web_stats.articles_processed
+                total_stats.articles_skipped = web_stats.articles_skipped
+                total_stats.article_chunks_created = web_stats.article_chunks_created
 
-        # Process YouTube videos
-        if not args.web_only:
-            yt_stats = process_youtube_videos(
-                conn,
-                limit=args.limit,
-                dry_run=args.dry_run,
-                fetch_transcripts=not args.no_transcripts
-            )
-            total_stats.videos_processed = yt_stats.videos_processed
-            total_stats.videos_skipped = yt_stats.videos_skipped
-            total_stats.video_chunks_created = yt_stats.video_chunks_created
-            total_stats.transcripts_fetched = yt_stats.transcripts_fetched
-            total_stats.transcript_errors = yt_stats.transcript_errors
+            # Process YouTube videos
+            if not args.web_only:
+                yt_stats = process_youtube_videos(
+                    conn,
+                    limit=args.limit,
+                    dry_run=args.dry_run,
+                    fetch_transcripts=not args.no_transcripts
+                )
+                total_stats.videos_processed = yt_stats.videos_processed
+                total_stats.videos_skipped = yt_stats.videos_skipped
+                total_stats.video_chunks_created = yt_stats.video_chunks_created
+                total_stats.transcripts_fetched = yt_stats.transcripts_fetched
+                total_stats.transcript_errors = yt_stats.transcript_errors
+
+        # Generate embeddings for chunks
+        if not args.no_embeddings and has_vec:
+            print("\n" + "-" * 60)
+            print("Generating chunk embeddings...")
+            print("-" * 60)
+
+            if not args.youtube_only:
+                total_stats.article_embeddings_created = generate_chunk_embeddings(
+                    conn,
+                    'paragraph',
+                    batch_size=32,
+                    dry_run=args.dry_run
+                )
+
+            if not args.web_only:
+                total_stats.video_embeddings_created = generate_chunk_embeddings(
+                    conn,
+                    'segment',
+                    batch_size=32,
+                    dry_run=args.dry_run
+                )
 
         # Print summary
         print("\n" + "=" * 60)
@@ -573,21 +713,29 @@ def main():
 
         if not args.youtube_only:
             print(f"\nWeb Articles:")
-            print(f"  Processed: {total_stats.articles_processed}")
-            print(f"  Skipped: {total_stats.articles_skipped}")
-            print(f"  Chunks created: {total_stats.article_chunks_created}")
+            if not args.embeddings_only:
+                print(f"  Processed: {total_stats.articles_processed}")
+                print(f"  Skipped: {total_stats.articles_skipped}")
+                print(f"  Chunks created: {total_stats.article_chunks_created}")
+            print(f"  Embeddings created: {total_stats.article_embeddings_created}")
 
         if not args.web_only:
             print(f"\nYouTube Videos:")
-            print(f"  Processed: {total_stats.videos_processed}")
-            print(f"  Skipped: {total_stats.videos_skipped}")
-            print(f"  Chunks created: {total_stats.video_chunks_created}")
-            print(f"  Transcripts fetched: {total_stats.transcripts_fetched}")
-            if total_stats.transcript_errors:
-                print(f"  Transcript errors: {total_stats.transcript_errors}")
+            if not args.embeddings_only:
+                print(f"  Processed: {total_stats.videos_processed}")
+                print(f"  Skipped: {total_stats.videos_skipped}")
+                print(f"  Chunks created: {total_stats.video_chunks_created}")
+                print(f"  Transcripts fetched: {total_stats.transcripts_fetched}")
+                if total_stats.transcript_errors:
+                    print(f"  Transcript errors: {total_stats.transcript_errors}")
+            print(f"  Embeddings created: {total_stats.video_embeddings_created}")
 
-        total_chunks = total_stats.article_chunks_created + total_stats.video_chunks_created
-        print(f"\nTotal chunks created: {total_chunks}")
+        if not args.embeddings_only:
+            total_chunks = total_stats.article_chunks_created + total_stats.video_chunks_created
+            print(f"\nTotal chunks created: {total_chunks}")
+
+        total_embeddings = total_stats.article_embeddings_created + total_stats.video_embeddings_created
+        print(f"Total embeddings created: {total_embeddings}")
 
         if args.dry_run:
             print("\n[DRY RUN] No changes saved to database")

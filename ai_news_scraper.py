@@ -12,6 +12,8 @@
 #     "scikit-learn>=1.3.0",
 #     "hdbscan>=0.8.33",
 #     "beautifulsoup4>=4.12.0",
+#     "python-dateutil>=2.8.0",
+#     "trafilatura>=1.6.0",
 # ]
 # ///
 
@@ -44,11 +46,44 @@ import hashlib
 from dotenv import load_dotenv
 import numpy as np
 
+# Date parsing for various formats found in web articles
+from dateutil import parser as date_parser
+
 # Lazy imports for heavy ML libraries
 _sentence_transformer = None
 _hybrid_embedder = None
 _hdbscan = None
 _sklearn_umap = None
+
+
+def normalize_date(date_str: Optional[str], fallback_to_now: bool = True) -> Optional[str]:
+    """
+    Normalize various date formats to ISO 8601 (YYYY-MM-DDTHH:MM:SS+00:00).
+
+    Handles formats like:
+    - "12 Nov 2025", "Nov 12, 2025"
+    - "Wed, 29 Oct 2025 00:00:00 GMT"
+    - "2025-11-12T10:30:00Z"
+    - "2025-11-12"
+    - Relative dates are not supported (use fallback)
+
+    Args:
+        date_str: Raw date string from scraper
+        fallback_to_now: If True, return current time when parsing fails
+
+    Returns:
+        ISO 8601 formatted date string, or None if parsing fails and no fallback
+    """
+    if not date_str:
+        return datetime.utcnow().isoformat() + 'Z' if fallback_to_now else None
+
+    try:
+        # dateutil.parser handles most formats automatically
+        parsed = date_parser.parse(date_str, fuzzy=True)
+        # Normalize to UTC ISO format
+        return parsed.strftime('%Y-%m-%dT%H:%M:%S') + 'Z'
+    except Exception:
+        return datetime.utcnow().isoformat() + 'Z' if fallback_to_now else None
 
 
 def get_sentence_transformer():
@@ -107,44 +142,47 @@ def encode_texts_hybrid(texts: List[str], max_length: int = 512) -> Tuple[np.nda
         - dense_embeddings: (N, 1024)
         - sparse_embeddings: (N, 256) - top-K representation
 
-        Falls back to (384 dim, None) if BGE-M3 not available.
+    Raises:
+        RuntimeError: If BGE-M3 model is not available or encoding fails.
     """
     embedder = get_hybrid_embedder()
 
-    if embedder is not None:
-        try:
-            # Use BGE-M3 for hybrid embeddings
-            embedding_results = embedder.encode(
-                texts,
-                batch_size=32,
-                max_length=max_length,
-                return_dense=True,
-                return_sparse=True,
-                return_colbert_vecs=False
-            )
+    if embedder is None:
+        raise RuntimeError(
+            "BGE-M3 model not available. Install FlagEmbedding: pip install FlagEmbedding"
+        )
 
-            dense_embeddings = np.array(embedding_results['dense_vecs'], dtype=np.float32)
+    # Use BGE-M3 for hybrid embeddings
+    embedding_results = embedder.encode(
+        texts,
+        batch_size=32,
+        max_length=max_length,
+        return_dense=True,
+        return_sparse=True,
+        return_colbert_vecs=False
+    )
 
-            # Convert sparse embeddings to fixed-size dense
-            sparse_list = []
-            for sparse_dict in embedding_results['lexical_weights']:
-                # Sort by weight, take top-256
-                sorted_items = sorted(sparse_dict.items(), key=lambda x: x[1], reverse=True)[:256]
-                sparse_dense = np.zeros(256, dtype=np.float32)
-                for i, (token_id, weight) in enumerate(sorted_items):
-                    sparse_dense[i] = weight
-                sparse_list.append(sparse_dense)
+    dense_embeddings = np.array(embedding_results['dense_vecs'], dtype=np.float32)
 
-            sparse_embeddings = np.array(sparse_list, dtype=np.float32)
-            return dense_embeddings, sparse_embeddings
+    # Convert sparse embeddings to fixed-size dense
+    sparse_list = []
+    for sparse_dict in embedding_results['lexical_weights']:
+        # Sort by weight, take top-256
+        sorted_items = sorted(sparse_dict.items(), key=lambda x: x[1], reverse=True)[:256]
+        sparse_dense = np.zeros(256, dtype=np.float32)
+        for i, (token_id, weight) in enumerate(sorted_items):
+            sparse_dense[i] = weight
+        sparse_list.append(sparse_dense)
 
-        except Exception as e:
-            print(f"[WARN] BGE-M3 encoding failed: {e}, falling back to sentence-transformers")
+    sparse_embeddings = np.array(sparse_list, dtype=np.float32)
 
-    # Fallback to sentence-transformers (384 dim, no sparse)
-    embedder = get_sentence_transformer()
-    dense_embeddings = embedder.encode(texts, show_progress_bar=False)
-    return np.array(dense_embeddings, dtype=np.float32), None
+    # Validate dimensions to catch model version mismatches early
+    if dense_embeddings.shape[1] != 1024:
+        raise ValueError(f"Dense embedding dimension mismatch: expected 1024, got {dense_embeddings.shape[1]}")
+    if sparse_embeddings.shape[1] != 256:
+        raise ValueError(f"Sparse embedding dimension mismatch: expected 256, got {sparse_embeddings.shape[1]}")
+
+    return dense_embeddings, sparse_embeddings
 
 
 class FallbackEmbedder:
@@ -229,6 +267,13 @@ AI_INFLUENCERS = {
         "iaborsa",          # Ilya Sutskever - OpenAI co-founder (if active)
         "goodfellow_ian",   # Ian Goodfellow - GAN inventor
         "geoffreyhinton",   # Geoffrey Hinton - Godfather of Deep Learning
+        "SchmidhuberAI",    # Jürgen Schmidhuber - LSTM/Transformers pioneer
+        "GuggerSylvain",    # Sylvain Gugger - fast.ai, Hugging Face
+        "lilianweng",       # Lilian Weng - OpenAI, excellent technical blog
+        "dpkingma",         # Durk Kingma - Anthropic, VAE & Adam inventor
+        "sarahookr",        # Sara Hooker - CohereForAI lead, ML efficiency
+        "SebastianRuder",   # Sebastian Ruder - NLP, transfer learning
+        "chipro",           # Chip Huyen - ML systems author
     ],
 
     # -------------------------------------------------------------------------
@@ -249,6 +294,8 @@ AI_INFLUENCERS = {
         "CohereAI",         # Cohere AI
         "scale_AI",         # Scale AI - data labeling
         "peraborsa",        # Perplexity AI - search
+        "GeminiApp",        # Google Gemini app updates
+        "berkeley_ai",      # Berkeley AI Research (BAIR)
     ],
 
     # -------------------------------------------------------------------------
@@ -263,6 +310,11 @@ AI_INFLUENCERS = {
         "oaborsa",          # Elvis Saravia - ML papers & news
         "_akaborsa",        # Aakash Kumar - AI news aggregator
         "ai_breakfast",     # AI Breakfast - daily AI news
+        "ykilcher",         # Yannic Kilcher - ML paper analysis videos
+        "AravSrinivas",     # Aravind Srinivas - Perplexity CEO
+        "kaifulee",         # Kai-Fu Lee - AI investor & author
+        "DataChaz",         # Charly Wargnier - AI agents, Streamlit
+        "bcherny",          # Boris Cherny - Claude Code author
     ],
 
     # -------------------------------------------------------------------------
@@ -321,6 +373,80 @@ WEB_SOURCES = {
         "type": "rss",
         "category": "ai_engineering",
         "description": "AI coding tools, LLM quality, agent design",
+    },
+
+    # -------------------------------------------------------------------------
+    # Individual Researcher Blogs (Highest Signal)
+    # -------------------------------------------------------------------------
+    "lilianweng": {
+        "name": "Lil'Log (Lilian Weng)",
+        "url": "https://lilianweng.github.io/",
+        "rss_url": "https://lilianweng.github.io/index.xml",
+        "type": "rss",
+        "category": "ai_research",
+        "description": "OpenAI researcher, deep technical posts on LLMs & RL",
+    },
+    "jalammar": {
+        "name": "Jay Alammar",
+        "url": "https://jalammar.github.io/",
+        "rss_url": "https://jalammar.github.io/feed.xml",
+        "type": "rss",
+        "category": "ai_education",
+        "description": "Visual explanations of transformers & attention",
+    },
+    "chiphuyen": {
+        "name": "Chip Huyen",
+        "url": "https://huyenchip.com/",
+        "rss_url": "https://huyenchip.com/feed.xml",
+        "type": "rss",
+        "category": "ml_systems",
+        "description": "ML systems, LLMOps, practical AI engineering",
+    },
+    "eugeneyan": {
+        "name": "Eugene Yan",
+        "url": "https://eugeneyan.com/",
+        "rss_url": "https://eugeneyan.com/rss/",
+        "type": "rss",
+        "category": "applied_ml",
+        "description": "Applied ML at Amazon, RecSys, practical AI",
+    },
+    "sebastianraschka": {
+        "name": "Sebastian Raschka",
+        "url": "https://sebastianraschka.com/blog/",
+        "rss_url": "https://sebastianraschka.com/rss_feed.xml",
+        "type": "rss",
+        "category": "ai_research",
+        "description": "LLM research, ML fundamentals, book author",
+    },
+
+    # -------------------------------------------------------------------------
+    # Company Engineering Blogs (High Signal Applied ML)
+    # -------------------------------------------------------------------------
+    "netflix_tech": {
+        "name": "Netflix TechBlog",
+        "url": "https://netflixtechblog.com/",
+        "rss_url": "https://netflixtechblog.com/feed",
+        "type": "rss",
+        "category": "applied_ml",
+        "filter_keywords": ["machine learning", "ml", "ai", "recommendation", "model", "neural"],
+        "description": "ML at scale, recommendations, A/B testing",
+    },
+    "spotify_engineering": {
+        "name": "Spotify Engineering",
+        "url": "https://engineering.atspotify.com/",
+        "rss_url": "https://engineering.atspotify.com/feed/",
+        "type": "rss",
+        "category": "applied_ml",
+        "filter_keywords": ["machine learning", "ml", "ai", "recommendation", "model", "personalization"],
+        "description": "ML for music recommendations, audio analysis",
+    },
+    "the_gradient": {
+        "name": "The Gradient",
+        "url": "https://thegradient.pub/",
+        "rss_url": "https://thegradient.pub/rss/",
+        "type": "rss",
+        "category": "ai_research",
+        "description": "AI research journalism, interviews, analysis",
     },
 
     # -------------------------------------------------------------------------
@@ -411,6 +537,7 @@ AI_KEYWORDS = [
 BLOCKED_KEYWORDS = [
     "military", "armed forces", "troops", "defense contractor",
     "air force", "navy", "usmc", "marines",
+    "trump", "president",
 ]
 
 
@@ -529,23 +656,45 @@ class AINewsDatabase:
                 ''')
 
                 # New hybrid embedding tables for BGE-M3
+                # Use cosine distance for normalized embeddings (more appropriate for semantic similarity)
+                # NOTE: IF NOT EXISTS won't modify existing tables. To switch existing DB to cosine,
+                # drop tables (losing data) or regenerate embeddings with regenerate_embeddings.py
                 for source_type in ['tweet', 'web_article', 'youtube_video']:
-                    # Dense embeddings (1024 dimensions)
+                    # Dense embeddings (1024 dimensions) with cosine distance
                     self.conn.execute(f'''
                         CREATE VIRTUAL TABLE IF NOT EXISTS {source_type}_embeddings_dense USING vec0(
                             id TEXT PRIMARY KEY,
-                            embedding float[{self.EMBEDDING_DIM_DENSE}]
+                            embedding float[{self.EMBEDDING_DIM_DENSE}] distance_metric=cosine
                         )
                     ''')
-                    # Sparse embeddings (256 dimensions - top-K representation)
+                    # Sparse embeddings (256 dimensions - top-K representation) with cosine distance
                     self.conn.execute(f'''
                         CREATE VIRTUAL TABLE IF NOT EXISTS {source_type}_embeddings_sparse USING vec0(
                             id TEXT PRIMARY KEY,
-                            embedding float[{self.EMBEDDING_DIM_SPARSE}]
+                            embedding float[{self.EMBEDDING_DIM_SPARSE}] distance_metric=cosine
                         )
                     ''')
 
-                Logger.success("Vector embeddings tables ready (legacy + hybrid)")
+                # Chunk-level embedding tables for granular RAG retrieval
+                # article_paragraphs -> paragraph_embeddings_dense/sparse
+                # youtube_segments -> segment_embeddings_dense/sparse
+                for chunk_type in ['paragraph', 'segment']:
+                    # Dense embeddings for chunks with cosine distance
+                    self.conn.execute(f'''
+                        CREATE VIRTUAL TABLE IF NOT EXISTS {chunk_type}_embeddings_dense USING vec0(
+                            id INTEGER PRIMARY KEY,
+                            embedding float[{self.EMBEDDING_DIM_DENSE}] distance_metric=cosine
+                        )
+                    ''')
+                    # Sparse embeddings for chunks with cosine distance
+                    self.conn.execute(f'''
+                        CREATE VIRTUAL TABLE IF NOT EXISTS {chunk_type}_embeddings_sparse USING vec0(
+                            id INTEGER PRIMARY KEY,
+                            embedding float[{self.EMBEDDING_DIM_SPARSE}] distance_metric=cosine
+                        )
+                    ''')
+
+                Logger.success("Vector embeddings tables ready (legacy + hybrid + chunks)")
             except Exception as e:
                 Logger.warning(f"Could not create vector table: {e}")
                 self._has_vec = False
@@ -587,12 +736,26 @@ class AINewsDatabase:
         relevance_score = sum(1 for kw in AI_KEYWORDS if kw.lower() in text) / len(AI_KEYWORDS)
 
         cursor.execute('''
-            INSERT OR REPLACE INTO tweets (
+            INSERT INTO tweets (
                 tweet_id, username, display_name, text, timestamp, url,
                 replies_count, retweets_count, likes_count,
                 has_media, media_type, is_reply,
                 is_ai_relevant, ai_relevance_score
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(tweet_id) DO UPDATE SET
+                username = excluded.username,
+                display_name = COALESCE(excluded.display_name, display_name),
+                text = COALESCE(excluded.text, text),
+                timestamp = COALESCE(timestamp, excluded.timestamp),
+                url = COALESCE(excluded.url, url),
+                replies_count = excluded.replies_count,
+                retweets_count = excluded.retweets_count,
+                likes_count = excluded.likes_count,
+                has_media = excluded.has_media,
+                media_type = excluded.media_type,
+                is_reply = excluded.is_reply,
+                is_ai_relevant = excluded.is_ai_relevant,
+                ai_relevance_score = excluded.ai_relevance_score
         ''', (
             tweet_id,
             tweet_data.get('username', '').lower().lstrip('@'),
@@ -613,31 +776,32 @@ class AINewsDatabase:
         # Save legacy embedding if available (384 dim)
         if embedding is not None and self._has_vec:
             try:
-                embedding_list = embedding.tolist()
+                # sqlite-vec expects binary blob format
+                embedding_blob = np.asarray(embedding, dtype=np.float32).tobytes()
                 cursor.execute('''
                     INSERT OR REPLACE INTO tweet_embeddings (tweet_id, embedding)
                     VALUES (?, ?)
-                ''', (tweet_id, json.dumps(embedding_list)))
+                ''', (tweet_id, embedding_blob))
             except Exception as e:
                 Logger.debug(f"Could not save legacy embedding: {e}")
 
         # Save hybrid embeddings if available (BGE-M3)
         if self._has_vec and dense_embedding is not None:
             try:
-                # Save dense embedding (1024 dim)
-                dense_list = dense_embedding.tolist()
+                # Save dense embedding (1024 dim) - sqlite-vec expects binary blob
+                dense_blob = np.asarray(dense_embedding, dtype=np.float32).tobytes()
                 cursor.execute('''
                     INSERT OR REPLACE INTO tweet_embeddings_dense (id, embedding)
                     VALUES (?, ?)
-                ''', (tweet_id, json.dumps(dense_list)))
+                ''', (tweet_id, dense_blob))
 
                 # Save sparse embedding if available (256 dim)
                 if sparse_embedding is not None:
-                    sparse_list = sparse_embedding.tolist()
+                    sparse_blob = np.asarray(sparse_embedding, dtype=np.float32).tobytes()
                     cursor.execute('''
                         INSERT OR REPLACE INTO tweet_embeddings_sparse (id, embedding)
                         VALUES (?, ?)
-                    ''', (tweet_id, json.dumps(sparse_list)))
+                    ''', (tweet_id, sparse_blob))
             except Exception as e:
                 Logger.debug(f"Could not save hybrid embeddings: {e}")
 
@@ -683,7 +847,8 @@ class AINewsDatabase:
         cursor = self.conn.cursor()
 
         try:
-            embedding_json = json.dumps(query_embedding.tolist())
+            # sqlite-vec expects binary format for queries (same as storage)
+            embedding_blob = np.asarray(query_embedding, dtype=np.float32).tobytes()
             # sqlite-vec requires k=? constraint in WHERE clause for KNN queries
             cursor.execute(f'''
                 SELECT
@@ -698,7 +863,7 @@ class AINewsDatabase:
                 JOIN tweets t ON e.tweet_id = t.tweet_id
                 WHERE e.embedding MATCH ? AND k = ?
                 ORDER BY e.distance
-            ''', (embedding_json, limit))
+            ''', (embedding_blob, limit))
 
             results = []
             for row in cursor.fetchall():
@@ -853,13 +1018,28 @@ class AINewsDatabase:
         is_ai_relevant = any(kw.lower() in text for kw in AI_KEYWORDS)
         relevance_score = sum(1 for kw in AI_KEYWORDS if kw.lower() in text) / len(AI_KEYWORDS)
 
+        # Normalize date to ISO 8601 format (no fallback - preserve existing on re-scrape)
+        published_at = normalize_date(article_data.get('published_at'), fallback_to_now=False)
+
         try:
             cursor.execute('''
-                INSERT OR REPLACE INTO web_articles (
+                INSERT INTO web_articles (
                     article_id, source_id, source_name, title, url,
                     description, content, author, published_at, category,
-                    is_ai_relevant, ai_relevance_score
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    is_ai_relevant, ai_relevance_score, scraped_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(article_id) DO UPDATE SET
+                    source_id = COALESCE(excluded.source_id, source_id),
+                    source_name = COALESCE(excluded.source_name, source_name),
+                    title = COALESCE(excluded.title, title),
+                    url = COALESCE(excluded.url, url),
+                    description = COALESCE(excluded.description, description),
+                    content = COALESCE(excluded.content, content),
+                    author = COALESCE(excluded.author, author),
+                    published_at = COALESCE(published_at, excluded.published_at),
+                    category = COALESCE(excluded.category, category),
+                    is_ai_relevant = excluded.is_ai_relevant,
+                    ai_relevance_score = excluded.ai_relevance_score
             ''', (
                 article_id,
                 article_data.get('source_id'),
@@ -869,7 +1049,7 @@ class AINewsDatabase:
                 article_data.get('description'),
                 article_data.get('content'),
                 article_data.get('author'),
-                article_data.get('published_at'),
+                published_at,
                 article_data.get('category'),
                 is_ai_relevant,
                 relevance_score
@@ -879,20 +1059,20 @@ class AINewsDatabase:
             # Save hybrid embeddings if available (BGE-M3)
             if self._has_vec and dense_embedding is not None:
                 try:
-                    # Save dense embedding (1024 dim)
-                    dense_list = dense_embedding.tolist()
+                    # Save dense embedding (1024 dim) - sqlite-vec expects binary blob
+                    dense_blob = np.asarray(dense_embedding, dtype=np.float32).tobytes()
                     cursor.execute('''
                         INSERT OR REPLACE INTO web_article_embeddings_dense (id, embedding)
                         VALUES (?, ?)
-                    ''', (article_id, json.dumps(dense_list)))
+                    ''', (article_id, dense_blob))
 
                     # Save sparse embedding if available (256 dim)
                     if sparse_embedding is not None:
-                        sparse_list = sparse_embedding.tolist()
+                        sparse_blob = np.asarray(sparse_embedding, dtype=np.float32).tobytes()
                         cursor.execute('''
                             INSERT OR REPLACE INTO web_article_embeddings_sparse (id, embedding)
                             VALUES (?, ?)
-                        ''', (article_id, json.dumps(sparse_list)))
+                        ''', (article_id, sparse_blob))
                     self.conn.commit()
                 except Exception as e:
                     Logger.debug(f"Could not save web article embeddings: {e}")
@@ -1160,6 +1340,180 @@ class WebSourceScraper:
             })
         return self.session
 
+    def _fetch_article_content(self, url: str) -> Optional[str]:
+        """
+        Fetch and extract full article content using trafilatura.
+
+        Args:
+            url: Article URL
+
+        Returns:
+            Extracted article text (max 10000 chars) or None
+        """
+        try:
+            import trafilatura
+
+            downloaded = trafilatura.fetch_url(url)
+            if not downloaded:
+                return None
+
+            content = trafilatura.extract(
+                downloaded,
+                include_comments=False,
+                include_tables=False,
+                favor_precision=True
+            )
+
+            if content:
+                # Limit content size
+                return content[:10000]
+            return None
+
+        except ImportError:
+            Logger.warning("trafilatura not installed - article content won't be fetched")
+            return None
+        except Exception as e:
+            Logger.debug(f"Failed to fetch content from {url}: {e}")
+            return None
+
+    def _chunk_content(self, content: str, min_chars: int = 50, max_chars: int = 500) -> List[Dict[str, Any]]:
+        """
+        Chunk article content into semantic paragraphs for embedding.
+
+        Args:
+            content: Full article text
+            min_chars: Minimum chunk size
+            max_chars: Maximum chunk size
+
+        Returns:
+            List of chunk dicts with 'text', 'index', 'char_start' keys
+        """
+        if not content or len(content) < min_chars:
+            return []
+
+        # First try double-newline paragraph breaks
+        paragraphs = [p.strip() for p in content.split('\n\n') if len(p.strip()) >= min_chars]
+
+        # If no double-newline paragraphs, try single newlines (common in trafilatura output)
+        if not paragraphs or len(paragraphs) <= 1:
+            single_newline_paragraphs = [p.strip() for p in content.split('\n') if len(p.strip()) >= min_chars]
+            if len(single_newline_paragraphs) > len(paragraphs):
+                paragraphs = single_newline_paragraphs
+
+        # If still no good paragraphs, try sentence splitting
+        if not paragraphs:
+            sentences = re.split(r'(?<=[.!?])\s+', content)
+
+            # Merge short sentences into chunks
+            chunks = []
+            current = {'text': '', 'char_start': 0}
+            char_pos = 0
+
+            for sent in sentences:
+                sent = sent.strip()
+                if len(sent) < 20:
+                    continue
+
+                if not current['text']:
+                    current['char_start'] = char_pos
+
+                current['text'] += ' ' + sent
+                char_pos += len(sent) + 1
+
+                if len(current['text']) >= min_chars:
+                    chunks.append({
+                        'text': current['text'].strip()[:max_chars],
+                        'index': len(chunks),
+                        'char_start': current['char_start']
+                    })
+                    current = {'text': '', 'char_start': 0}
+
+            # Don't forget the last chunk
+            if current['text'].strip() and len(current['text'].strip()) >= min_chars // 2:
+                chunks.append({
+                    'text': current['text'].strip()[:max_chars],
+                    'index': len(chunks),
+                    'char_start': current['char_start']
+                })
+
+            return chunks
+
+        # Use paragraph-based chunks
+        chunks = []
+        char_pos = 0
+
+        for para in paragraphs:
+            # Truncate long paragraphs
+            text = para[:max_chars]
+            chunks.append({
+                'text': text,
+                'index': len(chunks),
+                'char_start': char_pos
+            })
+            char_pos += len(para) + 2  # +2 for \n\n
+
+        return chunks
+
+    def _save_article_chunks(self, article_id: str, chunks: List[Dict[str, Any]]) -> int:
+        """
+        Save article chunks to the article_paragraphs table.
+
+        Args:
+            article_id: The article's ID
+            chunks: List of chunk dicts from _chunk_content
+
+        Returns:
+            Number of chunks saved
+        """
+        if not chunks:
+            return 0
+
+        cursor = self.db.conn.cursor()
+
+        # Check if chunks already exist
+        cursor.execute(
+            "SELECT COUNT(*) FROM article_paragraphs WHERE article_id = ?",
+            (article_id,)
+        )
+        if cursor.fetchone()[0] > 0:
+            return 0  # Already chunked
+
+        chunk_ids = []
+        for chunk in chunks:
+            cursor.execute("""
+                INSERT INTO article_paragraphs (article_id, paragraph_index, text, char_start)
+                VALUES (?, ?, ?, ?)
+            """, (article_id, chunk['index'], chunk['text'], chunk.get('char_start', 0)))
+            chunk_ids.append(cursor.lastrowid)
+
+        self.db.conn.commit()
+
+        # Generate embeddings for the chunks if possible
+        if self.db._has_vec and chunk_ids:
+            try:
+                texts = [c['text'] for c in chunks]
+                dense, sparse = encode_texts_hybrid(texts)
+
+                for i, chunk_id in enumerate(chunk_ids):
+                    dense_blob = np.asarray(dense[i], dtype=np.float32).tobytes()
+                    sparse_blob = np.asarray(sparse[i], dtype=np.float32).tobytes()
+
+                    cursor.execute("""
+                        INSERT OR REPLACE INTO paragraph_embeddings_dense (id, embedding)
+                        VALUES (?, ?)
+                    """, (chunk_id, dense_blob))
+
+                    cursor.execute("""
+                        INSERT OR REPLACE INTO paragraph_embeddings_sparse (id, embedding)
+                        VALUES (?, ?)
+                    """, (chunk_id, sparse_blob))
+
+                self.db.conn.commit()
+            except Exception as e:
+                Logger.debug(f"Could not generate chunk embeddings: {e}")
+
+        return len(chunks)
+
     def _parse_rss(self, source_id: str, source_config: Dict) -> List[Dict]:
         """Parse RSS feed and extract articles"""
         import xml.etree.ElementTree as ET
@@ -1400,7 +1754,19 @@ class WebSourceScraper:
             options.add_argument('--disable-dev-shm-usage')
             options.add_argument('--disable-gpu')
 
-            driver = uc.Chrome(options=options)
+            # Detect Chrome version for UC compatibility
+            _chrome_ver = None
+            try:
+                import subprocess as _sp
+                _r = _sp.run(['google-chrome', '--version'], capture_output=True, text=True)
+                if _r.returncode == 0:
+                    _m = re.search(r'(\d+)\.', _r.stdout)
+                    if _m:
+                        _chrome_ver = int(_m.group(1))
+            except Exception:
+                pass
+
+            driver = uc.Chrome(options=options, version_main=_chrome_ver)
             driver.get(url)
 
             # Wait for content to load
@@ -1537,14 +1903,46 @@ class WebSourceScraper:
         else:
             articles = self._parse_html(source_id, source_config)
 
-        # Save articles
+        # Save articles with content fetching and chunking
         new_articles = 0
+        chunks_created = 0
+
         for article in articles:
+            url = article.get('url')
+
+            # Fetch full article content if not already present
+            if url and not article.get('content'):
+                Logger.debug(f"  Fetching content: {url[:60]}...")
+                content = self._fetch_article_content(url)
+                if content:
+                    article['content'] = content
+                    Logger.debug(f"    Got {len(content)} chars")
+
+            # Save article to database
             is_ai = self.db.save_web_article(article)
             self.articles_scraped += 1
             new_articles += 1
             if is_ai:
                 self.ai_articles_found += 1
+
+            # Create chunks for the article content
+            content = article.get('content', '')
+            if content and len(content) >= 50:
+                # Generate article_id same way as save_web_article
+                article_id = hashlib.md5(url.encode()).hexdigest()[:16]
+                chunks = self._chunk_content(content)
+                if chunks:
+                    saved = self._save_article_chunks(article_id, chunks)
+                    chunks_created += saved
+                    if saved:
+                        Logger.debug(f"    Created {saved} chunks")
+
+            # Small delay between article fetches to be polite
+            if url and not article.get('content'):
+                time.sleep(random.uniform(0.5, 1.5))
+
+        if chunks_created > 0:
+            Logger.info(f"  Created {chunks_created} content chunks")
 
         return new_articles
 
@@ -1881,18 +2279,30 @@ class AINewsScraper:
         import undetected_chromedriver as uc
 
         options = uc.ChromeOptions()
-        options.add_argument('--start-maximized')
+        options.add_argument('--headless=new')
         options.add_argument('--no-sandbox')
         options.add_argument('--disable-dev-shm-usage')
         options.add_argument('--disable-gpu')
 
-        # Use a persistent profile directory for session persistence
-        self.profile_dir.mkdir(parents=True, exist_ok=True)
-        options.add_argument(f'--user-data-dir={self.profile_dir}')
+        # Skip persistent profile - it causes corruption and "chrome not reachable" errors
+        # Session cookies are saved/loaded separately via cookies_path
 
-        # Let undetected-chromedriver auto-detect Chrome version
+        # Detect Chrome major version to pass to UC (auto-detect can mismatch)
+        chrome_version = None
         try:
-            self.driver = uc.Chrome(options=options)
+            import subprocess
+            result = subprocess.run(['google-chrome', '--version'], capture_output=True, text=True)
+            if result.returncode == 0:
+                import re
+                match = re.search(r'(\d+)\.', result.stdout)
+                if match:
+                    chrome_version = int(match.group(1))
+                    Logger.info(f"Detected Chrome version: {chrome_version}")
+        except Exception:
+            pass
+
+        try:
+            self.driver = uc.Chrome(options=options, version_main=chrome_version)
         except Exception as e:
             Logger.error(f"Could not start Chrome: {e}")
             raise

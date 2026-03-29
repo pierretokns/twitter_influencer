@@ -41,7 +41,7 @@ load_dotenv()
 app = Flask(__name__)
 
 OUTPUT_DIR = Path(__file__).parent / "output_data"
-AI_NEWS_DB = OUTPUT_DIR / "ai_news.db"
+AI_NEWS_DB = Path(os.environ.get("AI_NEWS_DB_PATH", str(OUTPUT_DIR / "ai_news.db")))
 
 
 def get_db():
@@ -604,6 +604,11 @@ HTML_TEMPLATE = '''
             word-break: break-all;
             margin-top: 8px;
         }
+        .popover-date {
+            font-size: 11px;
+            color: var(--text-secondary);
+            margin-bottom: 6px;
+        }
         .popover-timestamp {
             display: inline-block;
             background: rgba(255, 0, 0, 0.1);
@@ -808,7 +813,7 @@ HTML_TEMPLATE = '''
                     <svg viewBox="0 0 24 24" fill="currentColor"><path d="M23 9v2h-2v7a3 3 0 01-3 3h-4v-6h-4v6H6a3 3 0 01-3-3v-7H1V9l11-7 5 3.18V2h3v5.09z"/></svg>
                     Feed
                 </a>
-                <a href="https://agents.brandonsneider.com" class="nav-link">
+                <a href="/tournament" class="nav-link">
                     <svg viewBox="0 0 24 24" fill="currentColor"><path d="M17 6V5a3 3 0 00-3-3h-4a3 3 0 00-3 3v1H2v4a3 3 0 003 3h14a3 3 0 003-3V6zM9 5a1 1 0 011-1h4a1 1 0 011 1v1H9zm10 9a4 4 0 003-1.38V17a3 3 0 01-3 3H5a3 3 0 01-3-3v-4.38A4 4 0 005 14z"/></svg>
                     Tournament
                 </a>
@@ -1164,17 +1169,77 @@ HTML_TEMPLATE = '''
             `;
         }
 
-        function openPublish(runId) {
+        // Fix #54: Track the element that opened the modal for focus return
+        let modalTriggerElement = null;
+
+        function openPublish(runId, triggerEl) {
             selectedPost = postsData[runId];
             if (selectedPost) {
+                // Fix #54: Remember what triggered the modal
+                modalTriggerElement = triggerEl || document.activeElement;
+
                 document.getElementById('modalContent').textContent = selectedPost.winner_content;
-                document.getElementById('publishModal').classList.add('active');
+                const modal = document.getElementById('publishModal');
+                modal.classList.add('active');
+
+                // Fix #54: Set up focus trap
+                setupModalFocusTrap(modal);
+
+                // Fix #54: Add escape key handler
+                document.addEventListener('keydown', handleModalEscape);
             }
         }
 
         function closeModal() {
             document.getElementById('publishModal').classList.remove('active');
             selectedPost = null;
+
+            // Fix #54: Remove escape handler
+            document.removeEventListener('keydown', handleModalEscape);
+
+            // Fix #54: Return focus to trigger element
+            if (modalTriggerElement) {
+                modalTriggerElement.focus();
+                modalTriggerElement = null;
+            }
+        }
+
+        // Fix #54: Escape key handler
+        function handleModalEscape(e) {
+            if (e.key === 'Escape') {
+                closeModal();
+            }
+        }
+
+        // Fix #54: Focus trap for modal accessibility
+        function setupModalFocusTrap(modal) {
+            const focusable = modal.querySelectorAll(
+                'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
+            );
+            if (focusable.length === 0) return;
+
+            const firstFocusable = focusable[0];
+            const lastFocusable = focusable[focusable.length - 1];
+
+            // Focus first element
+            firstFocusable.focus();
+
+            // Trap focus within modal
+            modal.addEventListener('keydown', function trapFocus(e) {
+                if (e.key !== 'Tab') return;
+
+                if (e.shiftKey) {
+                    if (document.activeElement === firstFocusable) {
+                        e.preventDefault();
+                        lastFocusable.focus();
+                    }
+                } else {
+                    if (document.activeElement === lastFocusable) {
+                        e.preventDefault();
+                        firstFocusable.focus();
+                    }
+                }
+            });
         }
 
         function copyContent() {
@@ -1229,6 +1294,17 @@ HTML_TEMPLATE = '''
                         }
                         html += '</div>';
 
+                        // Show published date if available
+                        if (data.published_at) {
+                            const date = new Date(data.published_at);
+                            const formatted = date.toLocaleDateString('en-US', {
+                                year: 'numeric',
+                                month: 'short',
+                                day: 'numeric'
+                            });
+                            html += '<div class="popover-date">📅 ' + formatted + '</div>';
+                        }
+
                         if (data.quote) {
                             html += '<div class="popover-quote">"' + escapeHtml(data.quote) + '"</div>';
                         }
@@ -1265,6 +1341,972 @@ HTML_TEMPLATE = '''
         // Initial setup
         setupCitationPopovers();
         loadFeed();
+    </script>
+
+    <!-- Chat Widget -->
+    <div id="chat-widget" class="chat-widget">
+        <div class="chat-header">
+            <span class="chat-title">💬 Chat with AI News</span>
+            <button id="chat-toggle-btn" class="chat-btn-toggle" aria-label="Toggle chat">−</button>
+            <button id="chat-close-btn" class="chat-btn-close" aria-label="Close chat">×</button>
+        </div>
+
+        <div class="chat-content">
+            <!-- Sources Panel -->
+            <div id="sources-panel" class="sources-panel" style="display: none;">
+                <div class="sources-label">🔍 Sources</div>
+                <div id="sources-list" class="sources-list"></div>
+            </div>
+
+            <!-- Messages Area -->
+            <div id="chat-messages" class="chat-messages" role="log" aria-live="polite" aria-label="Chat messages">
+                <div class="chat-welcome">
+                    <h3>Welcome to AI News Chat</h3>
+                    <p>Ask anything about AI news and industry trends. I'll search recent sources and provide citations.</p>
+                    <div id="starter-suggestions" class="suggestion-chips">
+                        <button class="suggestion-chip" onclick="chatSendSuggestion('What are the latest developments in AI?')">Latest AI developments</button>
+                        <button class="suggestion-chip" onclick="chatSendSuggestion('Compare GPT-5 and Claude')">Model comparisons</button>
+                        <button class="suggestion-chip" onclick="chatSendSuggestion('What are AI safety concerns?')">AI safety concerns</button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Follow-up Suggestions -->
+            <div id="suggestions-container" class="suggestions-container" style="display: none;">
+                <div id="suggestions-list" class="suggestion-chips"></div>
+            </div>
+
+            <!-- Input Area -->
+            <div class="chat-input-container">
+                <textarea
+                    id="chat-input"
+                    class="chat-textarea"
+                    placeholder="Ask about AI news..."
+                    rows="1"
+                    aria-label="Chat message input"
+                ></textarea>
+                <button id="chat-send-btn" class="chat-send-btn" aria-label="Send message">
+                    <span class="send-icon">➤</span>
+                </button>
+            </div>
+
+            <!-- Toast Notifications -->
+            <div id="chat-toast" class="chat-toast"></div>
+        </div>
+    </div>
+
+    <style>
+        /* Chat Widget Styles */
+        .chat-widget {
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            width: 400px;
+            max-width: calc(100vw - 40px);
+            height: 600px;
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+            display: flex;
+            flex-direction: column;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            z-index: 9999;
+            transition: all 0.3s ease;
+        }
+
+        .chat-widget.collapsed {
+            height: auto;
+            max-width: 200px;
+        }
+
+        .chat-widget.collapsed .chat-content {
+            display: none;
+        }
+
+        .chat-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 12px 16px;
+            border-bottom: 1px solid var(--border);
+            background: linear-gradient(135deg, var(--linkedin-blue) 0%, #0a5aa8 100%);
+            color: white;
+            border-radius: 12px 12px 0 0;
+            cursor: pointer;
+        }
+
+        .chat-title {
+            font-weight: 600;
+            font-size: 14px;
+        }
+
+        .chat-btn-toggle, .chat-btn-close {
+            background: none;
+            border: none;
+            color: white;
+            cursor: pointer;
+            font-size: 20px;
+            padding: 0;
+            width: 24px;
+            height: 24px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: 4px;
+            transition: background 0.15s;
+        }
+
+        .chat-btn-toggle:hover, .chat-btn-close:hover {
+            background: rgba(255, 255, 255, 0.2);
+        }
+
+        .chat-content {
+            display: flex;
+            flex-direction: column;
+            flex: 1;
+            overflow: hidden;
+        }
+
+        .sources-panel {
+            padding: 10px 12px;
+            border-bottom: 1px solid var(--border);
+            background: var(--bg-secondary);
+            max-height: 60px;
+            overflow: hidden;
+            display: none;  /* Hidden by default, shown via JS */
+        }
+
+        .sources-label {
+            font-size: 12px;
+            font-weight: 600;
+            color: var(--text-secondary);
+            margin-bottom: 6px;
+        }
+
+        .sources-list {
+            display: flex;
+            gap: 6px;
+            overflow-x: auto;
+            scrollbar-width: thin;
+        }
+
+        .source-chip {
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+            padding: 4px 8px;
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 14px;
+            font-size: 11px;
+            white-space: nowrap;
+            cursor: pointer;
+            transition: all 0.15s;
+            flex-shrink: 0;
+        }
+
+        .source-chip:hover {
+            border-color: var(--linkedin-blue);
+            background: rgba(10, 102, 194, 0.05);
+        }
+
+        .source-chip .source-type {
+            font-size: 10px;
+            color: var(--text-secondary);
+        }
+
+        .chat-messages {
+            flex: 1;
+            overflow-y: auto;
+            padding: 12px;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        .chat-welcome {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+            align-items: center;
+            justify-content: center;
+            text-align: center;
+            padding: 16px;
+            color: var(--text-secondary);
+        }
+
+        .chat-welcome h3 {
+            margin: 0;
+            font-size: 16px;
+            color: var(--text-primary);
+        }
+
+        .chat-welcome p {
+            margin: 0;
+            font-size: 13px;
+            line-height: 1.4;
+        }
+
+        .chat-message {
+            display: flex;
+            gap: 8px;
+            margin-bottom: 4px;
+            animation: fadeIn 0.2s ease;
+        }
+
+        .chat-message.user {
+            justify-content: flex-end;
+        }
+
+        .chat-message-bubble {
+            max-width: 85%;
+            padding: 8px 12px;
+            border-radius: 12px;
+            font-size: 13px;
+            line-height: 1.4;
+            word-break: break-word;
+        }
+
+        .chat-message.user .chat-message-bubble {
+            background: var(--linkedin-blue);
+            color: white;
+            border-bottom-right-radius: 4px;
+        }
+
+        .chat-message.assistant .chat-message-bubble {
+            background: var(--bg-secondary);
+            color: var(--text-primary);
+            border-bottom-left-radius: 4px;
+        }
+
+        .citation-marker {
+            display: inline;
+            color: var(--linkedin-blue);
+            font-size: 0.75em;
+            vertical-align: super;
+            cursor: pointer;
+            font-weight: 600;
+        }
+
+        .chat-message.assistant .citation-marker {
+            color: var(--linkedin-blue);
+        }
+
+        /* Fix #44: Improved citation marker contrast for WCAG AA compliance */
+        .chat-message.user .citation-marker {
+            color: #ffffff;
+            background: rgba(0, 0, 0, 0.2);
+            padding: 0 3px;
+            border-radius: 3px;
+        }
+
+        .typing-indicator {
+            display: inline-flex;
+            gap: 3px;
+            padding: 8px 12px;
+        }
+
+        .typing-dot {
+            width: 6px;
+            height: 6px;
+            background: var(--text-secondary);
+            border-radius: 50%;
+        }
+
+        /* Typewriter cursor effect */
+        .chat-message-bubble.typing::after {
+            content: '▋';
+            display: inline;
+            animation: blink 0.7s step-end infinite;
+            color: var(--linkedin-blue);
+            margin-left: 1px;
+        }
+
+        @keyframes blink {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0; }
+            animation: bounce 1.4s infinite ease-in-out;
+        }
+
+        .typing-dot:nth-child(1) { animation-delay: 0s; }
+        .typing-dot:nth-child(2) { animation-delay: 0.2s; }
+        .typing-dot:nth-child(3) { animation-delay: 0.4s; }
+
+        @keyframes bounce {
+            0%, 80%, 100% { transform: translateY(0); }
+            40% { transform: translateY(-4px); }
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(4px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        .suggestions-container {
+            padding: 0 12px;
+            max-height: 50px;
+            overflow: hidden;
+            border-bottom: 1px solid var(--border);
+            border-top: 1px solid var(--border);
+        }
+
+        .suggestion-chips {
+            display: flex;
+            gap: 6px;
+            overflow-x: auto;
+            padding: 8px 0;
+            scrollbar-width: thin;
+        }
+
+        .suggestion-chip {
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+            padding: 6px 12px;
+            background: rgba(10, 102, 194, 0.08);
+            border: 1px solid rgba(10, 102, 194, 0.3);
+            border-radius: 16px;
+            font-size: 12px;
+            color: var(--linkedin-blue);
+            cursor: pointer;
+            white-space: nowrap;
+            transition: all 0.15s ease;
+            flex-shrink: 0;
+            font-family: inherit;
+            font-weight: 500;
+        }
+
+        .suggestion-chip:hover {
+            background: var(--linkedin-blue);
+            color: white;
+            transform: translateY(-1px);
+            box-shadow: 0 2px 8px rgba(10, 102, 194, 0.25);
+        }
+
+        .suggestion-chip:focus {
+            outline: 2px solid var(--linkedin-blue);
+            outline-offset: 2px;
+        }
+
+        .chat-input-container {
+            display: flex;
+            gap: 8px;
+            padding: 12px;
+            border-top: 1px solid var(--border);
+            background: var(--bg-card);
+            border-radius: 0 0 12px 12px;
+        }
+
+        .chat-textarea {
+            flex: 1;
+            min-height: 36px;
+            max-height: 120px;
+            padding: 8px 12px;
+            border: 1px solid var(--border);
+            border-radius: 18px;
+            resize: none;
+            font-family: inherit;
+            font-size: 13px;
+            line-height: 1.4;
+            transition: border-color 0.15s;
+        }
+
+        .chat-textarea:focus {
+            outline: none;
+            border-color: var(--linkedin-blue);
+            box-shadow: 0 0 0 3px rgba(10, 102, 194, 0.1);
+        }
+
+        .chat-textarea::placeholder {
+            color: var(--text-tertiary);
+        }
+
+        .chat-send-btn {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            width: 36px;
+            height: 36px;
+            padding: 0;
+            background: var(--linkedin-blue);
+            color: white;
+            border: none;
+            border-radius: 50%;
+            cursor: pointer;
+            transition: all 0.15s;
+            font-size: 16px;
+            flex-shrink: 0;
+        }
+
+        .chat-send-btn:hover {
+            background: var(--linkedin-blue-hover);
+            transform: scale(1.05);
+        }
+
+        .chat-send-btn:active {
+            transform: scale(0.95);
+        }
+
+        .chat-send-btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        /* Fix #48: Toast notification styles */
+        .chat-toast {
+            position: fixed;
+            bottom: 240px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            padding: 8px 14px;
+            border-radius: 6px;
+            font-size: 12px;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+            opacity: 0;
+            transition: opacity 0.3s ease;
+            pointer-events: none;
+            z-index: 10000;
+        }
+
+        .chat-toast-info {
+            background: var(--bg-card);
+            border-color: var(--linkedin-blue);
+            color: var(--text-primary);
+        }
+
+        .chat-toast-success {
+            background: #e8f5e9;
+            border-color: #4caf50;
+            color: #2e7d32;
+        }
+
+        .chat-toast-warning {
+            background: #fff3e0;
+            border-color: #ff9800;
+            color: #e65100;
+        }
+
+        .chat-toast-error {
+            background: #ffebee;
+            border-color: #f44336;
+            color: #c62828;
+        }
+
+        /* Fix #42: Retry button styles */
+        .retry-btn {
+            background: transparent;
+            border: 1px solid currentColor;
+            border-radius: 4px;
+            color: inherit;
+            cursor: pointer;
+            font-size: 11px;
+            padding: 2px 8px;
+            margin-left: 8px;
+        }
+
+        .retry-btn:hover {
+            background: rgba(0, 0, 0, 0.1);
+        }
+
+        /* Fix #43: Source chip label styles */
+        .source-chip .source-label {
+            font-size: 11px;
+            color: var(--text-primary);
+            max-width: 100px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        /* Fix #52: Visible scrollbar for textarea */
+        .chat-textarea::-webkit-scrollbar {
+            width: 6px;
+        }
+
+        .chat-textarea::-webkit-scrollbar-thumb {
+            background: rgba(0, 0, 0, 0.2);
+            border-radius: 3px;
+        }
+
+        .chat-textarea::-webkit-scrollbar-track {
+            background: transparent;
+        }
+
+        /* Fix #53: Source panel animation */
+        .sources-panel {
+            transform: translateY(-100%);
+            opacity: 0;
+            transition: transform 0.3s ease-out, opacity 0.3s ease-out;
+        }
+
+        .sources-panel.visible {
+            transform: translateY(0);
+            opacity: 1;
+        }
+
+        /* Mobile Responsive */
+        @media (max-width: 768px) {
+            /* Fix #40: Chat widget above virtual keyboard */
+            .chat-widget {
+                width: 100%;
+                height: 60vh;
+                max-width: 100%;
+                right: 0;
+                left: 0;
+                bottom: env(safe-area-inset-bottom, 0);
+                border-radius: 16px 16px 0 0;
+            }
+
+            /* Fix #40: Reduced height when keyboard is open */
+            .chat-widget.keyboard-open {
+                height: 40vh;
+            }
+
+            .suggestion-chips {
+                overflow-x: auto;
+                -webkit-overflow-scrolling: touch;
+            }
+        }
+    </style>
+
+    <script>
+        // Chat Widget JavaScript
+        let chatSessionId = null;
+        let isStreaming = false;
+        let messageIdCounter = 0;  // Fix #51: Counter for message IDs
+        let lastQuery = '';  // Track last query for suggestions
+        let lastSources = [];  // Track last sources for suggestions
+
+        // Typewriter effect state
+        let typewriterQueue = '';  // Buffer of text to type out
+        let typewriterDisplayed = '';  // Text already displayed
+        let typewriterInterval = null;  // Animation interval
+        let typewriterElement = null;  // Current element being typed into
+        let typewriterSpeed = 12;  // ms per character (adjust for speed)
+
+        // Typewriter animation function
+        function startTypewriter(element) {
+            typewriterElement = element;
+            typewriterDisplayed = '';
+            typewriterQueue = '';
+            element.classList.add('typing');
+
+            if (typewriterInterval) clearInterval(typewriterInterval);
+
+            typewriterInterval = setInterval(() => {
+                if (typewriterQueue.length > 0) {
+                    // Type next character from queue
+                    typewriterDisplayed += typewriterQueue[0];
+                    typewriterQueue = typewriterQueue.slice(1);
+                    typewriterElement.textContent = typewriterDisplayed;
+
+                    // Auto-scroll as content grows
+                    const container = document.getElementById('chat-messages');
+                    container.scrollTop = container.scrollHeight;
+                }
+            }, typewriterSpeed);
+        }
+
+        function addToTypewriter(text) {
+            typewriterQueue += text;
+        }
+
+        function stopTypewriter() {
+            if (typewriterInterval) {
+                clearInterval(typewriterInterval);
+                typewriterInterval = null;
+            }
+            if (typewriterElement) {
+                // Flush remaining queue immediately
+                typewriterDisplayed += typewriterQueue;
+                typewriterQueue = '';
+                typewriterElement.classList.remove('typing');
+            }
+        }
+
+        function getTypewriterFullText() {
+            return typewriterDisplayed + typewriterQueue;
+        }
+
+        // Fix #48: Toast notification utility
+        function showToast(message, type = 'info') {
+            const toast = document.getElementById('chat-toast');
+            toast.textContent = message;
+            toast.className = `chat-toast chat-toast-${type}`;
+            toast.style.display = 'block';
+            toast.style.opacity = '1';
+
+            setTimeout(() => {
+                toast.style.opacity = '0';
+                setTimeout(() => { toast.style.display = 'none'; }, 300);
+            }, 3000);
+        }
+
+        // Fix #41: Session init with loading state and error recovery
+        async function initChatSession() {
+            const messagesContainer = document.getElementById('chat-messages');
+            const sendBtn = document.getElementById('chat-send-btn');
+            sendBtn.disabled = true;
+
+            try {
+                // Show loading state
+                const loadingDiv = document.createElement('div');
+                loadingDiv.id = 'session-loading';
+                loadingDiv.className = 'chat-welcome';
+                loadingDiv.innerHTML = '<p>Initializing chat...</p>';
+                messagesContainer.appendChild(loadingDiv);
+
+                const response = await fetch('/api/chat/session', { method: 'POST' });
+                if (!response.ok) throw new Error('Session creation failed');
+                const data = await response.json();
+                chatSessionId = data.session_id;
+
+                // Remove loading state
+                loadingDiv.remove();
+                sendBtn.disabled = false;
+
+            } catch (err) {
+                console.error('Failed to initialize chat session:', err);
+                // Fix #42: Show retry button on error
+                const loadingDiv = document.getElementById('session-loading');
+                if (loadingDiv) {
+                    loadingDiv.innerHTML = `
+                        <p style="color: #d32f2f;">Failed to start chat</p>
+                        <button onclick="initChatSession()" class="suggestion-chip" style="margin-top: 8px;">
+                            Retry
+                        </button>
+                    `;
+                }
+                showToast('Failed to initialize chat session', 'error');
+            }
+        }
+
+        function chatSendMessage() {
+            const input = document.getElementById('chat-input');
+            const message = input.value.trim();
+            const sendBtn = document.getElementById('chat-send-btn');
+
+            if (!message || isStreaming || !chatSessionId) return;
+
+            // Add user message
+            const messagesContainer = document.getElementById('chat-messages');
+            const userMsg = document.createElement('div');
+            userMsg.className = 'chat-message user';
+            // Fix #51: Add message ID
+            userMsg.setAttribute('data-message-id', `msg-${++messageIdCounter}`);
+            userMsg.innerHTML = `<div class="chat-message-bubble">${escapeHtml(message)}</div>`;
+            messagesContainer.appendChild(userMsg);
+
+            // Clear input and reset height
+            input.value = '';
+            input.style.height = 'auto';
+
+            // Scroll to bottom
+            messagesContainer.scrollTop = messagesContainer.scrollHeight;
+
+            // Track for suggestions
+            lastQuery = message;
+
+            // Send message with streaming
+            chatStreamMessage(message);
+        }
+
+        function chatSendSuggestion(message) {
+            const input = document.getElementById('chat-input');
+            input.value = message;
+            chatSendMessage();
+        }
+
+        async function chatStreamMessage(message) {
+            if (isStreaming || !chatSessionId) return;
+
+            isStreaming = true;
+            const messagesContainer = document.getElementById('chat-messages');
+            const sendBtn = document.getElementById('chat-send-btn');
+
+            // Fix #39: Disable send button during streaming
+            sendBtn.disabled = true;
+            sendBtn.style.opacity = '0.5';
+
+            // Fix #45: Set aria-busy for accessibility
+            messagesContainer.setAttribute('aria-busy', 'true');
+
+            // Hide welcome message
+            const welcome = document.querySelector('.chat-welcome');
+            if (welcome) welcome.style.display = 'none';
+
+            // Add typing indicator
+            const typingDiv = document.createElement('div');
+            typingDiv.className = 'chat-message assistant';
+            typingDiv.innerHTML = '<div class="typing-indicator"><div class="typing-dot"></div><div class="typing-dot"></div><div class="typing-dot"></div></div>';
+            messagesContainer.appendChild(typingDiv);
+
+            // Build SSE URL with query parameters
+            const url = `/api/chat/stream?message=${encodeURIComponent(message)}&session_id=${chatSessionId}`;
+
+            try {
+                const response = await fetch(url);
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder();
+
+                let buffer = '';
+                let fullResponse = '';
+                let sourcesList = [];
+
+                // Remove typing indicator before first content
+                typingDiv.remove();
+
+                // Create assistant message container
+                const assistantDiv = document.createElement('div');
+                assistantDiv.className = 'chat-message assistant';
+                // Fix #51: Add message ID
+                assistantDiv.setAttribute('data-message-id', `msg-${++messageIdCounter}`);
+                const messageBubble = document.createElement('div');
+                messageBubble.className = 'chat-message-bubble';
+                assistantDiv.appendChild(messageBubble);
+                messagesContainer.appendChild(assistantDiv);
+
+                // Start typewriter effect
+                startTypewriter(messageBubble);
+
+                while (true) {
+                    const { done, value } = await reader.read();
+
+                    if (done) break;
+
+                    buffer += decoder.decode(value, { stream: true });
+
+                    // SSE events are delimited by double newlines
+                    // Split on \\n\\n to get complete events
+                    const events = buffer.split('\\n\\n');
+
+                    // Keep the last incomplete event in buffer
+                    buffer = events.pop() || '';
+
+                    for (const eventBlock of events) {
+                        if (!eventBlock.trim()) continue;
+
+                        // Skip heartbeat comments
+                        if (eventBlock.startsWith(':')) continue;
+
+                        // Parse event type and data from block
+                        let eventType = null;
+                        let eventData = null;
+
+                        for (const line of eventBlock.split('\\n')) {
+                            if (line.startsWith('event: ')) {
+                                eventType = line.slice(7);
+                            } else if (line.startsWith('data: ')) {
+                                try {
+                                    eventData = JSON.parse(line.slice(6));
+                                } catch (parseErr) {
+                                    console.error('Failed to parse SSE data:', line, parseErr);
+                                    continue;
+                                }
+                            }
+                        }
+
+                        if (!eventType || !eventData) continue;
+
+                        if (eventType === 'sources') {
+                            sourcesList = eventData.sources || [];
+                            lastSources = sourcesList;  // Track for suggestions
+                            displaySources(sourcesList);
+                        } else if (eventType === 'warning') {
+                            // Fix #36: Show warning toast
+                            showToast(eventData.message, 'warning');
+                        } else if (eventType === 'token') {
+                            // Add token to typewriter queue for smooth animation
+                            addToTypewriter(eventData.token);
+                            fullResponse += eventData.token;
+                        } else if (eventType === 'citation') {
+                            // Stop typewriter and render with citations
+                            stopTypewriter();
+                            messageBubble.innerHTML = renderMessageWithCitations(fullResponse, sourcesList);
+                        } else if (eventType === 'done') {
+                            showSuggestions(eventData.suggested_followups || []);
+                        } else if (eventType === 'error') {
+                            throw new Error(eventData.error || 'Unknown error');
+                        }
+                    }
+                }
+
+                // Stop typewriter and final re-render with all citations
+                stopTypewriter();
+                messageBubble.innerHTML = renderMessageWithCitations(fullResponse, sourcesList);
+
+            } catch (err) {
+                console.error('Chat error:', err);
+                stopTypewriter();  // Clean up on error
+                // Fix #42: Error recovery UI with retry button
+                const errorDiv = document.createElement('div');
+                errorDiv.className = 'chat-message assistant';
+                const escapedMessage = escapeHtml(message).replace(/'/g, "\\\\'");
+                errorDiv.innerHTML = '<div class="chat-message-bubble" style="color: #d32f2f;">' +
+                    'Error: ' + escapeHtml(err.message) +
+                    '<button onclick="retryLastMessage(\\'' + escapedMessage + '\\')" class="retry-btn" style="margin-left: 8px; padding: 2px 8px; font-size: 11px; cursor: pointer;">' +
+                    'Retry</button></div>';
+                messagesContainer.appendChild(errorDiv);
+                showToast('Message failed to send', 'error');
+            } finally {
+                isStreaming = false;
+                // Fix #39: Re-enable send button
+                sendBtn.disabled = false;
+                sendBtn.style.opacity = '1';
+                // Fix #45: Clear aria-busy
+                messagesContainer.setAttribute('aria-busy', 'false');
+                messagesContainer.scrollTop = messagesContainer.scrollHeight;
+                document.getElementById('chat-input').focus();
+            }
+        }
+
+        // Fix #42: Retry function
+        function retryLastMessage(message) {
+            // Remove the error message
+            const messages = document.querySelectorAll('.chat-message');
+            const lastMsg = messages[messages.length - 1];
+            if (lastMsg && lastMsg.querySelector('.retry-btn')) {
+                lastMsg.remove();
+            }
+            chatStreamMessage(message);
+        }
+
+        function renderMessageWithCitations(text, sources) {
+            // Escape HTML and linkify citations with source data
+            let html = escapeHtml(text);
+
+            // Build source map from sources array (1-indexed)
+            const sourceMap = {};
+            if (sources && Array.isArray(sources)) {
+                sources.forEach((source, idx) => {
+                    sourceMap[idx + 1] = source;  // Citations are 1-indexed
+                });
+            }
+
+            html = html.replace(/\\[(\\d+)\\]/g, (match, num) => {
+                const source = sourceMap[parseInt(num)];
+                if (source && source.url) {
+                    const sourceData = JSON.stringify({
+                        url: source.url,
+                        author: source.author || 'source',
+                        type: source.type || 'web',
+                        quote: (source.text || '').slice(0, 150),
+                        published_at: source.published_at || null
+                    }).replace(/"/g, '&quot;');
+
+                    return '<a href="' + escapeHtml(source.url) + '" target="_blank" rel="noopener" ' +
+                           'class="citation-marker" data-source="' + sourceData + '">' + match + '</a>';
+                }
+                // No source found - render as plain span
+                return '<span class="citation-marker" style="cursor: default; opacity: 0.6;">' + match + '</span>';
+            });
+            return html;
+        }
+
+        // Fix #43: Show author/title in source chips
+        function displaySources(sources) {
+            const panel = document.getElementById('sources-panel');
+            const list = document.getElementById('sources-list');
+
+            list.innerHTML = '';
+
+            sources.forEach((source, idx) => {
+                const chip = document.createElement('div');
+                chip.className = 'source-chip';
+                const icon = source.type === 'twitter' ? '🐦' : source.type === 'youtube' ? '📺' : '📰';
+                // Fix #43: Show truncated author/title
+                const label = source.author || source.title || source.type;
+                const truncated = label.length > 15 ? label.slice(0, 12) + '...' : label;
+                chip.innerHTML = `
+                    <span>${icon}</span>
+                    <span class="source-label" title="${escapeHtml(label)}">${escapeHtml(truncated)}</span>
+                `;
+                chip.title = label;  // Full name on hover
+                list.appendChild(chip);
+            });
+
+            // Fix #53: Animate panel visibility
+            if (sources.length > 0) {
+                panel.style.display = 'block';
+                setTimeout(() => panel.classList.add('visible'), 10);
+            } else {
+                panel.classList.remove('visible');
+                setTimeout(() => { panel.style.display = 'none'; }, 300);
+            }
+        }
+
+        function showSuggestions(suggestions) {
+            if (!suggestions || suggestions.length === 0) return;
+
+            const container = document.getElementById('suggestions-container');
+            const list = document.getElementById('suggestions-list');
+
+            list.innerHTML = '';
+
+            suggestions.forEach(suggestion => {
+                const chip = document.createElement('button');
+                chip.className = 'suggestion-chip';
+                chip.textContent = suggestion;
+                chip.onclick = () => chatSendSuggestion(suggestion);
+                list.appendChild(chip);
+            });
+
+            container.style.display = 'block';
+        }
+
+        function escapeHtml(text) {
+            const map = {
+                '&': '&amp;',
+                '<': '&lt;',
+                '>': '&gt;',
+                '"': '&quot;',
+                "'": '&#039;'
+            };
+            return text.replace(/[&<>"']/g, m => map[m]);
+        }
+
+        // Chat widget controls
+        document.getElementById('chat-send-btn').onclick = chatSendMessage;
+
+        document.getElementById('chat-input').addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                chatSendMessage();
+            }
+        });
+
+        document.getElementById('chat-input').addEventListener('input', (e) => {
+            e.target.style.height = 'auto';
+            e.target.style.height = Math.min(e.target.scrollHeight, 120) + 'px';
+        });
+
+        // Fix #40: Handle mobile keyboard
+        const chatInput = document.getElementById('chat-input');
+        const chatWidget = document.getElementById('chat-widget');
+
+        chatInput.addEventListener('focus', () => {
+            chatWidget.classList.add('keyboard-open');
+        });
+
+        chatInput.addEventListener('blur', () => {
+            chatWidget.classList.remove('keyboard-open');
+        });
+
+        document.getElementById('chat-toggle-btn').onclick = () => {
+            const widget = document.getElementById('chat-widget');
+            widget.classList.toggle('collapsed');
+        };
+
+        document.getElementById('chat-close-btn').onclick = () => {
+            document.getElementById('chat-widget').style.display = 'none';
+        };
+
+        // Initialize on page load
+        window.addEventListener('load', initChatSession);
     </script>
 </body>
 </html>
@@ -1512,6 +2554,403 @@ def publish():
 
     except Exception as e:
         return jsonify({"success": False, "message": f"Error: {str(e)}"})
+
+
+# Chat API Endpoints
+import json
+import uuid
+from agents.chat_agent import ChatAgent
+from agents.telemetry import setup_telemetry, get_tracer
+from agents.hybrid_retriever import warmup_embedding_model
+
+
+# Common starter questions to pre-compute embeddings for (instant response on these)
+COMMON_CHAT_QUERIES = [
+    # General AI news queries
+    "What's the latest AI news?",
+    "What happened in AI today?",
+    "Tell me about recent AI developments",
+    "What are the top AI stories?",
+    "Any breaking AI news?",
+    # Model-specific queries
+    "What's new with GPT?",
+    "Tell me about Claude updates",
+    "What's happening with Gemini?",
+    "OpenAI news",
+    "Anthropic announcements",
+    "Google AI updates",
+    # Topic-specific queries
+    "AI safety news",
+    "AI agents news",
+    "Large language models news",
+    "AI regulation updates",
+    "Open source AI news",
+    # Follow-up style questions (from _generate_followups)
+    "What about Claude, Gemini, and other AI models?",
+    "How does this compare to GPT and other models?",
+    "When is this expected to be available?",
+    "What's the longer-term outlook?",
+    "What are the limitations or tradeoffs?",
+    "What safeguards are being implemented?",
+    "How does this perform on real-world tasks?",
+    "Tell me more about this",
+    "What are the key implications?",
+    "How does this affect the industry?",
+    "What are experts saying about this?",
+    "Compare perspectives from different sources",
+    "Tell me about the timeline",
+    "What are the key steps involved?",
+    "What's the motivation behind this?",
+]
+
+
+# Initialize telemetry and chat agent
+try:
+    setup_telemetry(service_name="linkedin_feed", db_path=str(AI_NEWS_DB))
+    chat_agent = ChatAgent(db_path=str(AI_NEWS_DB))
+
+    # Warm up embedding model at startup to eliminate cold-start latency
+    print("\n[Startup] Warming up embedding model...")
+    warmup_embedding_model(precompute_queries=COMMON_CHAT_QUERIES)
+    print("[Startup] Embedding model ready\n")
+
+except Exception as e:
+    print(f"[Warning] Failed to initialize chat agent: {e}")
+    chat_agent = None
+
+
+@app.route('/api/chat/session', methods=['POST'])
+def create_chat_session():
+    """Create a new chat session and return session_id"""
+    if not chat_agent:
+        return jsonify({"error": "Chat not available"}), 503
+
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+
+        session_id = str(uuid.uuid4())
+        user_id = get_user_id()
+
+        cursor.execute("""
+            INSERT INTO chat_sessions (session_id, user_id, last_activity)
+            VALUES (?, ?, ?)
+        """, (session_id, user_id, datetime.now().isoformat()))
+
+        conn.commit()
+        conn.close()
+
+        return jsonify({
+            "session_id": session_id,
+            "created_at": datetime.now().isoformat()
+        })
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/chat/history/<session_id>', methods=['GET'])
+def get_chat_history(session_id):
+    """Get chat message history for a session"""
+    if not chat_agent:
+        return jsonify({"error": "Chat not available"}), 503
+
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+        user_id = get_user_id()
+
+        # Fix #37: Verify session ownership before returning data
+        cursor.execute("""
+            SELECT user_id FROM chat_sessions WHERE session_id = ?
+        """, (session_id,))
+        session = cursor.fetchone()
+
+        if not session or session["user_id"] != user_id:
+            conn.close()
+            return jsonify({"error": "Session not found"}), 404
+
+        # Get messages in chronological order
+        cursor.execute("""
+            SELECT role, content, citations, created_at
+            FROM chat_messages
+            WHERE session_id = ?
+            ORDER BY created_at ASC
+            LIMIT 50
+        """, (session_id,))
+
+        messages = []
+        for row in cursor.fetchall():
+            msg = {
+                "role": row["role"],
+                "content": row["content"],
+                "created_at": row["created_at"]
+            }
+            if row["citations"]:
+                msg["citations"] = json.loads(row["citations"])
+            messages.append(msg)
+
+        conn.close()
+        return jsonify({"messages": messages})
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/chat', methods=['POST'])
+def chat_non_streaming():
+    """Non-streaming chat endpoint (fallback for clients without SSE support)"""
+    if not chat_agent:
+        return jsonify({"error": "Chat not available"}), 503
+
+    try:
+        data = request.json
+        query = data.get('message', '').strip()
+        session_id = data.get('session_id')
+
+        if not query:
+            return jsonify({"error": "Empty message"}), 400
+
+        if not session_id:
+            return jsonify({"error": "session_id required"}), 400
+
+        # Get conversation history
+        conn = get_db()
+        cursor = conn.cursor()
+
+        cursor.execute("""
+            SELECT role, content
+            FROM chat_messages
+            WHERE session_id = ?
+            ORDER BY created_at ASC
+            LIMIT 10
+        """, (session_id,))
+
+        history = [
+            {"role": row["role"], "content": row["content"]}
+            for row in cursor.fetchall()
+        ]
+
+        # Generate response
+        full_response = ""
+        citations_extracted = []
+        sources_list = []
+
+        for event in chat_agent.stream_response_sync(query, session_id, history):
+            if event.event == "sources":
+                sources_list = event.data.get("sources", [])
+            elif event.event == "token":
+                full_response += event.data["token"]
+            elif event.event == "citation":
+                citations_extracted.append(event.data)
+
+        # Store in database
+        message_id = str(uuid.uuid4())
+        cursor.execute("""
+            INSERT INTO chat_messages (message_id, session_id, role, content)
+            VALUES (?, ?, ?, ?)
+        """, (message_id, session_id, "user", query))
+
+        response_id = str(uuid.uuid4())
+        retrieval_context = json.dumps(sources_list) if sources_list else None
+        cursor.execute("""
+            INSERT INTO chat_messages (message_id, session_id, role, content, citations, retrieval_context)
+            VALUES (?, ?, ?, ?, ?, ?)
+        """, (response_id, session_id, "assistant", full_response, json.dumps(citations_extracted), retrieval_context))
+
+        cursor.execute("""
+            UPDATE chat_sessions
+            SET message_count = message_count + 2,
+                last_activity = ?
+            WHERE session_id = ?
+        """, (datetime.now().isoformat(), session_id))
+
+        conn.commit()
+        conn.close()
+
+        return jsonify({
+            "response": full_response,
+            "sources": sources_list,
+            "citations": citations_extracted
+        })
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/chat/stream', methods=['GET'])
+def chat_stream():
+    """SSE streaming chat endpoint"""
+    if not chat_agent:
+        return jsonify({"error": "Chat not available"}), 503
+
+    query = request.args.get('message', '').strip()
+    session_id = request.args.get('session_id', '')
+
+    if not query:
+        return jsonify({"error": "Empty message"}), 400
+
+    if not session_id:
+        return jsonify({"error": "session_id required"}), 400
+
+    import time
+
+    def generate():
+        # Fix #38: Use try/finally to ensure connection cleanup
+        conn = None
+        try:
+            # Get conversation history
+            conn = get_db()
+            cursor = conn.cursor()
+
+            cursor.execute("""
+                SELECT role, content
+                FROM chat_messages
+                WHERE session_id = ?
+                ORDER BY created_at ASC
+                LIMIT 10
+            """, (session_id,))
+
+            history = [
+                {"role": row["role"], "content": row["content"]}
+                for row in cursor.fetchall()
+            ]
+
+            # Store user message
+            message_id = str(uuid.uuid4())
+            cursor.execute("""
+                INSERT INTO chat_messages (message_id, session_id, role, content)
+                VALUES (?, ?, ?, ?)
+            """, (message_id, session_id, "user", query))
+            conn.commit()
+
+            # Stream response events
+            full_response = ""
+            citations_extracted = []
+            sources_list = []
+            last_heartbeat = time.time()
+
+            for event in chat_agent.stream_response_sync(query, session_id, history):
+                if event.event == "sources":
+                    sources_list = event.data.get("sources", [])
+                    yield f"event: sources\ndata: {json.dumps(event.data)}\n\n"
+                elif event.event == "warning":
+                    # Fix #36: Forward warning events to client
+                    yield f"event: warning\ndata: {json.dumps(event.data)}\n\n"
+                elif event.event == "token":
+                    full_response += event.data["token"]
+                    yield f"event: token\ndata: {json.dumps(event.data)}\n\n"
+                elif event.event == "citation":
+                    citations_extracted.append(event.data)
+                    yield f"event: citation\ndata: {json.dumps(event.data)}\n\n"
+                elif event.event == "done":
+                    yield f"event: done\ndata: {json.dumps(event.data)}\n\n"
+                elif event.event == "error":
+                    yield f"event: error\ndata: {json.dumps(event.data)}\n\n"
+
+                # Fix #47: Send heartbeat every 15 seconds to prevent timeout
+                if time.time() - last_heartbeat > 15:
+                    yield ": heartbeat\n\n"
+                    last_heartbeat = time.time()
+
+            # Store assistant response in database with retrieval context
+            response_id = str(uuid.uuid4())
+            retrieval_context = json.dumps(sources_list) if sources_list else None
+            cursor.execute("""
+                INSERT INTO chat_messages (message_id, session_id, role, content, citations, retrieval_context)
+                VALUES (?, ?, ?, ?, ?, ?)
+            """, (response_id, session_id, "assistant", full_response, json.dumps(citations_extracted), retrieval_context))
+
+            cursor.execute("""
+                UPDATE chat_sessions
+                SET message_count = message_count + 2,
+                    last_activity = ?
+                WHERE session_id = ?
+            """, (datetime.now().isoformat(), session_id))
+
+            conn.commit()
+
+        except Exception as e:
+            yield f"event: error\ndata: {json.dumps({'error': str(e)})}\n\n"
+        finally:
+            # Fix #38: Always close connection
+            if conn:
+                conn.close()
+
+    return app.response_class(
+        generate(),
+        mimetype="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no"
+        }
+    )
+
+
+@app.route('/api/chat/sessions/<session_id>', methods=['DELETE'])
+def delete_chat_session(session_id):
+    """Delete a chat session (GDPR compliance)"""
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+
+        # Delete messages
+        cursor.execute("DELETE FROM chat_messages WHERE session_id = ?", (session_id,))
+
+        # Delete session
+        cursor.execute("DELETE FROM chat_sessions WHERE session_id = ?", (session_id,))
+
+        conn.commit()
+        conn.close()
+
+        return jsonify({"success": True, "message": "Session deleted"})
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/chat/suggest', methods=['POST'])
+def suggest_followups():
+    """Generate follow-up question suggestions based on response context"""
+    # Fix #46: Reuse global chat_agent instance
+    if not chat_agent:
+        return jsonify({"error": "Chat not available"}), 503
+
+    try:
+        data = request.json
+        last_response = data.get('last_response', '')
+        last_query = data.get('last_query', '')  # Fix #33: Add missing query param
+        context_sources = data.get('context_sources', [])
+
+        if not last_response:
+            return jsonify({"error": "last_response is required"}), 400
+
+        # Fix #33: Convert source dicts to Source objects
+        from agents.chat_agent import Source
+        source_objects = [
+            Source(
+                id=s.get('id', ''),
+                type=s.get('type', 'unknown'),
+                author=s.get('author'),
+                title=s.get('title'),
+                text=s.get('text', ''),
+                url=s.get('url', '')
+            )
+            for s in context_sources
+        ]
+
+        # Fix #33: Use correct parameter signature
+        suggestions = chat_agent._generate_followups(
+            query=last_query,
+            response=last_response,
+            sources=source_objects
+        )
+
+        return jsonify({"suggestions": suggestions})
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 
 if __name__ == '__main__':

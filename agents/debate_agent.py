@@ -49,11 +49,10 @@ USAGE:
     # result contains argument_for_a, argument_for_b, winner, reasoning, confidence
 """
 
-import json
-import subprocess
-from typing import Dict, Optional
+from typing import Dict
 
 from .post_variant import PostVariant
+from .llm_client import call_llm_json, LLMError
 
 
 class DebateAgent:
@@ -105,33 +104,6 @@ Respond in JSON format:
         """Initialize the Debate Agent"""
         pass
 
-    def _call_claude_cli(self, prompt: str) -> Optional[str]:
-        """
-        Call Claude CLI for debate.
-
-        Args:
-            prompt: The debate prompt
-
-        Returns:
-            Claude's response string or None if failed
-        """
-        try:
-            result = subprocess.run(
-                ['claude', '-p', prompt],
-                capture_output=True,
-                text=True,
-                timeout=60
-            )
-            if result.returncode == 0:
-                return result.stdout.strip()
-            return None
-        except subprocess.TimeoutExpired:
-            print("[DebateAgent] Claude CLI timed out")
-            return None
-        except Exception as e:
-            print(f"[DebateAgent] Claude call failed: {e}")
-            return None
-
     def conduct_debate(self, post_a: PostVariant, post_b: PostVariant) -> Dict:
         """
         Simulate a debate between two posts.
@@ -162,26 +134,20 @@ Respond in JSON format:
             content_b=post_b.content
         )
 
-        result = self._call_claude_cli(prompt)
-
-        if result:
-            try:
-                # Extract JSON from response
-                start = result.find('{')
-                end = result.rfind('}') + 1
-                if start >= 0 and end > start:
-                    data = json.loads(result[start:end])
-                    return {
-                        "post_a_id": post_a.variant_id,
-                        "post_b_id": post_b.variant_id,
-                        "argument_for_a": data.get("argument_for_a", ""),
-                        "argument_for_b": data.get("argument_for_b", ""),
-                        "winner": data.get("winner", "A"),
-                        "reasoning": data.get("reasoning", ""),
-                        "confidence": data.get("confidence", 0.5)
-                    }
-            except json.JSONDecodeError as e:
-                print(f"[DebateAgent] JSON parse error: {e}")
+        try:
+            data = call_llm_json(prompt, timeout=60)
+            if data:
+                return {
+                    "post_a_id": post_a.variant_id,
+                    "post_b_id": post_b.variant_id,
+                    "argument_for_a": data.get("argument_for_a", ""),
+                    "argument_for_b": data.get("argument_for_b", ""),
+                    "winner": data.get("winner", "A"),
+                    "reasoning": data.get("reasoning", ""),
+                    "confidence": data.get("confidence", 0.5)
+                }
+        except LLMError as e:
+            print(f"[DebateAgent] LLM error: {e}")
 
         # Fallback: decide based on QE scores
         print("[DebateAgent] Using fallback (QE scores)")

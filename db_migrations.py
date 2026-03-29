@@ -46,7 +46,7 @@ For complex changes, use the copy-and-replace pattern:
 CURRENT VERSIONS
 ----------------
 - discord_links: v2 (base schema + temporal metadata)
-- ai_news: v9 (base + web_articles + tournaments + likes + sources + youtube + hybrid embeddings + citations + granular quotes)
+- ai_news: v10 (base + web_articles + tournaments + likes + sources + youtube + hybrid embeddings + citations + granular quotes + otel + mastodon)
 
 USAGE
 -----
@@ -272,7 +272,7 @@ def migrate_discord_db(conn: sqlite3.Connection) -> int:
 # AI NEWS DATABASE MIGRATIONS
 # =============================================================================
 
-AI_NEWS_DB_VERSION = 9
+AI_NEWS_DB_VERSION = 11
 
 AI_NEWS_MIGRATIONS: Dict[int, List[str]] = {
     # Version 1: Initial schema
@@ -647,6 +647,93 @@ AI_NEWS_MIGRATIONS: Dict[int, List[str]] = {
         # start_time: YouTube timestamp in seconds (for deep-linking with &t=XXs)
         "ALTER TABLE tournament_sources ADD COLUMN cited_quote TEXT",
         "ALTER TABLE tournament_sources ADD COLUMN start_time REAL",
+    ],
+
+    # Version 10: OpenTelemetry spans + Mastodon approval queue
+    10: [
+        # OTEL spans table - self-hosted tracing storage
+        """
+        CREATE TABLE IF NOT EXISTS otel_spans (
+            span_id TEXT PRIMARY KEY,
+            trace_id TEXT NOT NULL,
+            parent_span_id TEXT,
+            name TEXT NOT NULL,
+            kind TEXT DEFAULT 'INTERNAL',
+            start_time_unix_nano INTEGER,
+            end_time_unix_nano INTEGER,
+            duration_ms REAL GENERATED ALWAYS AS
+                ((end_time_unix_nano - start_time_unix_nano) / 1000000.0) STORED,
+            status_code TEXT DEFAULT 'OK',
+            status_message TEXT,
+            attributes JSON,
+            events JSON,
+            resource JSON,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+        """,
+        "CREATE INDEX IF NOT EXISTS idx_spans_trace ON otel_spans(trace_id)",
+        "CREATE INDEX IF NOT EXISTS idx_spans_name ON otel_spans(name)",
+        "CREATE INDEX IF NOT EXISTS idx_spans_start ON otel_spans(start_time_unix_nano)",
+        "CREATE INDEX IF NOT EXISTS idx_spans_parent ON otel_spans(parent_span_id)",
+
+        # Mastodon approval queue - posts awaiting Discord approval
+        """
+        CREATE TABLE IF NOT EXISTS mastodon_queue (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            tournament_run_id INTEGER,
+            content TEXT NOT NULL,
+            status TEXT DEFAULT 'pending',
+            discord_message_id TEXT,
+            mastodon_status_id TEXT,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            approved_at TEXT,
+            posted_at TEXT,
+            approved_by TEXT,
+            rejected_reason TEXT,
+            FOREIGN KEY (tournament_run_id) REFERENCES tournament_runs(id)
+        )
+        """,
+        "CREATE INDEX IF NOT EXISTS idx_mastodon_queue_status ON mastodon_queue(status)",
+        "CREATE INDEX IF NOT EXISTS idx_mastodon_queue_run ON mastodon_queue(tournament_run_id)",
+    ],
+
+    # Version 11: Chat sessions and messages for RAG chatbot
+    11: [
+        # Chat sessions table - anonymous sessions for conversation
+        """
+        CREATE TABLE IF NOT EXISTS chat_sessions (
+            session_id TEXT PRIMARY KEY,
+            user_id TEXT DEFAULT 'anonymous',
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            last_activity TEXT,
+            message_count INTEGER DEFAULT 0,
+            total_tokens INTEGER DEFAULT 0,
+            bucket_exported BOOLEAN DEFAULT FALSE,
+            bucket_path TEXT
+        )
+        """,
+
+        # Chat messages table - stores user and assistant messages
+        """
+        CREATE TABLE IF NOT EXISTS chat_messages (
+            message_id TEXT PRIMARY KEY,
+            session_id TEXT NOT NULL,
+            role TEXT NOT NULL,
+            content TEXT NOT NULL,
+            citations JSON,
+            retrieval_context JSON,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            latency_ms INTEGER,
+            input_tokens INTEGER,
+            output_tokens INTEGER,
+            FOREIGN KEY (session_id) REFERENCES chat_sessions(session_id)
+        )
+        """,
+
+        # Indexes for efficient queries
+        "CREATE INDEX IF NOT EXISTS idx_chat_messages_session ON chat_messages(session_id)",
+        "CREATE INDEX IF NOT EXISTS idx_chat_sessions_user ON chat_sessions(user_id)",
+        "CREATE INDEX IF NOT EXISTS idx_chat_sessions_activity ON chat_sessions(last_activity)",
     ],
 }
 

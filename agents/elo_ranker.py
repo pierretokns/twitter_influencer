@@ -52,6 +52,7 @@ from typing import Dict, List, Optional, Tuple
 
 from .post_variant import PostVariant
 from .debate_agent import DebateAgent
+from .telemetry import get_tracer
 
 
 class ELORanker:
@@ -209,44 +210,71 @@ class ELORanker:
         if len(variants) < 2:
             return variants, []
 
-        print(f"[ELORanker] Starting tournament: {len(variants)} variants, {rounds} rounds")
-        self.all_debates = []  # Reset debates
+        tracer = get_tracer("elo_ranker")
 
-        for round_num in range(1, rounds + 1):
-            print(f"[ELO] Round {round_num}/{rounds}...")
+        # Wrap entire tournament in a span
+        with tracer.start_as_current_span("elo_tournament") as tournament_span:
+            tournament_span.set_attribute("tournament.variant_count", len(variants))
+            tournament_span.set_attribute("tournament.rounds", rounds)
 
-            # Shuffle for random pairings
-            shuffled = variants.copy()
-            random.shuffle(shuffled)
+            print(f"[ELORanker] Starting tournament: {len(variants)} variants, {rounds} rounds")
+            self.all_debates = []  # Reset debates
 
-            match_num = 0
-            for i in range(0, len(shuffled) - 1, 2):
-                post_a = shuffled[i]
-                post_b = shuffled[i + 1]
-                match_num += 1
+            for round_num in range(1, rounds + 1):
+                with tracer.start_as_current_span(f"tournament_round_{round_num}") as round_span:
+                    round_span.set_attribute("round.number", round_num)
 
-                # Run debate
-                winner, debate_result = self.compare_posts_with_debate(post_a, post_b)
-                confidence = debate_result.get("confidence", 0.5)
+                    print(f"[ELO] Round {round_num}/{rounds}...")
 
-                # Update ratings
-                loser = post_b if winner == post_a else post_a
-                self._update_ratings(winner, loser, confidence)
+                    # Shuffle for random pairings
+                    shuffled = variants.copy()
+                    random.shuffle(shuffled)
 
-                print(f"  [Match {match_num}] {winner.variant_id} defeats {loser.variant_id} ({confidence*100:.0f}% conf)")
+                    match_num = 0
+                    for i in range(0, len(shuffled) - 1, 2):
+                        post_a = shuffled[i]
+                        post_b = shuffled[i + 1]
+                        match_num += 1
 
-                # Optional progress callback
-                if callback:
-                    callback(round_num, match_num, debate_result)
+                        with tracer.start_as_current_span("debate_match") as match_span:
+                            match_span.set_attribute("match.post_a", post_a.variant_id)
+                            match_span.set_attribute("match.post_b", post_b.variant_id)
+                            match_span.set_attribute("match.number", match_num)
 
-            time.sleep(0.5)
+                            # Run debate
+                            winner, debate_result = self.compare_posts_with_debate(post_a, post_b)
+                            confidence = debate_result.get("confidence", 0.5)
 
-        # Sort by ELO rating (highest first)
-        variants.sort(key=lambda x: x.elo_rating, reverse=True)
+                            # Update ratings
+                            loser = post_b if winner == post_a else post_a
+                            self._update_ratings(winner, loser, confidence)
 
-        print(f"[ELORanker] Tournament complete!")
-        for i, v in enumerate(variants[:3]):
-            print(f"  #{i+1}: {v.variant_id} (ELO: {v.elo_rating:.0f}, W{v.wins}-L{v.losses})")
+                            # Record outcome in span
+                            match_span.set_attribute("match.winner", winner.variant_id)
+                            match_span.set_attribute("match.loser", loser.variant_id)
+                            match_span.set_attribute("match.confidence", confidence)
+                            match_span.set_attribute("match.winner_elo", winner.elo_rating)
+                            match_span.set_attribute("match.loser_elo", loser.elo_rating)
+
+                            print(f"  [Match {match_num}] {winner.variant_id} defeats {loser.variant_id} ({confidence*100:.0f}% conf)")
+
+                            # Optional progress callback
+                            if callback:
+                                callback(round_num, match_num, debate_result)
+
+                time.sleep(0.5)
+
+            # Sort by ELO rating (highest first)
+            variants.sort(key=lambda x: x.elo_rating, reverse=True)
+
+            # Record final standings in tournament span
+            tournament_span.set_attribute("tournament.total_debates", len(self.all_debates))
+            tournament_span.set_attribute("tournament.winner_id", variants[0].variant_id if variants else "")
+            tournament_span.set_attribute("tournament.winner_elo", variants[0].elo_rating if variants else 0)
+
+            print(f"[ELORanker] Tournament complete!")
+            for i, v in enumerate(variants[:3]):
+                print(f"  #{i+1}: {v.variant_id} (ELO: {v.elo_rating:.0f}, W{v.wins}-L{v.losses})")
 
         return variants, self.all_debates
 

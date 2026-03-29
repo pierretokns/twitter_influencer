@@ -274,6 +274,10 @@ def _extract_key_entities(text: str) -> set:
         'chatgpt', 'copilot', 'bard', 'palm', 'torch', 'huggingface',
         'nvidia', 'apple', 'amazon', 'aws', 'azure', 'youtube', 'twitter',
         'hipaa', 'healthcare', 'epic', 'tailwind', 'github', 'reddit',
+        # New/emerging AI companies
+        'qwen', 'deepseek', 'fireworks', 'baseten', 'alibaba', 'elevenlabs',
+        'runway', 'pipecat', 'daily', 'modal', 'stability', 'stability ai',
+        'eleven labs', 'gemini 3', 'flash', 'dflash', 'o1', 'o1-mini',
     ]
 
     for entity in known_entities:
@@ -303,25 +307,28 @@ def _extract_key_entities(text: str) -> set:
 def find_sentence_source_mapping(
     sentences: List[str],
     source_texts: List[str],
-    threshold: float = 0.25,  # Increased from 0.15
+    threshold: float = 0.4,
     require_entity_overlap: bool = True
 ) -> Dict[int, int]:
     """
-    Map each sentence to its best matching source using TF-IDF similarity
-    with entity overlap validation.
+    Map each sentence to its best matching source using semantic similarity (BGE-M3).
 
     Used for Perplexity-style inline citation placement. Identifies which
     sentence in the generated content best matches which source text.
 
-    Key improvement over pure TF-IDF: requires that the sentence and source
-    share at least one key entity (company name, product, person, etc.) to
-    prevent false matches on generic AI vocabulary.
+    Upgraded to use BGE-M3 hybrid embeddings instead of TF-IDF for better semantic
+    matching of paraphrased content. This allows sentences like "Qwen demonstrated
+    AI agents" to match sources about "Qwen app completing tasks" semantically.
+
+    Now with dynamic entity overlap validation: requires matching entity terms
+    extracted from source texts (company names, product names, key terms) to appear
+    in both sentence and source before considering a match valid.
 
     Args:
         sentences: List of sentences from generated content
         source_texts: List of source texts (tweets, article snippets)
-        threshold: Minimum similarity to consider a match (increased to 0.25)
-        require_entity_overlap: If True, require shared entities for match
+        threshold: Minimum similarity to consider a match (increased from 0.25 to 0.4)
+        require_entity_overlap: Require entity term overlap between sentence and source (enabled by default)
 
     Returns:
         Dict mapping sentence_index -> source_index for sentences above threshold
@@ -329,34 +336,29 @@ def find_sentence_source_mapping(
     if not sentences or not source_texts:
         return {}
 
+    # Extract entities from each source text (dynamic entity terms)
+    source_entities = [_extract_key_entities(text) for text in source_texts]
+
     try:
-        from sklearn.feature_extraction.text import TfidfVectorizer
+        # Try to use BGE-M3 semantic embeddings first (better for paraphrases)
+        from ai_news_scraper import encode_texts_hybrid
+        import numpy as np
+
+        # Encode sentences and sources using hybrid embeddings
+        sentence_embeddings, _ = encode_texts_hybrid(sentences, max_length=512)
+        source_embeddings, _ = encode_texts_hybrid(source_texts, max_length=512)
+
+        # Compute semantic similarity using cosine distance
         from sklearn.metrics.pairwise import cosine_similarity
-    except ImportError:
-        print("[HybridRetriever] sklearn not available")
-        return {}
-
-    try:
-        # Pre-extract entities from all texts for overlap checking
-        sentence_entities = [_extract_key_entities(s) for s in sentences]
-        source_entities = [_extract_key_entities(s) for s in source_texts]
-
-        # Combine all texts for vectorization
-        vectorizer = TfidfVectorizer(stop_words='english', max_features=5000)
-        all_texts = source_texts + sentences
-        tfidf_matrix = vectorizer.fit_transform(all_texts)
-
-        n_sources = len(source_texts)
-        source_vecs = tfidf_matrix[:n_sources]
-        sentence_vecs = tfidf_matrix[n_sources:]
-
-        # For each sentence, find best matching source
-        similarities = cosine_similarity(sentence_vecs, source_vecs)
+        similarities = cosine_similarity(sentence_embeddings, source_embeddings)
 
         mapping = {}
         for sent_idx, row in enumerate(similarities):
             if len(row) == 0:
                 continue
+
+            # Extract entities from this sentence
+            sent_entities = _extract_key_entities(sentences[sent_idx])
 
             # Sort sources by similarity score descending
             sorted_sources = sorted(enumerate(row), key=lambda x: x[1], reverse=True)
@@ -365,29 +367,64 @@ def find_sentence_source_mapping(
                 if score < threshold:
                     break  # No more candidates above threshold
 
-                # Check entity overlap if required
+                # Check entity overlap if enabled
                 if require_entity_overlap:
-                    sent_ents = sentence_entities[sent_idx]
-                    src_ents = source_entities[source_idx]
-                    shared = sent_ents & src_ents
+                    # Require at least one entity term to match
+                    entity_overlap = sent_entities & source_entities[source_idx]
+                    if not entity_overlap:
+                        continue  # Skip this source, try next
 
-                    # Filter out generic AI terms that appear everywhere
-                    generic_terms = {'ai', 'the', 'new', 'just', 'today', 'now', 'one', 'year'}
-                    meaningful_shared = shared - generic_terms
-
-                    if not meaningful_shared:
-                        # No meaningful entity overlap, skip this source
-                        continue
-
-                # Found a valid match
+                # Found a valid semantic match with entity validation
                 mapping[sent_idx] = source_idx
                 break  # Move to next sentence
 
         return mapping
 
     except Exception as e:
-        print(f"[HybridRetriever] Sentence mapping failed: {e}")
-        return {}
+        print(f"[HybridRetriever] BGE-M3 mapping failed ({e}), falling back to TF-IDF")
+
+        # Fallback to TF-IDF if BGE-M3 unavailable
+        try:
+            from sklearn.feature_extraction.text import TfidfVectorizer
+            from sklearn.metrics.pairwise import cosine_similarity
+
+            vectorizer = TfidfVectorizer(stop_words='english', max_features=5000)
+            all_texts = source_texts + sentences
+            tfidf_matrix = vectorizer.fit_transform(all_texts)
+
+            n_sources = len(source_texts)
+            source_vecs = tfidf_matrix[:n_sources]
+            sentence_vecs = tfidf_matrix[n_sources:]
+
+            similarities = cosine_similarity(sentence_vecs, source_vecs)
+
+            mapping = {}
+            for sent_idx, row in enumerate(similarities):
+                if len(row) == 0:
+                    continue
+
+                # Extract entities from this sentence for TF-IDF path too
+                sent_entities = _extract_key_entities(sentences[sent_idx])
+
+                sorted_sources = sorted(enumerate(row), key=lambda x: x[1], reverse=True)
+                for source_idx, score in sorted_sources:
+                    if score < threshold:
+                        break
+
+                    # Check entity overlap if enabled (TF-IDF path)
+                    if require_entity_overlap:
+                        entity_overlap = sent_entities & source_entities[source_idx]
+                        if not entity_overlap:
+                            continue  # Skip this source, try next
+
+                    mapping[sent_idx] = source_idx
+                    break
+
+            return mapping
+
+        except Exception as e2:
+            print(f"[HybridRetriever] Sentence mapping failed: {e2}")
+            return {}
 
 
 def extract_citations(
@@ -427,7 +464,7 @@ def extract_citations(
 def find_best_paragraph_match(
     sentence: str,
     paragraphs: List[Dict],
-    threshold: float = 0.3
+    threshold: float = 0.35
 ) -> Optional[Dict]:
     """
     Find the specific paragraph/segment that best matches a sentence using BGE-M3.
@@ -568,6 +605,9 @@ def _find_best_paragraph_tfidf(
 # Singleton for BGE-M3 model (lazy loaded)
 _bge_m3_model = None
 
+# Cache for pre-computed embeddings (query -> (dense, sparse))
+_embedding_cache: Dict[str, Tuple[np.ndarray, np.ndarray]] = {}
+
 
 def get_bge_m3_model():
     """
@@ -603,10 +643,84 @@ def get_bge_m3_model():
     return _bge_m3_model
 
 
+def warmup_embedding_model(precompute_queries: Optional[List[str]] = None) -> bool:
+    """
+    Warm up the BGE-M3 model by loading it and optionally pre-computing embeddings.
+
+    Call this at server startup to eliminate cold-start latency on first chat request.
+
+    Args:
+        precompute_queries: Optional list of common queries to pre-compute embeddings for.
+                           These will be cached and returned instantly on match.
+
+    Returns:
+        True if warmup succeeded, False otherwise
+    """
+    import time
+    start = time.time()
+
+    print("[HybridRetriever] Warming up BGE-M3 model...")
+
+    # Load the model
+    model = get_bge_m3_model()
+    if model is None:
+        print("[HybridRetriever] Warmup failed: model not available")
+        return False
+
+    # Run a dummy encoding to warm up CUDA kernels / JIT compilation
+    try:
+        _ = model.encode(
+            ["warmup query for model initialization"],
+            max_length=64,
+            return_dense=True,
+            return_sparse=True,
+            return_colbert_vecs=False
+        )
+        print(f"[HybridRetriever] Model warmup complete ({time.time() - start:.2f}s)")
+    except Exception as e:
+        print(f"[HybridRetriever] Warmup encoding failed: {e}")
+        return False
+
+    # Pre-compute embeddings for common queries
+    if precompute_queries:
+        print(f"[HybridRetriever] Pre-computing embeddings for {len(precompute_queries)} queries...")
+        precompute_start = time.time()
+
+        dense, sparse = encode_texts_hybrid(precompute_queries, max_length=512)
+        if dense is not None and sparse is not None:
+            for i, query in enumerate(precompute_queries):
+                # Normalize query for cache lookup
+                cache_key = query.lower().strip()
+                _embedding_cache[cache_key] = (dense[i], sparse[i])
+
+            print(f"[HybridRetriever] Pre-computed {len(precompute_queries)} embeddings ({time.time() - precompute_start:.2f}s)")
+        else:
+            print("[HybridRetriever] Pre-computation failed")
+
+    total_time = time.time() - start
+    print(f"[HybridRetriever] Total warmup time: {total_time:.2f}s")
+    return True
+
+
+def get_cached_embedding(query: str) -> Optional[Tuple[np.ndarray, np.ndarray]]:
+    """
+    Get pre-computed embedding from cache if available.
+
+    Args:
+        query: The query text
+
+    Returns:
+        Tuple of (dense, sparse) embeddings if cached, None otherwise
+    """
+    cache_key = query.lower().strip()
+    return _embedding_cache.get(cache_key)
+
+
 def encode_texts_hybrid(
     texts: List[str],
     batch_size: int = 32,
-    max_length: int = 512
+    max_length: int = 512,
+    use_cache: bool = True
 ) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
     """
     Encode texts using BGE-M3 hybrid embeddings.
@@ -615,12 +729,20 @@ def encode_texts_hybrid(
         texts: List of texts to encode
         batch_size: Batch size for encoding
         max_length: Maximum sequence length (512 for tweets, 8192 for articles)
+        use_cache: Whether to check embedding cache for single queries (default True)
 
     Returns:
         Tuple of (dense_embeddings, sparse_embeddings) or (None, None) if failed.
         - dense_embeddings: (N, 1024) array
         - sparse_embeddings: (N, 256) array (top-K representation)
     """
+    # Check cache for single-query requests (common for chat)
+    if use_cache and len(texts) == 1:
+        cached = get_cached_embedding(texts[0])
+        if cached is not None:
+            dense, sparse = cached
+            return dense.reshape(1, -1), sparse.reshape(1, -1)
+
     model = get_bge_m3_model()
 
     if model is None:

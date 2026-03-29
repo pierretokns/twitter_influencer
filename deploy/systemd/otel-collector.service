@@ -1,0 +1,14 @@
+[Unit]
+Description=OpenTelemetry Collector with SQLite Exporter
+After=network.target
+
+[Service]
+Type=simple
+User=erki
+ExecStart=/home/erki/sqliteexporter/bin/otelcol-dev/otelcol-dev --config=/home/erki/otel-collector-config.yaml
+Restart=always
+RestartSec=10
+Environment=PATH=/usr/local/go/bin:/usr/bin:/bin
+
+[Install]
+WantedBy=multi-user.target
