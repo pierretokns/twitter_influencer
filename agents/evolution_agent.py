@@ -88,10 +88,12 @@ Rewrite this post to:
 3. REFERENCE specific news/data from the context above
 4. Make the hook (first 2 lines) MORE scroll-stopping
 5. Keep under 1300 characters
-6. NO markdown (no ** or #)
+6. NO markdown formatting (no ** for bold, no # for headers)
 7. Max 2 emojis
 8. End with thought-provoking question
 9. 3-5 hashtags at the end
+
+CRITICAL FORMATTING: Use 2-3 paragraph breaks (empty lines) to create visual structure. LinkedIn posts need white space for readability. The hook should be its own paragraph.
 
 ===== OUTPUT =====
 Write ONLY the improved post. No explanation. Start directly with the hook:'''

@@ -6,6 +6,15 @@
 #     "feedparser>=6.0.0",
 # ]
 # ///
+#
+# YOUTUBE CONTENT CHUNKING
+# ========================
+# This module also provides chunking functions for citation quote extraction.
+# See: chunk_youtube_description(), fetch_transcript_if_needed(), get_youtube_quote_with_timestamp()
+#
+# Architecture: RSS-first discovery with TranscriptAPI.com enrichment
+# Based on Pinecone best practices for YouTube semantic search (~75 word chunks)
+#
 """
 YouTube Channel RSS Scraper
 ===========================
@@ -30,7 +39,7 @@ import hashlib
 import re
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 from dataclasses import dataclass
 from urllib.parse import urlparse, parse_qs
 
@@ -380,6 +389,276 @@ def extract_channel_id_from_url(url: str) -> Optional[str]:
             pass
 
     return None
+
+
+# =============================================================================
+# YOUTUBE CONTENT CHUNKING FOR CITATION QUOTES
+# =============================================================================
+# Based on Pinecone best practices: https://www.pinecone.io/learn/youtube-search/
+# ~75 word chunks with timestamps for deep-linking
+
+# TranscriptAPI.com configuration
+TRANSCRIPT_API_KEY = os.getenv('TRANSCRIPT_API_KEY', 'sk_HX7Vjy6TH8kR5fe60f9SAhcCWbK9kZgvQqthmTBG2iE')
+TRANSCRIPT_API_URL = "https://api.transcriptapi.com/v1/transcript"
+
+
+def chunk_youtube_description(description: str, min_chunk: int = 30) -> List[Dict[str, Any]]:
+    """
+    Chunk YouTube description into semantic segments.
+
+    Descriptions typically contain:
+    - Summary paragraph(s)
+    - Timestamps/chapters
+    - Links and credits
+
+    We chunk on double newlines (natural paragraph breaks) first,
+    then fall back to sentence splitting.
+
+    Args:
+        description: YouTube video description text
+        min_chunk: Minimum characters per chunk
+
+    Returns:
+        List of chunk dicts with 'text', 'index', 'source' keys
+    """
+    if not description or len(description) < min_chunk:
+        return []
+
+    # First try: Split on double newlines (paragraph breaks)
+    segments = [s.strip() for s in description.split('\n\n') if len(s.strip()) >= min_chunk]
+
+    # If no good paragraphs, try sentence splitting
+    if not segments:
+        sentences = re.split(r'(?<=[.!?])\s+', description)
+        segments = [s.strip() for s in sentences if len(s.strip()) >= min_chunk]
+
+    return [{'text': s, 'index': i, 'source': 'description'} for i, s in enumerate(segments)]
+
+
+def fetch_transcript_if_needed(video_id: str, db_path: Path = DB_PATH) -> Optional[List[Dict[str, Any]]]:
+    """
+    Fetch transcript with timestamps only if we don't already have it.
+    Fails gracefully when API quota exceeded.
+
+    Pipeline: RSS Feed (discovery) → TranscriptAPI (enrichment)
+
+    Args:
+        video_id: YouTube video ID
+        db_path: Path to ai_news.db
+
+    Returns:
+        List of transcript segments with timestamps, or None
+    """
+    import json
+
+    conn = sqlite3.connect(str(db_path))
+    cursor = conn.cursor()
+
+    # Check if we already have transcript
+    cursor.execute(
+        "SELECT transcript FROM youtube_videos WHERE video_id = ? AND transcript IS NOT NULL AND transcript != ''",
+        (video_id,)
+    )
+    existing = cursor.fetchone()
+    if existing and existing[0]:
+        conn.close()
+        # Parse stored JSON transcript
+        try:
+            return json.loads(existing[0])
+        except:
+            return [{'text': existing[0], 'start': 0}]
+
+    # Fetch from API
+    try:
+        response = requests.get(
+            TRANSCRIPT_API_URL,
+            params={"video_id": video_id},
+            headers={"Authorization": f"Bearer {TRANSCRIPT_API_KEY}"},
+            timeout=30
+        )
+
+        if response.status_code == 200:
+            data = response.json()
+            # TranscriptAPI returns segments with timestamps
+            segments = data.get("segments", [])
+
+            # Save to database as JSON
+            if segments:
+                cursor.execute(
+                    "UPDATE youtube_videos SET transcript = ? WHERE video_id = ?",
+                    (json.dumps(segments), video_id)
+                )
+                conn.commit()
+                print(f"[TranscriptAPI] Fetched {len(segments)} segments for {video_id}")
+
+            conn.close()
+            return segments if segments else None
+
+        elif response.status_code == 429:
+            print("[TranscriptAPI] Quota exceeded, falling back to description")
+            conn.close()
+            return None
+
+        elif response.status_code == 404:
+            print(f"[TranscriptAPI] No transcript available for {video_id}")
+            conn.close()
+            return None
+
+        else:
+            print(f"[TranscriptAPI] Error {response.status_code}")
+            conn.close()
+            return None
+
+    except requests.RequestException as e:
+        print(f"[TranscriptAPI] Request failed: {e}")
+        conn.close()
+        return None
+
+
+def chunk_transcript_with_timestamps(
+    segments: List[Dict[str, Any]],
+    target_words: int = 75
+) -> List[Dict[str, Any]]:
+    """
+    Chunk transcript segments into ~100 token chunks with timestamps.
+
+    TranscriptAPI returns segments like:
+    [{"text": "Hello world", "start": 0.0, "duration": 2.5}, ...]
+
+    We merge these into larger semantic chunks while tracking start times.
+
+    Args:
+        segments: Raw transcript segments from API
+        target_words: Target words per chunk (~75 = ~100 tokens)
+
+    Returns:
+        List of chunks with 'text', 'start_time', 'index', 'source' keys
+    """
+    if not segments:
+        return []
+
+    chunks = []
+    current_chunk = {'text': '', 'start_time': 0.0, 'word_count': 0}
+
+    for seg in segments:
+        text = seg.get('text', '')
+        start = seg.get('start', 0.0)
+
+        # Start new chunk if empty
+        if not current_chunk['text']:
+            current_chunk['start_time'] = start
+
+        current_chunk['text'] += ' ' + text
+        current_chunk['word_count'] += len(text.split())
+
+        # Chunk boundary at target word count
+        if current_chunk['word_count'] >= target_words:
+            chunks.append({
+                'text': current_chunk['text'].strip(),
+                'start_time': current_chunk['start_time'],
+                'index': len(chunks),
+                'source': 'transcript'
+            })
+            current_chunk = {'text': '', 'start_time': 0.0, 'word_count': 0}
+
+    # Don't forget the last chunk
+    if current_chunk['text'].strip():
+        chunks.append({
+            'text': current_chunk['text'].strip(),
+            'start_time': current_chunk['start_time'],
+            'index': len(chunks),
+            'source': 'transcript'
+        })
+
+    return chunks
+
+
+def get_youtube_quote_with_timestamp(
+    video: Dict[str, Any],
+    sentence: str,
+    db_path: Path = DB_PATH
+) -> Tuple[Optional[str], Optional[str]]:
+    """
+    Get best matching quote from YouTube video.
+
+    Returns both the quote AND the timestamped URL for deep-linking.
+
+    Priority:
+    1. Transcript segment → URL with &t=XXs
+    2. Description chunk → URL without timestamp
+    3. Title → URL without timestamp
+
+    Args:
+        video: Video dict with 'video_id', 'description', 'title', 'url' keys
+        sentence: The sentence from generated post to match against
+        db_path: Path to ai_news.db
+
+    Returns:
+        Tuple of (quote_text, url_with_timestamp)
+    """
+    # Import here to avoid circular dependency
+    from agents.hybrid_retriever import find_best_paragraph_match
+
+    video_id = video.get('video_id', video.get('id', ''))
+    base_url = video.get('url', f'https://youtube.com/watch?v={video_id}')
+
+    # Try transcript first (enriched data)
+    transcript_segments = fetch_transcript_if_needed(video_id, db_path)
+    if transcript_segments:
+        chunks = chunk_transcript_with_timestamps(transcript_segments)
+        if chunks:
+            match = find_best_paragraph_match(sentence, chunks)
+            if match and match.get('start_time') is not None:
+                # Build timestamped URL
+                start_seconds = int(match['start_time'])
+                # Handle URLs that already have query params
+                if '?' in base_url:
+                    timestamped_url = f"{base_url}&t={start_seconds}s"
+                else:
+                    timestamped_url = f"{base_url}?t={start_seconds}s"
+                return (match['text'][:200], timestamped_url)
+
+    # Fallback to description (always available from RSS)
+    description = video.get('description', '')
+    desc_chunks = chunk_youtube_description(description)
+    if desc_chunks:
+        match = find_best_paragraph_match(sentence, desc_chunks)
+        if match:
+            return (match['text'][:200], base_url)  # No timestamp
+
+    # Final fallback to title
+    title = video.get('title', '')
+    return (title[:200] if title else None, base_url)
+
+
+def get_all_youtube_chunks(video: Dict[str, Any], db_path: Path = DB_PATH) -> List[Dict[str, Any]]:
+    """
+    Get all available chunks for a YouTube video (transcript + description).
+
+    Useful for pre-computing all searchable content.
+
+    Args:
+        video: Video dict with 'video_id', 'description' keys
+        db_path: Path to database
+
+    Returns:
+        Combined list of all chunks, transcript chunks first (if available)
+    """
+    video_id = video.get('video_id', video.get('id', ''))
+    all_chunks = []
+
+    # Try transcript first
+    transcript_segments = fetch_transcript_if_needed(video_id, db_path)
+    if transcript_segments:
+        transcript_chunks = chunk_transcript_with_timestamps(transcript_segments)
+        all_chunks.extend(transcript_chunks)
+
+    # Always add description chunks as fallback/supplement
+    description = video.get('description', '')
+    desc_chunks = chunk_youtube_description(description)
+    all_chunks.extend(desc_chunks)
+
+    return all_chunks
 
 
 # =============================================================================

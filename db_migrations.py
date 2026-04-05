@@ -46,7 +46,7 @@ For complex changes, use the copy-and-replace pattern:
 CURRENT VERSIONS
 ----------------
 - discord_links: v2 (base schema + temporal metadata)
-- ai_news: v6 (base + web_articles + tournaments + likes + sources + youtube)
+- ai_news: v9 (base + web_articles + tournaments + likes + sources + youtube + hybrid embeddings + citations + granular quotes)
 
 USAGE
 -----
@@ -272,7 +272,7 @@ def migrate_discord_db(conn: sqlite3.Connection) -> int:
 # AI NEWS DATABASE MIGRATIONS
 # =============================================================================
 
-AI_NEWS_DB_VERSION = 6
+AI_NEWS_DB_VERSION = 9
 
 AI_NEWS_MIGRATIONS: Dict[int, List[str]] = {
     # Version 1: Initial schema
@@ -582,6 +582,71 @@ AI_NEWS_MIGRATIONS: Dict[int, List[str]] = {
         "CREATE INDEX IF NOT EXISTS idx_yt_videos_channel ON youtube_videos(channel_id)",
         "CREATE INDEX IF NOT EXISTS idx_yt_videos_published ON youtube_videos(published_at)",
         "CREATE INDEX IF NOT EXISTS idx_yt_videos_ai_relevant ON youtube_videos(is_ai_relevant)",
+    ],
+
+    # Version 7: Hybrid embeddings + source attribution scoring
+    # NOTE: Vector embedding tables (tweet_embeddings_dense, tweet_embeddings_sparse, etc.)
+    # are created by sqlite-vec extension in AINewsDatabase._init_database()
+    # This migration only adds the attribution_score column for source tracking
+    7: [
+        # Add attribution_score to track how strongly each source influenced the generated post
+        # Score ranges from 0.0 to 1.0 based on TF-IDF similarity (Document Page Finder)
+        "ALTER TABLE tournament_sources ADD COLUMN attribution_score REAL DEFAULT 0.0",
+
+        # Index for finding referenced sources by attribution score
+        "CREATE INDEX IF NOT EXISTS idx_tournament_sources_referenced ON tournament_sources(is_referenced, attribution_score DESC)",
+    ],
+
+    # Version 8: Perplexity-style inline citations
+    # Add citation_number to track which [N] marker maps to which source
+    8: [
+        # citation_number: The inline marker number [1], [2], etc.
+        # NULL means source was referenced but not given an inline citation
+        "ALTER TABLE tournament_sources ADD COLUMN citation_number INTEGER DEFAULT NULL",
+
+        # Index for looking up sources by citation number
+        "CREATE INDEX IF NOT EXISTS idx_tournament_sources_citation ON tournament_sources(run_id, citation_number)",
+    ],
+
+    # Version 9: Granular citation quotes and content segments
+    # Supports paragraph-level quotes from web articles and timestamped YouTube segments
+    # Based on SOTA practices: Perplexity, Exa AI, Pinecone YouTube search
+    9: [
+        # Article paragraphs - semantic chunks from web articles
+        # Based on Meta-Chunking (arXiv 2410.12788) and Max-Min Semantic Chunking
+        """
+        CREATE TABLE IF NOT EXISTS article_paragraphs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            article_id TEXT NOT NULL,
+            paragraph_index INTEGER NOT NULL,
+            text TEXT NOT NULL,
+            char_start INTEGER,
+            FOREIGN KEY (article_id) REFERENCES web_articles(article_id)
+        )
+        """,
+        "CREATE INDEX IF NOT EXISTS idx_article_paragraphs_article ON article_paragraphs(article_id)",
+
+        # YouTube segments - transcript/description chunks with timestamps
+        # Based on Pinecone best practices: ~100 token segments with timestamps
+        """
+        CREATE TABLE IF NOT EXISTS youtube_segments (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            video_id TEXT NOT NULL,
+            segment_index INTEGER NOT NULL,
+            text TEXT NOT NULL,
+            start_time REAL,
+            end_time REAL,
+            source TEXT DEFAULT 'description',
+            FOREIGN KEY (video_id) REFERENCES youtube_videos(video_id)
+        )
+        """,
+        "CREATE INDEX IF NOT EXISTS idx_youtube_segments_video ON youtube_segments(video_id)",
+
+        # Add citation quote storage to tournament_sources
+        # cited_quote: The specific text excerpt supporting the citation
+        # start_time: YouTube timestamp in seconds (for deep-linking with &t=XXs)
+        "ALTER TABLE tournament_sources ADD COLUMN cited_quote TEXT",
+        "ALTER TABLE tournament_sources ADD COLUMN start_time REAL",
     ],
 }
 

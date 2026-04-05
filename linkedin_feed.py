@@ -308,7 +308,7 @@ HTML_TEMPLATE = '''
             padding: 0 16px 12px;
             font-size: 14px;
             line-height: 1.5;
-            white-space: pre-wrap;
+            white-space: pre-line;
             word-wrap: break-word;
         }
         .post-content .hook {
@@ -503,6 +503,129 @@ HTML_TEMPLATE = '''
             color: var(--text-secondary);
             font-style: italic;
         }
+
+        /* Cited source styling */
+        .source-item.cited {
+            border-left: 3px solid var(--linkedin-blue);
+            background: linear-gradient(90deg, rgba(10, 102, 194, 0.05), white);
+        }
+        .source-item.cited .source-header::before {
+            content: '✓';
+            color: var(--linkedin-blue);
+            font-weight: bold;
+            margin-right: 6px;
+        }
+        .source-score {
+            font-size: 11px;
+            font-weight: 600;
+            padding: 2px 6px;
+            border-radius: 4px;
+            background: var(--linkedin-blue);
+            color: white;
+            margin-left: 8px;
+        }
+        .source-score.low { background: var(--text-tertiary); }
+
+        /* Perplexity-style inline citation markers */
+        .citation-marker {
+            color: var(--linkedin-blue);
+            font-weight: 600;
+            text-decoration: none;
+            cursor: pointer;
+            background: rgba(10, 102, 194, 0.1);
+            padding: 1px 4px;
+            border-radius: 3px;
+            font-size: 0.85em;
+            margin: 0 1px;
+        }
+        .citation-marker:hover {
+            background: rgba(10, 102, 194, 0.25);
+            text-decoration: underline;
+        }
+        .citation-badge {
+            display: inline-block;
+            background: var(--linkedin-blue);
+            color: white;
+            font-size: 10px;
+            font-weight: 600;
+            padding: 2px 5px;
+            border-radius: 3px;
+            margin-right: 6px;
+        }
+
+        /* Rich citation popover (instant hover) */
+        .citation-popover {
+            position: fixed;
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+            padding: 12px;
+            max-width: 350px;
+            z-index: 10000;
+            opacity: 0;
+            visibility: hidden;
+            transition: opacity 0.1s, visibility 0.1s;
+            pointer-events: none;
+            font-size: 13px;
+        }
+        .citation-popover.visible {
+            opacity: 1;
+            visibility: visible;
+        }
+        .popover-header {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-bottom: 8px;
+            font-weight: 600;
+            color: var(--text-primary);
+        }
+        .popover-header .source-icon {
+            width: 16px;
+            height: 16px;
+            border-radius: 4px;
+        }
+        .popover-header .source-icon.twitter { background: #1DA1F2; }
+        .popover-header .source-icon.youtube { background: #FF0000; }
+        .popover-header .source-icon.web { background: #4CAF50; }
+        .popover-quote {
+            font-style: italic;
+            color: var(--text-secondary);
+            border-left: 3px solid var(--linkedin-blue);
+            padding-left: 8px;
+            margin: 8px 0;
+            font-size: 12px;
+            line-height: 1.4;
+        }
+        .popover-url {
+            font-size: 11px;
+            color: var(--text-tertiary);
+            word-break: break-all;
+            margin-top: 8px;
+        }
+        .popover-timestamp {
+            display: inline-block;
+            background: rgba(255, 0, 0, 0.1);
+            color: #CC0000;
+            font-size: 10px;
+            font-weight: 600;
+            padding: 2px 6px;
+            border-radius: 3px;
+            margin-left: 8px;
+        }
+
+        .sources-section-header {
+            font-size: 12px;
+            font-weight: 600;
+            color: var(--text-secondary);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin: 12px 0 8px 0;
+            padding-bottom: 4px;
+            border-bottom: 1px solid var(--border);
+        }
+        .sources-section-header:first-child { margin-top: 0; }
 
         /* Date separator */
         .date-separator {
@@ -851,80 +974,74 @@ HTML_TEMPLATE = '''
             const likeCount = post.like_count || 0;
             const timeAgo = getTimeAgo(post.completed_at);
 
-            return `<article class="post-card" data-run-id="${post.run_id}">
-                <div class="post-header">
-                    <div class="post-avatar ${post.was_published ? 'winner' : 'default'}">${initial}</div>
-                    <div class="post-meta">
-                        <div class="post-author">
-                            <a href="#">${post.hook_style || 'Tournament Winner'}</a>
-                            <span class="badge badge-winner">WINNER</span>
-                            ${post.was_published ? '<span class="badge badge-published">PUBLISHED</span>' : ''}
-                        </div>
-                        <div class="post-subtitle">Tournament #${post.run_id} &bull; ${post.num_variants} variants &bull; ${post.num_rounds} rounds</div>
-                        <div class="post-time">${timeAgo}</div>
-                    </div>
-                    <button class="post-menu" onclick="showPostMenu(${post.run_id})">
-                        <svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><path d="M14 12a2 2 0 11-4 0 2 2 0 014 0zm6 0a2 2 0 11-4 0 2 2 0 014 0zM6 12a2 2 0 11-4 0 2 2 0 014 0z"/></svg>
-                    </button>
-                </div>
-<div class="post-content ${isLong ? 'collapsed' : ''}" id="content-${post.run_id}"><span class="hook">${escapeHtml(hook)}</span>${rest ? '\\n' + escapeHtml(rest) : ''}</div>
-                ${isLong ? `<span class="see-more" onclick="expandPost(${post.run_id})">...see more</span>` : ''}
+            // Build citation source map for inline markers
+            const sourceMap = buildSourceMap(post.citation_sources || []);
 
-                <div class="post-metrics">
-                    <span class="metric ${post.winner_qe_score >= 75 ? 'high' : ''}">QE: ${post.winner_qe_score || 0}/100</span>
-                    <span class="metric">ELO: ${Math.round(post.winner_elo || 1000)}</span>
-                    <span class="metric">${post.total_debates || 0} debates</span>
-                </div>
-
-                <div class="reactions-summary">
-                    <div style="display: flex; align-items: center; gap: 4px;">
-                        ${likeCount > 0 ? `
-                            <span class="reaction-icons">
-                                <span class="reaction-icon like">+</span>
-                            </span>
-                            <span>${likeCount}</span>
-                        ` : ''}
-                    </div>
-                </div>
-
-                <div class="post-actions">
-                    <button class="action-btn ${isLiked ? 'liked' : ''}" onclick="toggleLike(${post.run_id})">
-                        <svg viewBox="0 0 24 24" fill="${isLiked ? 'currentColor' : 'none'}" stroke="currentColor" stroke-width="2">
-                            <path d="M14 9V5a3 3 0 00-3-3l-4 9v11h11.28a2 2 0 002-1.7l1.38-9a2 2 0 00-2-2.3zM7 22H4a2 2 0 01-2-2v-7a2 2 0 012-2h3"/>
-                        </svg>
-                        Like
-                    </button>
-                    <button class="action-btn" onclick="openPublish(${post.run_id})">
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                            <path d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z"/>
-                        </svg>
-                        Share
-                    </button>
-                    <button class="action-btn" onclick="copyToClipboard(${post.run_id})">
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                            <rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/>
-                        </svg>
-                        Copy
-                    </button>
-                    <button class="action-btn" onclick="toggleSources(${post.run_id})">
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                            <path d="M10 13a5 5 0 007.54.54l3-3a5 5 0 00-7.07-7.07l-1.72 1.71"/>
-                            <path d="M14 11a5 5 0 00-7.54-.54l-3 3a5 5 0 007.07 7.07l1.71-1.71"/>
-                        </svg>
-                        Sources ${post.source_count ? '(' + post.source_count + ')' : ''}
-                    </button>
-                </div>
-
-                <!-- Sources panel (hidden by default) -->
-                <div class="sources-panel" id="sources-${post.run_id}" style="display: none;">
-                    <div class="sources-loading">Loading sources...</div>
-                </div>
-            </article>`;
+            let html = `<article class="post-card" data-run-id="${post.run_id}"><div class="post-header"><div class="post-avatar ${post.was_published ? 'winner' : 'default'}">${initial}</div><div class="post-meta"><div class="post-author"><a href="#">${post.hook_style || 'Tournament Winner'}</a><span class="badge badge-winner">WINNER</span>${post.was_published ? '<span class="badge badge-published">PUBLISHED</span>' : ''}</div><div class="post-subtitle">Tournament #${post.run_id} &bull; ${post.num_variants} variants &bull; ${post.num_rounds} rounds</div><div class="post-time">${timeAgo}</div></div><button class="post-menu" onclick="showPostMenu(${post.run_id})"><svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><path d="M14 12a2 2 0 11-4 0 2 2 0 014 0zm6 0a2 2 0 11-4 0 2 2 0 014 0zM6 12a2 2 0 11-4 0 2 2 0 014 0z"/></svg></button></div>`;
+            // Render content with clickable citation markers [1], [2], etc.
+            const hookHtml = renderContentWithCitations(hook, sourceMap);
+            const restHtml = rest ? '\\n' + renderContentWithCitations(rest, sourceMap) : '';
+            html += `<div class="post-content ${isLong ? 'collapsed' : ''}" id="content-${post.run_id}"><span class="hook">${hookHtml}</span>${restHtml}</div>`;
+            if (isLong) html += `<span class="see-more" onclick="expandPost(${post.run_id})">...see more</span>`;
+            html += `<div class="post-metrics"><span class="metric ${post.winner_qe_score >= 75 ? 'high' : ''}">QE: ${post.winner_qe_score || 0}/100</span><span class="metric">ELO: ${Math.round(post.winner_elo || 1000)}</span><span class="metric">${post.total_debates || 0} debates</span></div>`;
+            html += `<div class="reactions-summary"><div style="display: flex; align-items: center; gap: 4px;">`;
+            if (likeCount > 0) html += `<span class="reaction-icons"><span class="reaction-icon like">+</span></span><span>${likeCount}</span>`;
+            html += `</div></div>`;
+            html += `<div class="post-actions"><button class="action-btn ${isLiked ? 'liked' : ''}" onclick="toggleLike(${post.run_id})"><svg viewBox="0 0 24 24" fill="${isLiked ? 'currentColor' : 'none'}" stroke="currentColor" stroke-width="2"><path d="M14 9V5a3 3 0 00-3-3l-4 9v11h11.28a2 2 0 002-1.7l1.38-9a2 2 0 00-2-2.3zM7 22H4a2 2 0 01-2-2v-7a2 2 0 012-2h3"/></svg>Like</button><button class="action-btn" onclick="openPublish(${post.run_id})"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z"/></svg>Share</button><button class="action-btn" onclick="copyToClipboard(${post.run_id})"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>Copy</button><button class="action-btn" onclick="toggleSources(${post.run_id})"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 13a5 5 0 007.54.54l3-3a5 5 0 00-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 00-7.54-.54l-3 3a5 5 0 007.07 7.07l1.71-1.71"/></svg>Sources ${post.source_count ? '(' + (post.cited_count ? post.cited_count + '/' : '') + post.source_count + ')' : ''}</button></div>`;
+            html += `<div class="sources-panel" id="sources-${post.run_id}" style="display: none;"><div class="sources-loading">Loading sources...</div></div>`;
+            html += `</article>`;
+            return html;
         }
 
         function escapeHtml(text) {
             if (!text) return '';
             return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        }
+
+        // Render content with clickable Perplexity-style citation markers
+        function renderContentWithCitations(content, sourceMap) {
+            // First escape HTML
+            let escaped = escapeHtml(content);
+
+            // Find citation markers like [1], [2], [3] and make them clickable
+            const markerRegex = /\\[(\\d+)\\]/g;
+
+            return escaped.replace(markerRegex, (match, num) => {
+                const source = sourceMap ? sourceMap[num] : null;
+                if (source && source.url) {
+                    // Encode source data for popover (escape for HTML attribute)
+                    const sourceData = JSON.stringify({
+                        url: source.url,
+                        author: source.author,
+                        type: source.type,
+                        quote: source.quote,
+                        startTime: source.startTime
+                    }).replace(/"/g, '&quot;');
+
+                    return '<a href="' + source.url + '" target="_blank" rel="noopener" ' +
+                           'class="citation-marker" data-source="' + sourceData + '">' + match + '</a>';
+                }
+                // No source URL found - render as plain text
+                return '<span class="citation-marker" style="cursor: default; opacity: 0.6;">' + match + '</span>';
+            });
+        }
+
+        // Build source URL map from sources array for citation rendering
+        function buildSourceMap(sources) {
+            const map = {};
+            if (!sources) return map;
+            sources.forEach(s => {
+                if (s.citation_number && s.source_url) {
+                    map[s.citation_number] = {
+                        url: s.source_url,
+                        author: s.source_author || 'unknown',
+                        type: s.source_type || 'web',
+                        quote: s.cited_quote || '',
+                        startTime: s.start_time || null
+                    };
+                }
+            });
+            return map;
         }
 
         function getTimeAgo(dateStr) {
@@ -996,20 +1113,26 @@ HTML_TEMPLATE = '''
                         const data = await response.json();
 
                         if (data.sources && data.sources.length > 0) {
-                            panel.innerHTML = `
-                                <ul class="source-list">
-                                    ${data.sources.map(s => `
-                                        <a href="${s.source_url || '#'}" target="_blank" class="source-item" ${!s.source_url ? 'style="pointer-events:none"' : ''}>
-                                            <div class="source-header">
-                                                <span class="source-type ${s.source_type}">${s.source_type}</span>
-                                                <span class="source-author">@${s.source_author || 'unknown'}</span>
-                                                <span class="source-url">${s.source_url ? new URL(s.source_url).hostname : ''}</span>
-                                            </div>
-                                            <div class="source-text">${escapeHtml(s.source_text || '')}</div>
-                                        </a>
-                                    `).join('')}
-                                </ul>
-                            `;
+                            // Split into cited and available sources
+                            const citedSources = data.sources.filter(s => s.is_referenced);
+                            const availableSources = data.sources.filter(s => !s.is_referenced);
+
+                            let html = '<ul class="source-list">';
+
+                            // Render cited sources first
+                            if (citedSources.length > 0) {
+                                html += `<div class="sources-section-header">Cited Sources (${citedSources.length})</div>`;
+                                html += citedSources.map(s => renderSourceItem(s, true)).join('');
+                            }
+
+                            // Render available sources
+                            if (availableSources.length > 0) {
+                                html += `<div class="sources-section-header">Available Sources (${availableSources.length})</div>`;
+                                html += availableSources.map(s => renderSourceItem(s, false)).join('');
+                            }
+
+                            html += '</ul>';
+                            panel.innerHTML = html;
                         } else {
                             panel.innerHTML = '<div class="no-sources">No sources tracked for this post</div>';
                         }
@@ -1020,6 +1143,25 @@ HTML_TEMPLATE = '''
             } else {
                 panel.style.display = 'none';
             }
+        }
+
+        function renderSourceItem(s, isCited) {
+            const scorePercent = Math.round((s.attribution_score || 0) * 100);
+            const scoreClass = scorePercent < 30 ? 'low' : '';
+            const citationBadge = s.citation_number ? `<span class="citation-badge">[${s.citation_number}]</span>` : '';
+
+            return `
+                <a href="${s.source_url || '#'}" target="_blank" class="source-item ${isCited ? 'cited' : ''}" ${!s.source_url ? 'style="pointer-events:none"' : ''}>
+                    <div class="source-header">
+                        ${citationBadge}
+                        <span class="source-type ${s.source_type}">${s.source_type}</span>
+                        <span class="source-author">@${s.source_author || 'unknown'}</span>
+                        ${isCited ? `<span class="source-score ${scoreClass}">${scorePercent}%</span>` : ''}
+                        <span class="source-url">${s.source_url ? new URL(s.source_url).hostname : ''}</span>
+                    </div>
+                    <div class="source-text">${escapeHtml(s.source_text || '')}</div>
+                </a>
+            `;
         }
 
         function openPublish(runId) {
@@ -1060,7 +1202,68 @@ HTML_TEMPLATE = '''
             });
         }
 
-        // Initial load
+        // Setup rich citation popovers (instant hover)
+        function setupCitationPopovers() {
+            // Create popover element if it doesn't exist
+            let popover = document.querySelector('.citation-popover');
+            if (!popover) {
+                popover = document.createElement('div');
+                popover.className = 'citation-popover';
+                document.body.appendChild(popover);
+            }
+
+            // Use event delegation for hover events
+            document.addEventListener('mouseenter', (e) => {
+                if (e.target.classList.contains('citation-marker') && e.target.dataset.source) {
+                    try {
+                        const data = JSON.parse(e.target.dataset.source);
+
+                        // Build popover content
+                        let html = '<div class="popover-header">';
+                        html += '<span class="source-icon ' + (data.type || 'web') + '"></span>';
+                        html += '<strong>@' + escapeHtml(data.author || 'source') + '</strong>';
+                        if (data.startTime !== null && data.startTime !== undefined) {
+                            const mins = Math.floor(data.startTime / 60);
+                            const secs = Math.floor(data.startTime % 60);
+                            html += '<span class="popover-timestamp">' + mins + ':' + secs.toString().padStart(2, '0') + '</span>';
+                        }
+                        html += '</div>';
+
+                        if (data.quote) {
+                            html += '<div class="popover-quote">"' + escapeHtml(data.quote) + '"</div>';
+                        }
+
+                        html += '<div class="popover-url">' + escapeHtml(data.url || '') + '</div>';
+
+                        popover.innerHTML = html;
+
+                        // Position popover below the marker
+                        const rect = e.target.getBoundingClientRect();
+                        popover.style.left = Math.max(10, rect.left) + 'px';
+                        popover.style.top = (rect.bottom + 5) + 'px';
+
+                        // Make sure popover doesn't go off-screen right
+                        const popoverRect = popover.getBoundingClientRect();
+                        if (popoverRect.right > window.innerWidth - 10) {
+                            popover.style.left = (window.innerWidth - popoverRect.width - 10) + 'px';
+                        }
+
+                        popover.classList.add('visible');
+                    } catch (err) {
+                        console.error('Failed to parse citation data:', err);
+                    }
+                }
+            }, true);
+
+            document.addEventListener('mouseleave', (e) => {
+                if (e.target.classList.contains('citation-marker')) {
+                    popover.classList.remove('visible');
+                }
+            }, true);
+        }
+
+        // Initial setup
+        setupCitationPopovers();
         loadFeed();
     </script>
 </body>
@@ -1105,17 +1308,34 @@ def get_feed():
     cursor.execute(query, params)
     posts = [dict(row) for row in cursor.fetchall()]
 
-    # Get source counts for each post
+    # Get source counts and citation sources for each post
     for post in posts:
         try:
-            cursor.execute(
-                "SELECT COUNT(*) as count FROM tournament_sources WHERE run_id = ?",
-                (post['run_id'],)
-            )
+            cursor.execute("""
+                SELECT
+                    COUNT(*) as total_count,
+                    SUM(CASE WHEN is_referenced = 1 THEN 1 ELSE 0 END) as cited_count
+                FROM tournament_sources
+                WHERE run_id = ?
+            """, (post['run_id'],))
             result = cursor.fetchone()
-            post['source_count'] = result['count'] if result else 0
+            post['source_count'] = result['total_count'] if result else 0
+            post['cited_count'] = result['cited_count'] if result and result['cited_count'] else 0
+
+            # Get citation sources (those with citation_number) for inline markers
+            # Include cited_quote and start_time for rich popovers
+            cursor.execute("""
+                SELECT citation_number, source_url, source_author, source_type,
+                       cited_quote, start_time
+                FROM tournament_sources
+                WHERE run_id = ? AND citation_number IS NOT NULL
+                ORDER BY citation_number
+            """, (post['run_id'],))
+            post['citation_sources'] = [dict(row) for row in cursor.fetchall()]
         except:
             post['source_count'] = 0
+            post['cited_count'] = 0
+            post['citation_sources'] = []
 
     # Get user's likes
     try:
@@ -1149,16 +1369,19 @@ def get_feed():
 
 @app.route('/api/sources/<int:run_id>')
 def get_sources(run_id):
-    """Get source news items used to generate a post"""
+    """Get source news items used to generate a post with attribution info"""
     conn = get_db()
     cursor = conn.cursor()
 
     try:
         cursor.execute("""
-            SELECT source_type, source_text, source_url, source_author, source_timestamp
+            SELECT source_type, source_text, source_url, source_author, source_timestamp,
+                   COALESCE(is_referenced, 0) as is_referenced,
+                   COALESCE(attribution_score, 0.0) as attribution_score,
+                   citation_number
             FROM tournament_sources
             WHERE run_id = ?
-            ORDER BY source_type, source_timestamp DESC
+            ORDER BY citation_number ASC NULLS LAST, is_referenced DESC, attribution_score DESC, source_type, source_timestamp DESC
         """, (run_id,))
         sources = [dict(row) for row in cursor.fetchall()]
     except Exception as e:
@@ -1167,10 +1390,14 @@ def get_sources(run_id):
 
     conn.close()
 
+    # Count cited vs available sources
+    cited_count = sum(1 for s in sources if s.get('is_referenced'))
+
     return jsonify({
         "run_id": run_id,
         "sources": sources,
-        "count": len(sources)
+        "count": len(sources),
+        "cited_count": cited_count
     })
 
 

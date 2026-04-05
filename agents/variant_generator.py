@@ -52,7 +52,7 @@ import random
 import re
 import subprocess
 import time
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 from .post_variant import PostVariant
 
@@ -309,3 +309,284 @@ Write ONLY the post text. No intro, no explanation. Start directly with the hook
 
         print(f"[Generator] Generated {len(variants)} variants")
         return variants
+
+    def annotate_sources_with_attribution(
+        self,
+        content: str,
+        news_items: List[Dict],
+        threshold: float = 0.2
+    ) -> List[Dict]:
+        """
+        Annotate news items with attribution scores based on generated content.
+
+        Uses Document Page Finder (TF-IDF similarity) to identify which sources
+        were actually referenced in the generated post.
+
+        Args:
+            content: The generated post content
+            news_items: List of news item dicts used for generation
+            threshold: Minimum similarity score to mark as referenced
+
+        Returns:
+            List of news items with added 'is_referenced' and 'attribution_score' keys
+        """
+        try:
+            from agents.hybrid_retriever import find_supporting_sources
+
+            # Get source texts for TF-IDF matching
+            source_texts = [item.get('text', '')[:500] for item in news_items]
+
+            # Find which sources are referenced
+            citations = find_supporting_sources(content, source_texts, threshold=threshold)
+
+            # Create a map of source index to score
+            citation_scores = {idx: score for idx, score in citations}
+
+            # Annotate each item
+            annotated = []
+            for i, item in enumerate(news_items):
+                item_copy = dict(item)
+                if i in citation_scores:
+                    item_copy['is_referenced'] = True
+                    item_copy['attribution_score'] = citation_scores[i]
+                else:
+                    item_copy['is_referenced'] = False
+                    item_copy['attribution_score'] = 0.0
+                annotated.append(item_copy)
+
+            # Log attribution results
+            referenced_count = len(citations)
+            print(f"[Generator] Source attribution: {referenced_count}/{len(news_items)} sources referenced")
+            if referenced_count > 0:
+                top_sources = sorted(citations, key=lambda x: x[1], reverse=True)[:3]
+                for idx, score in top_sources:
+                    source = news_items[idx].get('username', news_items[idx].get('source_name', 'Unknown'))
+                    print(f"  - @{source}: {score:.2f} similarity")
+
+            return annotated
+
+        except ImportError:
+            print("[Generator] hybrid_retriever not available, skipping attribution")
+            return news_items
+        except Exception as e:
+            print(f"[Generator] Attribution failed: {e}")
+            return news_items
+
+    def insert_citation_markers(
+        self,
+        content: str,
+        annotated_sources: List[Dict],
+        max_citations: int = 5
+    ) -> Tuple[str, List[Dict]]:
+        """
+        Insert inline [1], [2] citation markers into post content.
+
+        Uses sentence-level TF-IDF to identify which sentences reference
+        which sources, then inserts markers at sentence boundaries.
+
+        Args:
+            content: The generated post content
+            annotated_sources: Sources with is_referenced and attribution_score
+            max_citations: Max inline markers (rest stay unlabeled in panel)
+
+        Returns:
+            Tuple of:
+            - Content with [1], [2] markers inserted
+            - Sources list with citation_number field added
+        """
+        from agents.hybrid_retriever import find_sentence_source_mapping
+
+        # Get only referenced sources, sorted by score for selection
+        cited = [
+            (i, s) for i, s in enumerate(annotated_sources)
+            if s.get('is_referenced')
+        ]
+        if not cited:
+            return content, annotated_sources
+
+        # Sort by score to pick best sources, limit to max_citations
+        cited.sort(key=lambda x: x[1].get('attribution_score', 0), reverse=True)
+        cited = cited[:max_citations]
+
+        # Split content into paragraphs first (preserve structure)
+        # Use regex to split on 2+ newlines OR single newlines
+        paragraphs = re.split(r'(\n\n+|\n)', content)
+
+        # Build flat list of sentences with paragraph boundary info
+        # Each entry: (sentence_text, is_paragraph_end)
+        all_sentences = []
+        paragraph_breaks = []  # Track where paragraph breaks occur
+
+        for part in paragraphs:
+            if not part:
+                continue
+            if re.match(r'^\n+$', part):
+                # This is a paragraph separator - mark the last sentence
+                paragraph_breaks.append(len(all_sentences) - 1 if all_sentences else -1)
+                continue
+
+            # Split paragraph into sentences
+            sentence_pattern = r'(?<=[.!?])\s+'
+            sentences = re.split(sentence_pattern, part)
+            sentences = [s.strip() for s in sentences if s.strip()]
+            all_sentences.extend(sentences)
+
+        if not all_sentences:
+            return content, annotated_sources
+
+        # Get source texts for matching
+        source_texts = [s.get('text', '')[:500] for _, s in cited]
+
+        # Find which sentence best matches which source
+        # Returns: {sentence_idx: cited_source_idx}
+        # Uses entity overlap validation to ensure citations are relevant
+        mapping = find_sentence_source_mapping(all_sentences, source_texts, threshold=0.25)
+
+        # First pass: find order of appearance in text
+        # Track which sources appear and in what sentence order
+        appearance_order = []  # List of (sentence_idx, cited_source_idx)
+        for sent_idx in range(len(all_sentences)):
+            if sent_idx in mapping:
+                cited_source_idx = mapping[sent_idx]
+                if cited_source_idx not in [x[1] for x in appearance_order]:
+                    appearance_order.append((sent_idx, cited_source_idx))
+
+        # Assign citation numbers in order of appearance (1, 2, 3...)
+        # Also extract best matching quote for each cited source
+        cited_idx_to_citation = {}
+        for citation_num, (sent_idx, cited_source_idx) in enumerate(appearance_order, 1):
+            cited_idx_to_citation[cited_source_idx] = citation_num
+            # Update the source with its citation number
+            orig_idx, src = cited[cited_source_idx]
+            src['citation_number'] = citation_num
+            if not src.get('source_url'):
+                src['source_url'] = self._build_source_url(src)
+
+            # Extract best matching quote from source content
+            sentence = all_sentences[sent_idx] if sent_idx < len(all_sentences) else ''
+            self._extract_citation_quote(src, sentence)
+
+        # Insert markers into sentences
+        marked_sentences = []
+        used_citations = set()
+
+        for sent_idx, sentence in enumerate(all_sentences):
+            if sent_idx in mapping:
+                cited_source_idx = mapping[sent_idx]
+                citation_num = cited_idx_to_citation.get(cited_source_idx)
+                if citation_num and citation_num not in used_citations:
+                    # Add citation marker at end of sentence
+                    if sentence and sentence[-1] in '.!?':
+                        sentence = sentence[:-1] + f'[{citation_num}]' + sentence[-1]
+                    else:
+                        sentence = sentence + f'[{citation_num}]'
+                    used_citations.add(citation_num)
+            marked_sentences.append(sentence)
+
+        # Reconstruct content preserving paragraph breaks
+        result_parts = []
+        current_para = []
+        for sent_idx, sentence in enumerate(marked_sentences):
+            current_para.append(sentence)
+            if sent_idx in paragraph_breaks:
+                result_parts.append(' '.join(current_para))
+                current_para = []
+        if current_para:
+            result_parts.append(' '.join(current_para))
+
+        marked_content = '\n\n'.join(result_parts)
+
+        cited_count = len(used_citations)
+        print(f"[Generator] Inserted {cited_count} citation markers")
+
+        return marked_content, annotated_sources
+
+    def _build_source_url(self, source: Dict) -> str:
+        """Build URL for a source based on its type."""
+        # Prefer existing URL if present (web articles and YouTube already have URLs)
+        if source.get('url'):
+            return source['url']
+
+        source_type = source.get('source_type', '')
+        source_id = source.get('id', '')
+
+        if source_type == 'twitter':
+            username = source.get('username', '')
+            return f"https://x.com/{username}/status/{source_id}"
+        elif source_type == 'youtube':
+            return f"https://youtube.com/watch?v={source_id}"
+        elif source_type == 'web':
+            return ''  # Web articles should have URL
+
+        return ''
+
+    def _extract_citation_quote(self, source: Dict, sentence: str) -> None:
+        """
+        Extract the best matching quote from a source for citation display.
+
+        For YouTube sources, also extracts timestamp for deep-linking.
+        Updates source dict in-place with 'cited_quote' and 'start_time' fields.
+
+        Args:
+            source: Source dict with 'source_type', 'text', 'id', etc.
+            sentence: The sentence from the post that references this source
+        """
+        source_type = source.get('source_type', '')
+
+        # Default: use first 200 chars of source text
+        source_text = source.get('text', '')
+        source['cited_quote'] = source_text[:200] if source_text else None
+        source['start_time'] = None
+
+        if not sentence or len(sentence) < 10:
+            return
+
+        try:
+            if source_type == 'youtube':
+                # Use YouTube-specific function with transcript/timestamp support
+                from youtube_channel_scraper import get_youtube_quote_with_timestamp
+                from pathlib import Path
+
+                video = {
+                    'video_id': source.get('id', ''),
+                    'description': source.get('text', ''),
+                    'title': source.get('username', ''),  # channel name stored in username
+                    'url': source.get('url', source.get('source_url', ''))
+                }
+
+                db_path = Path('output_data/ai_news.db')
+                quote, url_with_timestamp = get_youtube_quote_with_timestamp(video, sentence, db_path)
+
+                if quote:
+                    source['cited_quote'] = quote
+
+                # Extract timestamp from URL if present
+                if url_with_timestamp and '&t=' in url_with_timestamp:
+                    ts_match = re.search(r'[&?]t=(\d+)s', url_with_timestamp)
+                    if ts_match:
+                        source['start_time'] = float(ts_match.group(1))
+                        # Update source URL to include timestamp
+                        source['source_url'] = url_with_timestamp
+
+            elif source_type in ('web', 'twitter'):
+                # Use generic paragraph matching with BGE-M3
+                from agents.hybrid_retriever import find_best_paragraph_match
+
+                # Create paragraph chunks from source text
+                paragraphs = []
+                if source_text:
+                    # Split on double newlines or sentences
+                    parts = source_text.split('\n\n')
+                    if len(parts) <= 1:
+                        parts = re.split(r'(?<=[.!?])\s+', source_text)
+                    paragraphs = [{'text': p.strip(), 'index': i} for i, p in enumerate(parts) if len(p.strip()) >= 30]
+
+                if paragraphs:
+                    match = find_best_paragraph_match(sentence, paragraphs, threshold=0.2)
+                    if match:
+                        source['cited_quote'] = match['text']
+
+        except ImportError as e:
+            print(f"[Generator] Quote extraction import failed: {e}")
+        except Exception as e:
+            print(f"[Generator] Quote extraction failed for {source_type}: {e}")

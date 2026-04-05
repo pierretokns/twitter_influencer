@@ -65,6 +65,9 @@ class PostVariant:
     similarity_scores: Dict[str, float] = field(default_factory=dict)  # {other_id: 0.0-1.0}
     is_duplicate: bool = False
 
+    # Source attribution (Document Page Finder - Liang et al. 2024)
+    source_attributions: List[Dict] = field(default_factory=list)  # [{idx, score, is_ref}]
+
     def to_dict(self) -> Dict:
         """Convert to dictionary for JSON serialization"""
         return {
@@ -85,6 +88,7 @@ class PostVariant:
             "matches": self.matches_played,
             "debate_history": self.debate_history,
             "is_duplicate": self.is_duplicate,
+            "source_attributions": self.source_attributions,
         }
 
     @property

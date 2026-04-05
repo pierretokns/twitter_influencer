@@ -106,6 +106,17 @@ class NewsSelector:
                        likes_count, 'twitter' as source_type
                 FROM tweets
                 WHERE is_ai_relevant = TRUE
+                  AND tweet_id NOT IN (
+                    SELECT source_id FROM tournament_sources
+                    WHERE source_type = 'twitter'
+                      AND citation_number IS NOT NULL
+                      AND run_id IN (
+                        SELECT run_id FROM tournament_runs
+                        WHERE status = 'complete'
+                        ORDER BY completed_at DESC
+                        LIMIT 10
+                      )
+                  )
                 ORDER BY timestamp DESC
                 LIMIT ?
             ''', (limit,))
@@ -117,12 +128,25 @@ class NewsSelector:
         articles = []
         try:
             cursor = conn.cursor()
+            # Note: published_at may be human-readable (e.g., "December 11, 2025")
+            # We order by scraped_at as fallback, but global sort uses published_at
             cursor.execute('''
                 SELECT article_id as id, title as text, source_name as username,
                        published_at as timestamp, 0 as likes_count,
                        'web' as source_type, url
                 FROM web_articles
                 WHERE is_ai_relevant = TRUE
+                  AND article_id NOT IN (
+                    SELECT source_id FROM tournament_sources
+                    WHERE source_type = 'web'
+                      AND citation_number IS NOT NULL
+                      AND run_id IN (
+                        SELECT run_id FROM tournament_runs
+                        WHERE status = 'complete'
+                        ORDER BY completed_at DESC
+                        LIMIT 10
+                      )
+                  )
                 ORDER BY scraped_at DESC
                 LIMIT ?
             ''', (limit,))
@@ -140,6 +164,17 @@ class NewsSelector:
                        'youtube' as source_type, url
                 FROM youtube_videos
                 WHERE is_ai_relevant = TRUE
+                  AND video_id NOT IN (
+                    SELECT source_id FROM tournament_sources
+                    WHERE source_type = 'youtube'
+                      AND citation_number IS NOT NULL
+                      AND run_id IN (
+                        SELECT run_id FROM tournament_runs
+                        WHERE status = 'complete'
+                        ORDER BY completed_at DESC
+                        LIMIT 10
+                      )
+                  )
                 ORDER BY published_at DESC
                 LIMIT ?
             ''', (limit,))
@@ -152,7 +187,72 @@ class NewsSelector:
         # Combine all sources (Discord links excluded - they're just pointers to web content)
         combined = tweets + articles + youtube
         print(f"[NewsSelector] Fetched {len(tweets)} tweets + {len(articles)} articles + {len(youtube)} YouTube = {len(combined)} total")
+
+        # Sort by timestamp globally so recency scoring works across all sources
+        combined = self._sort_by_timestamp(combined)
         return combined
+
+    def _parse_timestamp(self, ts: str) -> float:
+        """Parse various timestamp formats to Unix timestamp for sorting."""
+        if not ts:
+            return 0.0
+
+        from datetime import datetime
+
+        # Normalize the timestamp string
+        ts_clean = ts.strip()
+
+        # Try simple datetime first (most common for scraped_at)
+        try:
+            dt = datetime.strptime(ts_clean, "%Y-%m-%d %H:%M:%S")
+            return dt.timestamp()
+        except (ValueError, TypeError):
+            pass
+
+        # Try ISO formats with timezone
+        try:
+            # Handle +00:00 timezone
+            if '+' in ts_clean:
+                ts_no_tz = ts_clean.rsplit('+', 1)[0]
+                dt = datetime.strptime(ts_no_tz, "%Y-%m-%dT%H:%M:%S")
+                return dt.timestamp()
+        except (ValueError, TypeError):
+            pass
+
+        # Try ISO with Z suffix
+        try:
+            ts_no_z = ts_clean.rstrip('Z')
+            if '.' in ts_no_z:
+                dt = datetime.strptime(ts_no_z, "%Y-%m-%dT%H:%M:%S.%f")
+            else:
+                dt = datetime.strptime(ts_no_z, "%Y-%m-%dT%H:%M:%S")
+            return dt.timestamp()
+        except (ValueError, TypeError):
+            pass
+
+        # Try date only
+        try:
+            dt = datetime.strptime(ts_clean, "%Y-%m-%d")
+            return dt.timestamp()
+        except (ValueError, TypeError):
+            pass
+
+        # Try parsing human-readable dates like "December 11, 2025"
+        try:
+            dt = datetime.strptime(ts_clean, "%B %d, %Y")
+            return dt.timestamp()
+        except (ValueError, TypeError):
+            pass
+
+        return 0.0
+
+    def _sort_by_timestamp(self, items: List[Dict]) -> List[Dict]:
+        """Sort items by timestamp, most recent first."""
+        def get_ts(item):
+            ts = item.get('timestamp') or item.get('published_at') or item.get('scraped_at') or ''
+            return self._parse_timestamp(str(ts))
+
+        return sorted(items, key=get_ts, reverse=True)
 
     def _cosine_similarity_matrix(self, embeddings: np.ndarray) -> np.ndarray:
         """Calculate pairwise cosine similarities."""
@@ -240,6 +340,9 @@ class NewsSelector:
         """
         Select diverse news items using vector embeddings.
 
+        Tries to use stored hybrid embeddings first (BGE-M3 dense + sparse),
+        falls back to regenerating embeddings if not available.
+
         Args:
             limit: Number of diverse items to select
             lambda_param: Balance between relevance (1.0) and diversity (0.0)
@@ -253,11 +356,33 @@ class NewsSelector:
         if not all_news:
             return []
 
-        # Try vector-based selection
+        # Try to use stored hybrid embeddings first (most efficient)
+        dense_embeddings, sparse_embeddings = self._fetch_stored_embeddings(all_news)
+
+        if dense_embeddings is not None and sparse_embeddings is not None:
+            try:
+                from agents.hybrid_retriever import HybridRetriever
+
+                print(f"[NewsSelector] Using stored hybrid embeddings for {len(all_news)} items...")
+                retriever = HybridRetriever(alpha=0.5)
+
+                # Select using hybrid MMR
+                selected_indices = self._mmr_select_hybrid(
+                    dense_embeddings, sparse_embeddings, all_news, limit, lambda_param, retriever
+                )
+
+                selected = [all_news[i] for i in selected_indices]
+                print(f"[NewsSelector] Selected {len(selected)} diverse items via hybrid MMR")
+                return selected
+
+            except Exception as e:
+                print(f"[NewsSelector] Hybrid selection failed: {e}")
+
+        # Fallback: regenerate embeddings with sentence-transformers
         embedder = self._get_embedder()
         if embedder is not None:
             try:
-                print(f"[NewsSelector] Encoding {len(all_news)} items for diversity selection...")
+                print(f"[NewsSelector] Regenerating embeddings for {len(all_news)} items...")
 
                 # Encode all items
                 texts = [item.get('text', '')[:500] for item in all_news]
@@ -277,6 +402,144 @@ class NewsSelector:
                 print(f"[NewsSelector] Vector selection failed: {e}")
 
         # Fallback: simple interleaving of sources
+        return self._fallback_source_interleaving(all_news, limit)
+
+    def _fetch_stored_embeddings(self, items: List[Dict]):
+        """
+        Fetch stored hybrid embeddings (dense + sparse) from database.
+
+        Returns:
+            Tuple of (dense_embeddings, sparse_embeddings) as numpy arrays,
+            or (None, None) if embeddings are not available.
+        """
+        if not self.db_path or not self.db_path.exists():
+            return None, None
+
+        import json
+        conn = None
+        try:
+            conn = sqlite3.connect(str(self.db_path))
+            cursor = conn.cursor()
+
+            dense_list = []
+            sparse_list = []
+
+            for item in items:
+                item_id = str(item.get('id', ''))
+                source_type = item.get('source_type', '')
+
+                # Map source_type to table names
+                if source_type == 'twitter':
+                    table_prefix = 'tweet'
+                elif source_type == 'web':
+                    table_prefix = 'web_article'
+                elif source_type == 'youtube':
+                    table_prefix = 'youtube_video'
+                else:
+                    return None, None
+
+                try:
+                    # Fetch dense embedding
+                    cursor.execute(
+                        f"SELECT embedding FROM {table_prefix}_embeddings_dense WHERE id = ?",
+                        (item_id,)
+                    )
+                    dense_row = cursor.fetchone()
+
+                    # Fetch sparse embedding
+                    cursor.execute(
+                        f"SELECT embedding FROM {table_prefix}_embeddings_sparse WHERE id = ?",
+                        (item_id,)
+                    )
+                    sparse_row = cursor.fetchone()
+
+                    if dense_row and sparse_row:
+                        # Parse JSON-stored embeddings
+                        dense_list.append(np.array(json.loads(dense_row[0]), dtype=np.float32))
+                        sparse_list.append(np.array(json.loads(sparse_row[0]), dtype=np.float32))
+                    else:
+                        # Missing embedding for this item
+                        return None, None
+
+                except Exception:
+                    return None, None
+
+            if not dense_list:
+                return None, None
+
+            return np.array(dense_list), np.array(sparse_list)
+
+        except Exception as e:
+            print(f"[NewsSelector] Error fetching embeddings: {e}")
+            return None, None
+        finally:
+            if conn:
+                conn.close()
+
+    def _mmr_select_hybrid(
+        self,
+        dense: np.ndarray,
+        sparse: np.ndarray,
+        items: List[Dict],
+        k: int,
+        lambda_param: float,
+        retriever
+    ) -> List[int]:
+        """
+        MMR selection using hybrid similarity.
+        Same algorithm as _mmr_select but uses hybrid scores.
+        """
+        n = len(items)
+        if n <= k:
+            return list(range(n))
+
+        # Compute relevance scores (recency + engagement)
+        relevance = np.zeros(n)
+        for i, item in enumerate(items):
+            recency_score = 1.0 - (i / n)
+            likes = item.get('likes_count', 0) or 0
+            engagement_score = min(1.0, likes / 1000)
+            relevance[i] = 0.7 * recency_score + 0.3 * engagement_score
+
+        selected = []
+        remaining = set(range(n))
+
+        # Start with most relevant item
+        first_idx = int(np.argmax(relevance))
+        selected.append(first_idx)
+        remaining.remove(first_idx)
+
+        # Iteratively select using MMR with hybrid similarity
+        while len(selected) < k and remaining:
+            mmr_scores = []
+
+            for idx in remaining:
+                # Relevance component
+                rel = relevance[idx]
+
+                # Diversity component: max hybrid similarity to any selected item
+                max_sim = 0
+                for sel_idx in selected:
+                    # Compute hybrid similarity
+                    sim = retriever.compute_hybrid_score(
+                        dense[idx:idx+1], sparse[idx:idx+1],
+                        dense[sel_idx:sel_idx+1], sparse[sel_idx:sel_idx+1]
+                    )[0]
+                    max_sim = max(max_sim, sim)
+
+                # MMR score
+                mmr = lambda_param * rel - (1 - lambda_param) * max_sim
+                mmr_scores.append((idx, mmr))
+
+            # Select item with highest MMR score
+            best_idx = max(mmr_scores, key=lambda x: x[1])[0]
+            selected.append(best_idx)
+            remaining.remove(best_idx)
+
+        return selected
+
+    def _fallback_source_interleaving(self, all_news: List[Dict], limit: int) -> List[Dict]:
+        """Fallback: simple interleaving of sources"""
         print("[NewsSelector] Falling back to source-based selection")
         by_source = {
             'twitter': [n for n in all_news if n.get('source_type') == 'twitter'],
