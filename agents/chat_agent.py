@@ -40,24 +40,19 @@ USAGE:
 """
 
 import asyncio
-import atexit
 import json
 import os
 import re
 import sqlite3
 import threading
 import uuid
-from concurrent.futures import Future
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import AsyncGenerator, Generator, List, Dict, Optional, Callable, Any
+from typing import AsyncGenerator, Generator, List, Dict, Optional, Any
 from pathlib import Path
 
 import numpy as np
-from pydantic_ai import Agent
-from pydantic_ai.models.instrumented import InstrumentationSettings
-from pydantic_ai.messages import ModelRequest, ModelResponse, UserPromptPart, TextPart
 from opentelemetry import trace
 import wordninja
 
@@ -67,125 +62,7 @@ from agents.hybrid_retriever import HybridRetriever, encode_texts_hybrid
 
 
 # =============================================================================
-# Persistent Event Loop Thread
-# =============================================================================
-# Fix for "Event loop is closed" error with Google Gemini/httpx:
-# https://github.com/pydantic/pydantic-ai/issues/748
-# https://github.com/googleapis/python-genai/issues/1518
-#
-# The problem: Each asyncio.run() creates and closes a new event loop.
-# Google's genai client uses httpx with connection pooling. When the loop
-# closes, httpx connections become stale. On subsequent requests, the
-# client tries to reuse connections tied to the closed loop → error.
-#
-# The solution: Use a single persistent event loop running in a dedicated
-# thread. All async operations are submitted to this loop via thread-safe
-# mechanisms. The loop stays open for the lifetime of the process.
-# =============================================================================
-
-
-class _AsyncLoopThread:
-    """
-    A dedicated thread running a persistent asyncio event loop.
-
-    This allows sync code (like Flask) to submit async tasks without
-    creating/destroying event loops, avoiding httpx connection issues.
-    """
-
-    _instance: Optional["_AsyncLoopThread"] = None
-    _lock = threading.Lock()
-
-    def __init__(self):
-        self._loop: Optional[asyncio.AbstractEventLoop] = None
-        self._thread: Optional[threading.Thread] = None
-        self._started = threading.Event()
-
-    @classmethod
-    def get_instance(cls) -> "_AsyncLoopThread":
-        """Get or create the singleton async loop thread."""
-        if cls._instance is None:
-            with cls._lock:
-                if cls._instance is None:
-                    cls._instance = cls()
-                    cls._instance._start()
-        return cls._instance
-
-    def _start(self):
-        """Start the event loop thread."""
-        def run_loop():
-            self._loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(self._loop)
-            self._started.set()
-            self._loop.run_forever()
-
-        self._thread = threading.Thread(target=run_loop, daemon=True, name="AsyncLoopThread")
-        self._thread.start()
-        self._started.wait()  # Block until loop is ready
-
-    def run_coroutine(self, coro) -> Any:
-        """
-        Run a coroutine in the persistent event loop and wait for result.
-
-        Args:
-            coro: The coroutine to run
-
-        Returns:
-            The result of the coroutine
-        """
-        if self._loop is None:
-            raise RuntimeError("Event loop not started")
-        future = asyncio.run_coroutine_threadsafe(coro, self._loop)
-        return future.result()
-
-    def run_coroutine_with_callback(
-        self,
-        coro,
-        on_item: Callable[[Any], None],
-        on_done: Callable[[], None],
-        on_error: Callable[[Exception], None],
-    ):
-        """
-        Run a coroutine that yields items, calling back for each item.
-
-        This is used for streaming - each yielded item triggers on_item().
-
-        Args:
-            coro: An async generator coroutine
-            on_item: Called for each yielded item
-            on_done: Called when the generator completes
-            on_error: Called if an exception occurs
-        """
-        if self._loop is None:
-            raise RuntimeError("Event loop not started")
-
-        async def wrapper():
-            try:
-                async for item in coro:
-                    on_item(item)
-                on_done()
-            except Exception as e:
-                on_error(e)
-
-        asyncio.run_coroutine_threadsafe(wrapper(), self._loop)
-
-    def stop(self):
-        """Stop the event loop (called at process exit)."""
-        if self._loop is not None:
-            self._loop.call_soon_threadsafe(self._loop.stop)
-            if self._thread is not None:
-                self._thread.join(timeout=5)
-
-
-def _get_async_loop() -> _AsyncLoopThread:
-    """Get the persistent async loop thread."""
-    return _AsyncLoopThread.get_instance()
-
-
-# Register cleanup at process exit
-@atexit.register
-def _cleanup_async_loop():
-    if _AsyncLoopThread._instance is not None:
-        _AsyncLoopThread._instance.stop()
+# No async loop hack needed — Strands handles async natively.
 
 
 @dataclass
@@ -239,7 +116,7 @@ RESPONSE FORMAT:
 
     def __init__(self, db_path: str = "output_data/ai_news.db"):
         """
-        Initialize chat agent with Pydantic AI + Gemini Flash.
+        Initialize chat agent with Strands + Bedrock (Claude).
 
         Args:
             db_path: Path to SQLite database with embeddings
@@ -248,24 +125,21 @@ RESPONSE FORMAT:
         self.tracer = get_tracer("chat")
         self.security = ChatSecurity()
 
-        # Model configuration from environment
-        model_name = os.getenv("CHAT_MODEL", "gemini-2.5-flash")
-        self.model_id = f"google-gla:{model_name}"
+        from strands import Agent as StrandsAgent
+        from strands.models import BedrockModel
+
+        model_id = os.getenv("CHAT_MODEL", "us.anthropic.claude-sonnet-4-6")
+        region = os.getenv("AWS_DEFAULT_REGION", "us-east-1")
         self.max_tokens = int(os.getenv("CHAT_MAX_TOKENS", "2048"))
 
-        # Configure pydantic-ai instrumentation settings
-        # This enables automatic OTEL spans for model calls with GenAI semantic conventions
-        # See: https://ai.pydantic.dev/logfire/
-        instrument_settings = InstrumentationSettings(
-            include_content=True,  # Capture prompts and completions
-            include_binary_content=False,  # Skip binary data
+        self._bedrock_model = BedrockModel(
+            model_id=model_id,
+            region_name=region,
+            max_tokens=self.max_tokens,
         )
-
-        # Initialize Pydantic AI agent with instrumentation
-        self.agent = Agent(
-            self.model_id,
+        self.agent = StrandsAgent(
+            model=self._bedrock_model,
             system_prompt=self.SYSTEM_PROMPT,
-            instrument=instrument_settings,
         )
 
         # Hybrid retrieval alpha parameter
@@ -456,10 +330,7 @@ RESPONSE FORMAT:
         options: Optional[Dict] = None,
     ) -> Generator[ChatEvent, None, None]:
         """
-        Synchronous streaming response with RAG using Pydantic AI + Gemini.
-
-        Uses a persistent event loop thread to avoid "Event loop is closed" errors.
-        See: https://github.com/pydantic/pydantic-ai/issues/748
+        Synchronous wrapper around stream_response. Collects all events via asyncio.run().
 
         Args:
             query: User query
@@ -470,149 +341,19 @@ RESPONSE FORMAT:
         Yields:
             ChatEvent objects (sources, token, citation, done, error)
         """
-        from queue import Queue, Empty
-
-        if history is None:
-            history = []
-        if options is None:
-            options = {}
+        async def collect():
+            events = []
+            async for event in self.stream_response(query, session_id, history, options):
+                events.append(event)
+            return events
 
         try:
-            # Validate input
-            validation = self.security.validate_input(query, session_id)
-            if not validation.is_safe:
-                yield ChatEvent(
-                    event="error",
-                    data={"error": validation.reason, "code": validation.severity},
-                )
-                return
-
-            # Retrieve sources
-            sources, retrieval_warning = self._retrieve_sources(query, options)
-
-            # Yield warning if retrieval had issues
-            if retrieval_warning:
-                yield ChatEvent(
-                    event="warning",
-                    data={"message": retrieval_warning}
-                )
-
-            # Yield sources to client
-            yield ChatEvent(
-                event="sources",
-                data={
-                    "sources": [
-                        {
-                            "id": s.id,
-                            "type": s.type,
-                            "author": s.author,
-                            "title": s.title,
-                            "url": s.url,
-                            "text": s.text[:200],
-                            "published_at": s.published_at,
-                        }
-                        for s in sources
-                    ]
-                },
-            )
-
-            # Build context with sources (no longer includes history as text)
-            context = self._build_context(sources, [])
-
-            # Build prompt with sources and question
-            prompt = f"SOURCES:\n{context}\n\nQUESTION: {query}"
-
-            # Convert history to pydantic-ai message format for proper multi-turn
-            message_history = self._build_message_history(history) if history else None
-
-            # Use queue-based streaming with persistent event loop
-            # This avoids "Event loop is closed" errors from httpx connection reuse
-            token_queue: Queue = Queue()
-            full_response_holder = [""]
-            done_event = threading.Event()
-            error_holder = [None]
-
-            async def stream_tokens():
-                """Async generator that streams tokens to the queue."""
-                try:
-                    async with self.agent.run_stream(
-                        prompt,
-                        message_history=message_history,
-                    ) as result:
-                        # stream_text() returns cumulative text, extract deltas
-                        async for text in result.stream_text():
-                            # Extract only the new text since last iteration
-                            delta = text[len(full_response_holder[0]):]
-                            full_response_holder[0] = text
-                            if delta:
-                                token_queue.put(("token", delta))
-                        token_queue.put(("done", result.usage()))
-                except Exception as e:
-                    token_queue.put(("error", str(e)))
-                    error_holder[0] = e
-                finally:
-                    done_event.set()
-
-            # Submit to persistent event loop (doesn't create/destroy loops)
-            loop_thread = _get_async_loop()
-            asyncio.run_coroutine_threadsafe(stream_tokens(), loop_thread._loop)
-
-            # Stream tokens as they arrive
-            while not done_event.is_set() or not token_queue.empty():
-                try:
-                    msg_type, msg_data = token_queue.get(timeout=1)
-                    if msg_type == "token":
-                        yield ChatEvent(event="token", data={"token": msg_data})
-                    elif msg_type == "done":
-                        break
-                    elif msg_type == "error":
-                        raise RuntimeError(msg_data)
-                except Empty:
-                    # Check if done without receiving message (error case)
-                    if done_event.is_set():
-                        break
-                    continue
-
-            full_response = full_response_holder[0]
-
-            # Check for errors
-            if error_holder[0] is not None:
-                raise error_holder[0]
-
-            # Extract citations from complete response
-            citations_extracted = self._extract_citations(full_response, sources)
-            for citation in citations_extracted:
-                yield ChatEvent(
-                    event="citation",
-                    data={
-                        "index": citation.index,
-                        "source": {
-                            "type": citation.source.type,
-                            "author": citation.source.author,
-                            "title": citation.source.title,
-                            "url": citation.source.url,
-                            "quote": citation.source.text[:150],
-                        },
-                    },
-                )
-
-            # Generate follow-up suggestions
-            suggestions = self._generate_followups(query, full_response, sources)
-
-            # Signal completion
-            yield ChatEvent(
-                event="done",
-                data={
-                    "suggested_followups": suggestions,
-                    "citations_count": len(citations_extracted),
-                },
-            )
-
+            events = asyncio.run(collect())
         except Exception as e:
-            yield ChatEvent(
-                event="error",
-                data={"error": str(e), "code": "generation_failed"},
-            )
+            yield ChatEvent(event="error", data={"error": str(e), "code": "generation_failed"})
+            return
+
+        yield from events
 
     def _retrieve_sources(self, query: str, options: Dict) -> tuple[List[Source], Optional[str]]:
         """

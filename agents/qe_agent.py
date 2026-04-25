@@ -39,8 +39,11 @@ USAGE:
 import time
 from typing import List
 
+from strands import tool
+
 from .post_variant import PostVariant
 from .llm_client import call_llm_json, LLMError
+from .models import QEResult
 
 
 class QEAgent:
@@ -173,3 +176,25 @@ Respond in JSON format ONLY:
             time.sleep(0.5)  # Rate limiting
 
         return evaluated
+
+
+# ---------------------------------------------------------------------------
+# Strands tool interface — callable by an orchestrating Agent
+# ---------------------------------------------------------------------------
+
+_qe_agent_instance = QEAgent()
+
+
+@tool
+def evaluate_post_quality(content: str) -> dict:
+    """Evaluate a LinkedIn post against the 8-criteria quality rubric. Returns score 0-100 with detailed breakdown, strengths, and issues for evolution."""
+    from .post_variant import PostVariant as _PV
+    v = _PV(variant_id="tool_call", content=content, hook_style="unknown")
+    result = _qe_agent_instance.evaluate_post(v)
+    return QEResult(
+        score=result.qe_score,
+        breakdown=result.qe_breakdown or {},
+        feedback=result.qe_feedback or "",
+        strengths=result.qe_strengths or [],
+        issues=result.qe_issues or [],
+    ).model_dump()

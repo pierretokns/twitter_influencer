@@ -51,8 +51,11 @@ USAGE:
 
 from typing import Dict
 
+from strands import tool
+
 from .post_variant import PostVariant
 from .llm_client import call_llm_json, LLMError
+from .models import DebateResult
 
 
 class DebateAgent:
@@ -182,3 +185,26 @@ FOR B: {debate['argument_for_b']}
 WINNER: {winner_id} ({debate['confidence']*100:.0f}% confidence)
 REASON: {debate['reasoning']}
 """
+
+
+# ---------------------------------------------------------------------------
+# Strands tool interface
+# ---------------------------------------------------------------------------
+
+_debate_agent_instance = DebateAgent()
+
+
+@tool
+def debate_posts(post_a_content: str, post_b_content: str, post_a_style: str = "unknown", post_b_style: str = "unknown") -> dict:
+    """Run a self-play debate between two LinkedIn posts to determine which is more likely to go viral. Returns winner (A or B), reasoning, and confidence score."""
+    from .post_variant import PostVariant as _PV
+    a = _PV(variant_id="A", content=post_a_content, hook_style=post_a_style)
+    b = _PV(variant_id="B", content=post_b_content, hook_style=post_b_style)
+    result = _debate_agent_instance.conduct_debate(a, b)
+    return DebateResult(
+        argument_for_a=result.get("argument_for_a", ""),
+        argument_for_b=result.get("argument_for_b", ""),
+        winner=result.get("winner", "A"),
+        reasoning=result.get("reasoning", ""),
+        confidence=result.get("confidence", 0.5),
+    ).model_dump()

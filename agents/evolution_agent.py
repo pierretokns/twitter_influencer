@@ -48,6 +48,8 @@ import re
 import time
 from typing import List
 
+from strands import tool
+
 from .post_variant import PostVariant
 from .llm_client import call_llm, LLMError
 
@@ -230,3 +232,23 @@ Write ONLY the improved post. No explanation. Start directly with the hook:'''
 
         print(f"[EvolutionAgent] Evolution complete: {evolved_count} posts evolved")
         return result
+
+
+# ---------------------------------------------------------------------------
+# Strands tool interface
+# ---------------------------------------------------------------------------
+
+_evolution_agent_instance = EvolutionAgent()
+
+
+@tool
+def evolve_post(content: str, issues: list[str], strengths: list[str], news_context: str, qe_score: int = 0) -> dict:
+    """Rewrite a low-scoring LinkedIn post to fix its issues while preserving strengths. Returns improved content."""
+    from .post_variant import PostVariant as _PV
+    v = _PV(variant_id="tool_call", content=content, hook_style="unknown")
+    v.qe_score = qe_score
+    v.qe_issues = issues
+    v.qe_strengths = strengths
+    v.qe_feedback = f"Issues: {', '.join(issues)}"
+    result = _evolution_agent_instance.evolve_post(v, news_context)
+    return {"content": result.content, "variant_id": result.variant_id, "generation": result.generation}
