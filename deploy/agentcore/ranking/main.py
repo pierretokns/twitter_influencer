@@ -196,7 +196,7 @@ async def invoke(request: Request):
         winner = ranked[0]
         log.info(f"Winner: {winner['id']} ELO={winner['elo']:.0f} QE={winner['qe_score']}")
 
-        return {
+        result = {
             "winner": {
                 "content": winner["content"],
                 "hook_style": winner["style"],
@@ -211,7 +211,24 @@ async def invoke(request: Request):
                  "wins": v["wins"], "losses": v["losses"]}
                 for v in ranked
             ],
+            "total_debates": sum(v["wins"] for v in variants),
+            "elo_rounds": elo_rounds,
         }
+
+        # Persist to Hetzner feed API so results appear on the frontend
+        try:
+            save_resp = requests.post(
+                f"{HETZNER_FEED_URL}/api/submit_result",
+                json=result,
+                timeout=10,
+            )
+            run_id = save_resp.json().get("run_id")
+            log.info(f"Saved to feed API: run_id={run_id}")
+            result["run_id"] = run_id
+        except Exception as e:
+            log.warning(f"Failed to save to feed API: {e}")
+
+        return result
 
     except Exception as e:
         log.exception("Ranking pipeline failed")
