@@ -1718,7 +1718,7 @@ Production model decision artifact:
   - Current result: deployment/model gate passes, but benchmark coverage gate does not fully pass because `data_curation_eval` has too few gold cases.
   - `structured_control_plane` coverage is counted through all held-out structured contracts, not only rows literally tagged with that slice.
   - The audit is non-blocking for first local deployment but blocks any claim that fine-tuning readiness is complete.
-- Added `tools/model_slice_scoreboard.py` to aggregate current model pass rates and average scores per workflow slice from the available result artifacts.
+- Added `tools/model_slice_scoreboard.py` to aggregate current model pass rates and average scores per workflow slice and role/case type from the available result artifacts. Use the role-grouped view for decisions; the raw slice-level view can mix RAG and structured-control-plane checks.
 
 ### Chat Service Source Compression - 2026-05-25
 

@@ -75,9 +75,21 @@ def row_score(row: dict[str, Any]) -> tuple[bool, float]:
     return passed, round(pct, 1)
 
 
+def role_for_case_type(case_type: str) -> str:
+    if case_type == "rag_generation":
+        return "rag_generation"
+    if case_type in {"finance_relevance", "delivery_payload", "unsupported_source_route", "retrieval_gate", "citation_verifier"}:
+        return f"structured_{case_type}"
+    if case_type == "citation_pair":
+        return "citation_pair_heuristic"
+    if case_type == "retrieval":
+        return "retrieval"
+    return case_type or "unknown"
+
+
 def build_scoreboard() -> dict[str, Any]:
     case_map = heldout_case_map()
-    buckets: dict[tuple[str, str], dict[str, Any]] = {}
+    buckets: dict[tuple[str, str, str], dict[str, Any]] = {}
     artifacts_used = []
     for artifact in RESULT_ARTIFACTS:
         rows = load_jsonl(artifact)
@@ -89,12 +101,14 @@ def build_scoreboard() -> dict[str, Any]:
             case_id = row.get("case_id", "")
             slice_name = row.get("slice") or case_map.get(case_id, {}).get("slice", "unknown")
             case_type = row.get("case_type") or case_map.get(case_id, {}).get("case_type", "unknown")
+            role = role_for_case_type(case_type)
             passed, pct = row_score(row)
-            key = (slice_name, model)
+            key = (slice_name, role, model)
             bucket = buckets.setdefault(
                 key,
                 {
                     "slice": slice_name,
+                    "role": role,
                     "model": model,
                     "label": model_short(model),
                     "cases": 0,
@@ -130,10 +144,12 @@ def build_scoreboard() -> dict[str, Any]:
                 )
 
     by_slice: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    by_slice_role: dict[str, dict[str, list[dict[str, Any]]]] = defaultdict(lambda: defaultdict(list))
     for bucket in buckets.values():
         cases = max(1, bucket["cases"])
         row = {
             "slice": bucket["slice"],
+            "role": bucket["role"],
             "model": bucket["model"],
             "label": bucket["label"],
             "cases": bucket["cases"],
@@ -146,12 +162,20 @@ def build_scoreboard() -> dict[str, Any]:
             "failures": bucket["failures"][:6],
         }
         by_slice[row["slice"]].append(row)
+        by_slice_role[row["slice"]][row["role"]].append(row)
     for rows in by_slice.values():
         rows.sort(key=lambda item: (item["pass_rate"], item["avg_score_pct"], -item["avg_elapsed_sec"]), reverse=True)
+    by_slice_role_out: dict[str, dict[str, list[dict[str, Any]]]] = {}
+    for slice_name, roles in by_slice_role.items():
+        by_slice_role_out[slice_name] = {}
+        for role, rows in roles.items():
+            rows.sort(key=lambda item: (item["pass_rate"], item["avg_score_pct"], -item["avg_elapsed_sec"]), reverse=True)
+            by_slice_role_out[slice_name][role] = rows
     return {
         "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "artifacts_used": artifacts_used,
         "by_slice": dict(sorted(by_slice.items())),
+        "by_slice_role": {name: by_slice_role_out[name] for name in sorted(by_slice_role_out)},
     }
 
 
@@ -162,17 +186,20 @@ def write_markdown(report: dict[str, Any], path: Path) -> None:
         f"Generated: `{report['generated_at']}`",
         "",
     ]
-    for slice_name, rows in report["by_slice"].items():
+    for slice_name, roles in report.get("by_slice_role", {}).items():
         lines.extend([f"## {slice_name}", ""])
-        for row in rows:
-            lines.append(
-                f"- `{row['label']}`: pass `{row['passed']}/{row['cases']}` "
-                f"({row['pass_rate'] * 100:.1f}%), avg score `{row['avg_score_pct']}`, "
-                f"avg `{row['avg_elapsed_sec']}` sec"
-            )
-            if row["failures"]:
-                failed_ids = ", ".join(failure["case_id"] for failure in row["failures"][:3])
-                lines.append(f"  - Failures: {failed_ids}")
+        for role, rows in roles.items():
+            lines.append(f"### {role}")
+            for row in rows:
+                lines.append(
+                    f"- `{row['label']}`: pass `{row['passed']}/{row['cases']}` "
+                    f"({row['pass_rate'] * 100:.1f}%), avg score `{row['avg_score_pct']}`, "
+                    f"avg `{row['avg_elapsed_sec']}` sec"
+                )
+                if row["failures"]:
+                    failed_ids = ", ".join(failure["case_id"] for failure in row["failures"][:3])
+                    lines.append(f"  - Failures: {failed_ids}")
+            lines.append("")
         lines.append("")
     path.write_text("\n".join(lines), encoding="utf-8")
 
@@ -189,7 +216,7 @@ def main() -> int:
     md_path = out_dir / "model_slice_scoreboard.md"
     json_path.write_text(json.dumps(report, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     write_markdown(report, md_path)
-    print(json.dumps({"json": str(json_path), "markdown": str(md_path), "slices": sorted(report["by_slice"])}, indent=2))
+    print(json.dumps({"json": str(json_path), "markdown": str(md_path), "slices": sorted(report["by_slice_role"])}, indent=2))
     return 0
 
 

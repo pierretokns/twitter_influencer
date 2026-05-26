@@ -436,6 +436,7 @@ def model_slice_scoreboard_summary() -> dict[str, Any] | None:
     return {
         "artifact": path,
         "by_slice": data.get("by_slice", {}),
+        "by_slice_role": data.get("by_slice_role", {}),
     }
 
 
@@ -647,13 +648,15 @@ def write_markdown(report: dict[str, Any], path: Path) -> None:
         scoreboard = report["model_slice_scoreboard"]
         lines.extend(["", "## Slice Scoreboard", ""])
         lines.append(f"- Artifact: `{scoreboard['artifact']}`")
-        for slice_name, rows in scoreboard.get("by_slice", {}).items():
+        for slice_name, roles in scoreboard.get("by_slice_role", {}).items():
             lines.append(f"- `{slice_name}`:")
-            for row in rows[:4]:
-                lines.append(
-                    f"  - `{row['label']}`: pass `{row['passed']}/{row['cases']}` "
-                    f"({row['pass_rate'] * 100:.1f}%), avg score `{row['avg_score_pct']}`"
-                )
+            for role, rows in roles.items():
+                lines.append(f"  - `{role}`:")
+                for row in rows[:4]:
+                    lines.append(
+                        f"    - `{row['label']}`: pass `{row['passed']}/{row['cases']}` "
+                        f"({row['pass_rate'] * 100:.1f}%), avg score `{row['avg_score_pct']}`"
+                    )
     lines.extend(["", "## Workflow Decisions", ""])
     for name, decision in report["workflow_decisions"].items():
         lines.append(f"### {name}")
