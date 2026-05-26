@@ -14,13 +14,26 @@ import os
 import requests
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
-from strands import Agent
-from strands.models import BedrockModel
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("chat-agent")
 
 app = FastAPI()
+LEGACY_AGENTCORE_ENABLED = os.getenv("ALLOW_LEGACY_AGENTCORE_RUNTIME") == "1"
+
+
+def _legacy_disabled_response():
+    return JSONResponse(
+        {
+            "error": "legacy_agentcore_disabled",
+            "message": (
+                "This hosted Bedrock/Strands AgentCore runtime is disabled by default. "
+                "Use the Hetzner-local llama.cpp ChatAgent path for Brandon news summaries, "
+                "or set ALLOW_LEGACY_AGENTCORE_RUNTIME=1 to intentionally run this legacy stack."
+            ),
+        },
+        status_code=410,
+    )
 
 HETZNER_FEED_URL = os.getenv("HETZNER_FEED_URL", "http://157.90.125.102:5002")
 REGION = os.getenv("AWS_DEFAULT_REGION", "us-east-1")
@@ -34,6 +47,9 @@ _agent = None
 def _get_agent():
     global _agent
     if _agent is None:
+        from strands import Agent
+        from strands.models import BedrockModel
+
         model = BedrockModel(model_id=MODEL, region_name=REGION, max_tokens=2048)
         _agent = Agent(model=model, system_prompt=SYSTEM_PROMPT)
     return _agent
@@ -57,11 +73,16 @@ def _fetch_context(limit: int = 10) -> list[dict]:
 
 @app.get("/ping")
 async def ping():
+    if not LEGACY_AGENTCORE_ENABLED:
+        return {"status": "disabled", "reason": "legacy_agentcore_disabled"}
     return {"status": "healthy"}
 
 
 @app.post("/invocations")
 async def invoke(request: Request):
+    if not LEGACY_AGENTCORE_ENABLED:
+        return _legacy_disabled_response()
+
     body = await request.json()
     query: str = body.get("query", "")
     session_id: str = body.get("session_id", "default")

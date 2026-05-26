@@ -165,32 +165,31 @@ git checkout claude/cloudflare-workers-ai-exploration-015SWzxnn3Nw8ZnbrGus1xMF
 uv sync
 ```
 
-## Step 5: Install and Login to Claude CLI
+## Step 5: Configure Local llama.cpp Models
 
-Claude CLI uses `/login` for authentication via browser OAuth.
+The current Brandon news-summary workflow should run on local CPU GGUF models,
+not Claude CLI. The shared `agents/llm_client.py` defaults to `llama.cpp`.
 
 ```bash
-# Install Claude CLI globally
-sudo npm install -g @anthropic-ai/claude-code
+cd ~/twitter_influencer
 
-# Login via browser (MUST be done in VNC desktop session!)
-claude /login
+export LLM_BACKEND=llama_cpp
+export CHAT_BACKEND=llama_cpp
+export LLM_LLAMA_CLI=~/opt/llama.cpp/llama-cli
+export CHAT_LLAMA_CLI=~/opt/llama.cpp/llama-cli
+
+# Prose/RAG default
+export LLM_LLAMA_MODEL='LiquidAI/LFM2-2.6B-GGUF:LFM2-2.6B-Q4_K_M.gguf'
+export CHAT_LLAMA_MODEL='LiquidAI/LFM2-2.6B-GGUF:LFM2-2.6B-Q4_K_M.gguf'
+
+# Structured/control-plane default
+export LLM_LLAMA_JSON_MODEL='unsloth/Phi-4-mini-instruct-GGUF:Phi-4-mini-instruct-Q3_K_M.gguf'
 ```
 
-This will:
-1. Open Chromium browser
-2. Redirect to Anthropic login page
-3. You authenticate with your Anthropic account
-4. CLI stores credentials locally
-
-**Test it works:**
+**Smoke checks:**
 ```bash
-claude -p "Say hello"
-```
-
-**Re-login if needed:**
-```bash
-claude /login
+.venv/bin/python test_llm_client.py
+CHAT_BACKEND=llama_cpp .venv/bin/python tools/local_chat_backend_smoke.py --db output_data/ai_news.db
 ```
 
 ## Step 5b: Configure Environment Variables
@@ -264,8 +263,8 @@ sqlite3 output_data/ai_news.db "SELECT COUNT(*) FROM tweets WHERE is_ai_relevant
 uv run python linkedin_ranking_ui.py &
 curl http://localhost:5001/api/status
 
-# Test Claude CLI works
-claude -p "Say hello"
+# Test local LLM client works
+LLM_BACKEND=llama_cpp .venv/bin/python test_llm_client.py
 ```
 
 ## Step 8: Setup Cron Jobs (Twice Daily Scraping)
@@ -561,16 +560,18 @@ cd ~/twitter_influencer
 uv run python ai_news_scraper.py --google-auth your_email@gmail.com
 ```
 
-### Claude CLI not working
+### Local llama.cpp model not working
 ```bash
-# Test directly
-claude -p "Hello"
+# Confirm the runtime exists
+~/opt/llama.cpp/llama-cli --version
 
-# Re-authenticate (opens browser in VNC desktop)
-claude /login
+# Confirm the shared client can call the local backend
+cd ~/twitter_influencer
+LLM_BACKEND=llama_cpp .venv/bin/python test_llm_client.py
 
-# Check Claude is installed
-which claude
+# Check model cache and disk
+du -sh ~/.cache/huggingface/hub
+df -h
 ```
 
 ### Cron jobs not running
@@ -602,11 +603,9 @@ sqlite3 output_data/ai_news.db "VACUUM;"
 | Component | Monthly Cost |
 |-----------|-------------|
 | Hetzner CX32 | €6.80 (~$7.50) |
-| Claude CLI | Included with Claude subscription |
+| Local llama.cpp text inference | Included on the VM CPU |
 | OpenAI API (optional, for images) | ~$2-5 |
 | **Total** | **~€7-12/month** |
-
-Note: Claude CLI uses your Claude.ai subscription (Pro or Max), not API credits.
 
 ## Step 12: Security Hardening (DISA STIG)
 

@@ -14,12 +14,14 @@ Run with: uv run python test_chat_agent.py
 
 import sys
 from pathlib import Path
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).parent))
 
 import sqlite3
 import wordninja
 import re
+from agents.chat_agent import ChatAgent, Source
 
 
 def test_wordninja_segmentation():
@@ -292,6 +294,175 @@ def test_otel_spans_exist():
     return True
 
 
+def test_context_source_selection():
+    """Test source compression selects relevant, diverse sources."""
+    print("\n[Test 7] Context Source Selection\n")
+
+    agent = object.__new__(ChatAgent)
+    sources = [
+        Source(
+            id="generic",
+            type="web",
+            title="Generic AI news",
+            text="OpenAI released a general model update.",
+            url="https://example.com/generic",
+        ),
+        Source(
+            id="phoenix",
+            type="web",
+            title="Evaluate RAG",
+            author="Arize Phoenix Docs",
+            text="Phoenix Tracing captures RAG pipeline data and supports LLM eval workflows.",
+            url="https://example.com/phoenix",
+        ),
+        Source(
+            id="nemo",
+            type="web",
+            title="NeMo Curator",
+            author="NVIDIA",
+            text="NVIDIA NeMo Curator helps curate JSONL datasets for fine-tuning.",
+            url="https://example.com/nemo",
+        ),
+        Source(
+            id="tweet1",
+            type="twitter",
+            author="researcher",
+            text="A quick note about eval traces and production feedback loops.",
+            url="https://example.com/tweet",
+        ),
+        Source(
+            id="youtube1",
+            type="youtube",
+            author="channel",
+            title="Unrelated video",
+            text="This is mostly unrelated.",
+            url="https://example.com/video",
+        ),
+    ]
+
+    selected = agent._select_context_sources(
+        "How do Phoenix, NeMo Curator, eval traces, and fine-tuning datasets help before training?",
+        sources,
+        {"context_max_sources": 3},
+    )
+    selected_ids = [source.id for source in selected]
+    print(f"  selected: {selected_ids}")
+
+    required = {"phoenix", "nemo"}
+    passed = len(selected) == 3 and required.issubset(set(selected_ids))
+    print(f"  required present: {required.issubset(set(selected_ids))} [{'PASS' if passed else 'FAIL'}]")
+    return passed
+
+
+def test_context_text_clipping():
+    """Test context clipping preserves concise prompt sources."""
+    print("\n[Test 8] Context Text Clipping\n")
+
+    agent = object.__new__(ChatAgent)
+    long_text = "A" * 400
+    clipped = agent._clip_source_text(long_text, 80)
+    passed = len(clipped) == 80 and clipped.endswith("...")
+    print(f"  clipped length: {len(clipped)} [{'PASS' if passed else 'FAIL'}]")
+    return passed
+
+
+def test_reranker_reorders_before_context_selection():
+    """Test reranker order is honored by context source compression."""
+    print("\n[Test 9] Reranker Source Ordering\n")
+
+    agent = object.__new__(ChatAgent)
+    sources = [
+        Source(id="generic", type="web", title="Generic", text="General AI news.", url="https://example.com/generic"),
+        Source(id="phoenix", type="web", title="Phoenix", text="Phoenix traces RAG evals.", url="https://example.com/phoenix"),
+        Source(id="nemo", type="web", title="NeMo", text="NeMo Curator prepares datasets.", url="https://example.com/nemo"),
+        Source(id="tweet", type="twitter", text="Short social note.", url="https://example.com/tweet"),
+    ]
+
+    def fake_scores(query, candidates, model_name):
+        score_by_id = {"nemo": 0.9, "phoenix": 0.8, "generic": 0.1, "tweet": 0.05}
+        return [score_by_id[source.id] for source in candidates]
+
+    agent._score_sources_with_reranker = fake_scores
+    ranked, info = agent._rerank_sources(
+        "How do Phoenix and NeMo help RAG evals and curation?",
+        sources,
+        {"enable_reranker": True, "reranker_model": "fake"},
+    )
+    selected = agent._select_context_sources(
+        "How do Phoenix and NeMo help RAG evals and curation?",
+        ranked,
+        {"context_max_sources": 2, "_source_order_is_reranked": info["applied"]},
+    )
+    selected_ids = [source.id for source in selected]
+    passed = info["applied"] and selected_ids == ["nemo", "phoenix"]
+    print(f"  selected after rerank: {selected_ids} [{'PASS' if passed else 'FAIL'}]")
+    return passed
+
+
+def test_reranker_fallback_on_error():
+    """Test reranker failure preserves base retrieval order."""
+    print("\n[Test 10] Reranker Fallback\n")
+
+    agent = object.__new__(ChatAgent)
+    sources = [
+        Source(id="first", type="web", text="First source.", url="https://example.com/1"),
+        Source(id="second", type="web", text="Second source.", url="https://example.com/2"),
+    ]
+
+    def broken_scores(query, candidates, model_name):
+        raise RuntimeError("test failure")
+
+    agent._score_sources_with_reranker = broken_scores
+    ranked, info = agent._rerank_sources(
+        "query",
+        sources,
+        {"enable_reranker": True, "reranker_model": "fake-broken"},
+    )
+    ranked_ids = [source.id for source in ranked]
+    passed = not info["applied"] and ranked_ids == ["first", "second"] and "unavailable" in info["warning"]
+    print(f"  ranked after failure: {ranked_ids} [{'PASS' if passed else 'FAIL'}]")
+    return passed
+
+
+def test_local_backend_initialization_without_strands():
+    """Test local backend does not import hosted Strands/Bedrock dependencies."""
+    print("\n[Test 11] Local Backend Initialization\n")
+
+    with patch.dict("os.environ", {"CHAT_BACKEND": "llama_cpp", "CHAT_LLAMA_MODEL": "fake/repo:model.gguf"}, clear=False):
+        agent = ChatAgent(db_path="output_data/ai_news.db")
+    passed = agent.backend == "llama_cpp" and agent.agent is None and agent.model_id == "fake/repo:model.gguf"
+    print(f"  backend: {agent.backend}, model: {agent.model_id} [{'PASS' if passed else 'FAIL'}]")
+    return passed
+
+
+def test_local_llama_citation_retry():
+    """Test local backend retries when supported answer has no citations."""
+    print("\n[Test 12] Local Llama Citation Retry\n")
+
+    agent = object.__new__(ChatAgent)
+    agent.max_tokens = 320
+    agent.model_id = "fake/repo:model.gguf"
+    calls = []
+
+    def fake_run(prompt, options):
+        calls.append(prompt)
+        if len(calls) == 1:
+            return "Mastercard uses AI for fraud risk.", {"returncode": 0, "elapsed_sec": 1.0}
+        return "Mastercard uses AI for fraud risk [1].", {"returncode": 0, "elapsed_sec": 2.0}
+
+    agent._run_llama_cli = fake_run
+    sources = [Source(id="1", type="web", text="Mastercard AI fraud risk", url="https://example.com")]
+    answer, info = agent._generate_local_llama_response(
+        "What matters for Mastercard?",
+        "SOURCES:\n[1] WEB\nMastercard AI fraud risk\n\nQUESTION: What matters for Mastercard?",
+        sources,
+        {"citation_retry_on_missing": True},
+    )
+    passed = answer.endswith("[1].") and info.get("retry_used") and len(calls) == 2
+    print(f"  retry_used: {info.get('retry_used')}, calls: {len(calls)} [{'PASS' if passed else 'FAIL'}]")
+    return passed
+
+
 def run_all_tests():
     """Run all tests and report results."""
     print("=" * 60)
@@ -306,6 +477,12 @@ def run_all_tests():
     results.append(("database keyword search", test_keyword_search_db()))
     results.append(("multi-keyword AND logic", test_multi_keyword_search()))
     results.append(("OTEL spans", test_otel_spans_exist()))
+    results.append(("context source selection", test_context_source_selection()))
+    results.append(("context text clipping", test_context_text_clipping()))
+    results.append(("reranker source ordering", test_reranker_reorders_before_context_selection()))
+    results.append(("reranker fallback", test_reranker_fallback_on_error()))
+    results.append(("local backend initialization", test_local_backend_initialization_without_strands()))
+    results.append(("local llama citation retry", test_local_llama_citation_retry()))
 
     print("\n" + "=" * 60)
     print("Summary")

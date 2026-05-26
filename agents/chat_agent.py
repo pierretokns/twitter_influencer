@@ -6,6 +6,7 @@
 #     "FlagEmbedding>=1.2.0",
 #     "sqlite-vec>=0.1.0",
 #     "numpy>=1.24.0",
+#     "sentence-transformers>=2.2.0",
 #     "wordninja>=2.0.0",
 # ]
 # ///
@@ -44,10 +45,12 @@ import json
 import os
 import re
 import sqlite3
+import subprocess
+import tempfile
 import threading
 import uuid
 from contextlib import contextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from typing import AsyncGenerator, Generator, List, Dict, Optional, Any
 from pathlib import Path
@@ -63,6 +66,10 @@ from agents.hybrid_retriever import HybridRetriever, encode_texts_hybrid
 
 # =============================================================================
 # No async loop hack needed — Strands handles async natively.
+
+
+_RERANKER_CACHE: dict[str, Any] = {}
+_RERANKER_WARNED: set[str] = set()
 
 
 @dataclass
@@ -95,13 +102,13 @@ class ChatEvent:
 
 
 class ChatAgent:
-    """RAG chat agent with Pydantic AI + Gemini Flash streaming"""
+    """RAG chat agent with hosted or local llama.cpp generation."""
 
     # System prompt - isolated from user content
     SYSTEM_PROMPT = """You are a helpful AI news assistant specializing in AI industry news. Answer questions about AI news using ONLY the provided sources.
 
 RULES:
-1. Cite sources using [N] notation inline (e.g., "According to recent reports [1][2]")
+1. Cite sources using numeric citation markers inline (e.g., "According to recent reports [1][2]")
 2. Only use information from the provided sources - do NOT use training data
 3. If information is not in sources, say "I don't have information about that"
 4. Be concise but informative (2-3 sentences per response)
@@ -116,7 +123,7 @@ RESPONSE FORMAT:
 
     def __init__(self, db_path: str = "output_data/ai_news.db"):
         """
-        Initialize chat agent with Strands + Bedrock (Claude).
+        Initialize chat agent.
 
         Args:
             db_path: Path to SQLite database with embeddings
@@ -124,23 +131,34 @@ RESPONSE FORMAT:
         self.db_path = db_path
         self.tracer = get_tracer("chat")
         self.security = ChatSecurity()
-
-        from strands import Agent as StrandsAgent
-        from strands.models import BedrockModel
-
-        model_id = os.getenv("CHAT_MODEL", "us.anthropic.claude-sonnet-4-6")
-        region = os.getenv("AWS_DEFAULT_REGION", "us-east-1")
+        self.backend = os.getenv("CHAT_BACKEND", "bedrock").strip().lower()
         self.max_tokens = int(os.getenv("CHAT_MAX_TOKENS", "2048"))
+        self.model_id = os.getenv("CHAT_MODEL", "us.anthropic.claude-sonnet-4-6")
+        self.agent = None
+        self._bedrock_model = None
 
-        self._bedrock_model = BedrockModel(
-            model_id=model_id,
-            region_name=region,
-            max_tokens=self.max_tokens,
-        )
-        self.agent = StrandsAgent(
-            model=self._bedrock_model,
-            system_prompt=self.SYSTEM_PROMPT,
-        )
+        if self.backend in {"bedrock", "strands", "hosted"}:
+            from strands import Agent as StrandsAgent
+            from strands.models import BedrockModel
+
+            region = os.getenv("AWS_DEFAULT_REGION", "us-east-1")
+            self._bedrock_model = BedrockModel(
+                model_id=self.model_id,
+                region_name=region,
+                max_tokens=self.max_tokens,
+            )
+            self.agent = StrandsAgent(
+                model=self._bedrock_model,
+                system_prompt=self.SYSTEM_PROMPT,
+            )
+        elif self.backend in {"llama_cpp", "llama.cpp", "local"}:
+            self.backend = "llama_cpp"
+            self.model_id = os.getenv(
+                "CHAT_LLAMA_MODEL",
+                "LiquidAI/LFM2-2.6B-GGUF:LFM2-2.6B-Q4_K_M.gguf",
+            )
+        else:
+            raise ValueError(f"Unsupported CHAT_BACKEND '{self.backend}'")
 
         # Hybrid retrieval alpha parameter
         self.alpha = float(os.getenv("CHAT_RETRIEVAL_ALPHA", "0.5"))
@@ -220,10 +238,24 @@ RESPONSE FORMAT:
                         )
                         return
 
-                # Retrieve sources
+                # Retrieve a wider candidate set, then compress to a small
+                # evidence pack for the local/hosted generator.
                 with self.tracer.start_as_current_span("chat.retrieve_sources") as retrieval_span:
                     sources, retrieval_warning = self._retrieve_sources(query, options)
+                    ranked_sources, reranker_info = self._rerank_sources(query, sources, options)
+                    context_options = {
+                        **options,
+                        "_source_order_is_reranked": reranker_info["applied"],
+                    }
+                    context_sources = self._select_context_sources(
+                        query, ranked_sources, context_options
+                    )
                     retrieval_span.set_attribute("retrieval.source_count", len(sources))
+                    retrieval_span.set_attribute("retrieval.ranked_source_count", len(ranked_sources))
+                    retrieval_span.set_attribute("retrieval.context_source_count", len(context_sources))
+                    retrieval_span.set_attribute("retrieval.reranker_enabled", reranker_info["enabled"])
+                    retrieval_span.set_attribute("retrieval.reranker_applied", reranker_info["applied"])
+                    retrieval_span.set_attribute("retrieval.reranker_model", reranker_info["model"])
 
                     # Fix #36: Yield warning if retrieval had issues
                     if retrieval_warning:
@@ -232,10 +264,20 @@ RESPONSE FORMAT:
                             data={"message": retrieval_warning}
                         )
 
-                    # Yield sources to client
+                    if reranker_info["warning"]:
+                        yield ChatEvent(
+                            event="warning",
+                            data={"message": reranker_info["warning"]},
+                        )
+
+                    # Yield the compressed context sources to the client. These
+                    # are the sources whose numbering matches the prompt.
                     yield ChatEvent(
                         event="sources",
                         data={
+                            "retrieved_source_count": len(sources),
+                            "reranked": reranker_info["applied"],
+                            "reranker_model": reranker_info["model"] if reranker_info["applied"] else None,
                             "sources": [
                                 {
                                     "id": s.id,
@@ -246,13 +288,13 @@ RESPONSE FORMAT:
                                     "text": s.text[:200],
                                     "published_at": s.published_at,
                                 }
-                                for s in sources
+                                for s in context_sources
                             ]
                         },
                     )
 
                 # Build context with sources (no longer includes history as text)
-                context = self._build_context(sources, [])
+                context = self._build_context(context_sources, [])
 
                 # Build prompt with sources and question
                 prompt = f"SOURCES:\n{context}\n\nQUESTION: {query}"
@@ -264,28 +306,42 @@ RESPONSE FORMAT:
                 with self.tracer.start_as_current_span("chat.generate_response") as gen_span:
                     full_response = ""
                     citations_extracted = []
+                    gen_span.set_attribute("gen_ai.system", self.backend)
+                    gen_span.set_attribute("gen_ai.request.model", self.model_id)
 
-                    async with self.agent.run_stream(
-                        prompt,
-                        message_history=message_history,
-                    ) as result:
-                        # Stream tokens - stream_text() returns cumulative text,
-                        # so we need to extract only the new delta each iteration
-                        async for text in result.stream_text():
-                            # Extract only the new text since last iteration
-                            delta = text[len(full_response):]
-                            full_response = text
-                            if delta:
-                                yield ChatEvent(event="token", data={"token": delta})
+                    if self.backend == "llama_cpp":
+                        full_response, local_info = self._generate_local_llama_response(
+                            query,
+                            prompt,
+                            context_sources,
+                            options,
+                        )
+                        gen_span.set_attribute("gen_ai.response.elapsed_sec", local_info.get("elapsed_sec", 0.0))
+                        gen_span.set_attribute("gen_ai.response.retry_used", local_info.get("retry_used", False))
+                        if full_response:
+                            yield ChatEvent(event="token", data={"token": full_response})
+                    else:
+                        async with self.agent.run_stream(
+                            prompt,
+                            message_history=message_history,
+                        ) as result:
+                            # Stream tokens - stream_text() returns cumulative text,
+                            # so we need to extract only the new delta each iteration
+                            async for text in result.stream_text():
+                                # Extract only the new text since last iteration
+                                delta = text[len(full_response):]
+                                full_response = text
+                                if delta:
+                                    yield ChatEvent(event="token", data={"token": delta})
 
-                        # Get usage stats from result
-                        usage = result.usage()
-                        gen_span.set_attribute("gen_ai.usage.input_tokens", usage.request_tokens or 0)
-                        gen_span.set_attribute("gen_ai.usage.output_tokens", usage.response_tokens or 0)
+                            # Get usage stats from result
+                            usage = result.usage()
+                            gen_span.set_attribute("gen_ai.usage.input_tokens", usage.request_tokens or 0)
+                            gen_span.set_attribute("gen_ai.usage.output_tokens", usage.response_tokens or 0)
 
                 # Extract citations from complete response
                 with self.tracer.start_as_current_span("chat.extract_citations"):
-                    citations_extracted = self._extract_citations(full_response, sources)
+                    citations_extracted = self._extract_citations(full_response, context_sources)
                     for citation in citations_extracted:
                         yield ChatEvent(
                             event="citation",
@@ -304,7 +360,7 @@ RESPONSE FORMAT:
                 # Generate follow-up suggestions
                 with self.tracer.start_as_current_span("chat.generate_followups"):
                     suggestions = self._generate_followups(
-                        query, full_response, sources
+                        query, full_response, context_sources
                     )
 
                 # Signal completion
@@ -369,7 +425,7 @@ RESPONSE FORMAT:
         Returns:
             Tuple of (List of Source objects ranked by relevance, optional warning message)
         """
-        max_sources = options.get("max_sources", 10)
+        max_sources = options.get("max_sources", int(os.getenv("CHAT_RETRIEVAL_MAX_SOURCES", "15")))
         alpha = options.get("alpha", self.alpha)
         recency_boost = options.get("recency_boost", True)
 
@@ -389,7 +445,7 @@ RESPONSE FORMAT:
             with self._connection() as conn:
                 # First: Keyword search for brand names/URLs that don't match semantically
                 # This helps with queries like "vectorlab" or "fireship" that are proper nouns
-                keyword_sources = self._keyword_search(conn, query, max_sources // 2)
+                keyword_sources = self._keyword_search(conn, query, max_sources)
                 for src in keyword_sources:
                     if src.id not in seen_ids:
                         sources.append(src)
@@ -978,6 +1034,36 @@ RESPONSE FORMAT:
             keywords.extend([p for p in domain_parts if len(p) > 3 and p not in {'com', 'org', 'net', 'dev'}])
 
         if not keywords:
+            keywords = []
+
+        # Query-domain terms that should outrank generic words like "role" or
+        # "mentions". These are central to Brandon's finance/local-model RAG
+        # slices and are easy for embeddings to miss when source coverage is new.
+        domain_terms = [
+            "j.p. morgan", "jp morgan", "jpmorgan", "citadel", "mastercard",
+            "visa", "balyasny", "arrowstreet", "acadian", "hedge fund",
+            "asset manager", "payments", "fintech", "model risk",
+            "phoenix", "arize", "nemo curator", "nemo", "curator",
+            "data flywheel", "llama-factory", "llama factory", "fine-tuning",
+            "finetuning", "eval", "trace", "gguf", "llama.cpp", "qwen",
+            "gemma", "liquidai", "liquid", "lfm", "phi", "nvidia", "cpu",
+            "local model", "local",
+        ]
+        priority_keywords = []
+        compact_query = query_lower.replace(".", "").replace("-", " ")
+        for term in domain_terms:
+            compact_term = term.replace(".", "").replace("-", " ")
+            if term in query_lower or compact_term in compact_query:
+                priority_keywords.append(term)
+
+        # Preserve order and avoid duplicate LIKE scans.
+        deduped_keywords = []
+        for keyword in priority_keywords + keywords:
+            if keyword and keyword not in deduped_keywords:
+                deduped_keywords.append(keyword)
+        keywords = deduped_keywords
+
+        if not keywords:
             return []
 
         # For camelCase or concatenated brand names, also try space-separated version
@@ -1050,14 +1136,56 @@ RESPONSE FORMAT:
 
             return snippet
 
+        def keyword_matches_blob(keyword: str, blob: str) -> bool:
+            """Return true only for real keyword/entity matches, not substrings."""
+            keyword_lower = keyword.lower()
+            if re.search(r"[a-z0-9]", keyword_lower):
+                pattern = r"(?<![a-z0-9])" + re.escape(keyword_lower) + r"(?![a-z0-9])"
+                return re.search(pattern, blob.lower()) is not None
+            return keyword_lower in blob.lower()
+
         try:
+            # First give every explicit domain/entity term a small chance to add
+            # a source. Without this, a broad query mentioning many finance firms
+            # can fill all keyword slots with the first matched company.
+            for keyword in priority_keywords:
+                if len(sources) >= limit:
+                    break
+                pattern = f'%{keyword}%'
+                cursor.execute("""
+                    SELECT article_id, title, url, content, published_at
+                    FROM web_articles
+                    WHERE url LIKE ? OR title LIKE ? OR content LIKE ?
+                    ORDER BY published_at DESC
+                    LIMIT 2
+                """, (pattern, pattern, pattern))
+
+                for row in cursor.fetchall():
+                    if len(sources) >= limit:
+                        break
+                    blob = " ".join(str(row[key] or "") for key in ("title", "url", "content"))
+                    if not keyword_matches_blob(keyword, blob):
+                        continue
+                    if row[0] not in seen_ids:
+                        snippet = extract_snippet(row[3], [keyword])
+                        sources.append(Source(
+                            id=row[0],
+                            type="web",
+                            title=row[1],
+                            text=snippet,
+                            url=row[2],
+                            published_at=row[4],
+                        ))
+                        seen_ids.add(row[0])
+
             # If multiple keywords, first try to find articles matching ALL keywords
             if len(keywords) >= 2:
                 # Build dynamic WHERE clause for all keywords
                 # For each keyword, also try space-separated version
                 where_conditions = []
                 params = []
-                for kw in keywords[:4]:  # Limit to 4 keywords
+                all_match_keywords = (priority_keywords[:3] if len(priority_keywords) >= 2 else keywords[:4])
+                for kw in all_match_keywords:  # Limit broad AND matching
                     pattern = f'%{kw}%'
                     # Also try space-separated version
                     space_version = split_camel_or_concat(kw)
@@ -1095,7 +1223,10 @@ RESPONSE FORMAT:
 
             # Then search for individual keywords (for remaining slots)
             # Prioritize acronyms and short specific terms over generic words
-            sorted_kw = sorted(keywords, key=lambda w: (w not in KNOWN_SHORT_TERMS, len(w)))
+            sorted_kw = priority_keywords + [
+                kw for kw in sorted(keywords, key=lambda w: (w not in KNOWN_SHORT_TERMS, len(w)))
+                if kw not in priority_keywords
+            ]
             for keyword in sorted_kw[:3]:
                 if len(sources) >= limit:
                     break
@@ -1121,6 +1252,9 @@ RESPONSE FORMAT:
                     """, (pattern, pattern, pattern, limit))
 
                 for row in cursor.fetchall():
+                    blob = " ".join(str(row[key] or "") for key in ("title", "url", "content"))
+                    if not keyword_matches_blob(keyword, blob):
+                        continue
                     if row[0] not in seen_ids:
                         snippet = extract_snippet(row[3], [keyword])
                         sources.append(Source(
@@ -1192,6 +1326,362 @@ RESPONSE FORMAT:
 
         return sources[:limit]
 
+    def _query_terms(self, query: str) -> set[str]:
+        """Normalize query terms for source packing and context snippets."""
+        stop_words = {
+                "the",
+                "and",
+                "for",
+                "with",
+                "that",
+                "this",
+                "from",
+                "what",
+                "which",
+                "about",
+                "sources",
+                "source",
+                "news",
+                "role",
+                "using",
+                "find",
+                "show",
+                "summarize",
+                "summary",
+                "information",
+                "models",
+                "model",
+            }
+        terms: set[str] = set()
+        for raw in re.findall(r"[a-z0-9][a-z0-9.\-]*", query.lower()):
+            term = raw.strip(".-")
+            if not term or term in stop_words:
+                continue
+            if term.endswith("ies") and len(term) > 4:
+                term = term[:-3] + "y"
+            elif term.endswith("s") and len(term) > 4 and not term.endswith("ss"):
+                term = term[:-1]
+            if len(term) >= 2 and term not in stop_words:
+                terms.add(term)
+        for phrase in (
+            "j.p. morgan",
+            "jp morgan",
+            "balyasny",
+            "arrowstreet",
+            "acadian",
+            "citadel",
+            "mastercard",
+            "visa",
+            "phoenix",
+            "arize",
+            "nemo curator",
+            "llama.cpp",
+            "gguf",
+            "structured output",
+            "function calling",
+            "json schema",
+            "constrained decoding",
+            "liquid",
+            "gemma",
+            "phi",
+        ):
+            if phrase in query.lower():
+                terms.add(phrase)
+        return terms
+
+    def _source_blob(self, source: Source) -> str:
+        return " ".join(
+            part
+            for part in [
+                source.id,
+                source.type,
+                source.author or "",
+                source.title or "",
+                source.text,
+                source.url,
+            ]
+            if part
+        ).lower()
+
+    def _source_query_term_hits(self, query: str, source: Source) -> set[str]:
+        blob = self._source_blob(source)
+        return {term for term in self._query_terms(query) if term in blob}
+
+    def _source_rank_score(self, query: str, source: Source, rank_index: int) -> float:
+        """Score retrieved sources for compressed prompt context selection."""
+        query_terms = self._query_terms(query)
+        blob = " ".join(
+            part
+            for part in [
+                source.id,
+                source.type,
+                source.author or "",
+                source.title or "",
+                source.text,
+                source.url,
+            ]
+            if part
+        ).lower()
+        term_hits = sum(1 for term in query_terms if term in blob)
+        exact_entity_bonus = 0
+        for entity in (
+            "j.p. morgan",
+            "jp morgan",
+            "balyasny",
+            "arrowstreet",
+            "acadian",
+            "citadel",
+            "mastercard",
+            "visa",
+            "phoenix",
+            "arize",
+            "nemo curator",
+            "llama.cpp",
+            "gguf",
+            "liquid",
+            "gemma",
+            "phi",
+        ):
+            if entity in query.lower() and entity in blob:
+                exact_entity_bonus += 2
+        type_bonus = {"web": 0.3, "twitter": 0.2, "youtube": 0.1}.get(source.type, 0)
+        retrieval_rank_bonus = 1.0 / (rank_index + 1)
+        return term_hits + exact_entity_bonus + type_bonus + retrieval_rank_bonus
+
+    def _query_focused_excerpt(self, text: str, query: str, max_chars: int) -> str:
+        clean = re.sub(r"\s+", " ", text or "").strip()
+        if not clean or len(clean) <= max_chars:
+            return clean
+        lower = clean.lower()
+        terms = sorted(self._query_terms(query), key=len, reverse=True)
+        positions = [lower.find(term) for term in terms if lower.find(term) >= 0]
+        if not positions:
+            return clean[: max(0, max_chars - 3)].rstrip() + "..."
+        start = max(0, min(positions) - max_chars // 4)
+        end = min(len(clean), start + max_chars)
+        snippet = clean[start:end].strip()
+        if start > 0:
+            snippet = "..." + snippet
+        if end < len(clean):
+            snippet += "..."
+        return snippet
+
+    def _load_full_source_texts(self, sources: List[Source]) -> Dict[tuple[str, str], str]:
+        if not getattr(self, "db_path", None):
+            return {}
+        ids_by_type: dict[str, list[str]] = {"web": [], "youtube": [], "twitter": []}
+        for source in sources:
+            if source.type in ids_by_type and source.id:
+                ids_by_type[source.type].append(source.id)
+        loaded: dict[tuple[str, str], str] = {}
+        try:
+            with self._connection() as conn:
+                if ids_by_type["web"]:
+                    placeholders = ",".join("?" for _ in ids_by_type["web"])
+                    rows = conn.execute(
+                        f"SELECT article_id, content, description FROM web_articles WHERE article_id IN ({placeholders})",
+                        ids_by_type["web"],
+                    ).fetchall()
+                    for row in rows:
+                        loaded[("web", row["article_id"])] = row["content"] or row["description"] or ""
+                if ids_by_type["youtube"]:
+                    placeholders = ",".join("?" for _ in ids_by_type["youtube"])
+                    rows = conn.execute(
+                        f"SELECT video_id, transcript, description FROM youtube_videos WHERE video_id IN ({placeholders})",
+                        ids_by_type["youtube"],
+                    ).fetchall()
+                    for row in rows:
+                        loaded[("youtube", row["video_id"])] = row["transcript"] or row["description"] or ""
+                if ids_by_type["twitter"]:
+                    placeholders = ",".join("?" for _ in ids_by_type["twitter"])
+                    rows = conn.execute(
+                        f"SELECT tweet_id, text FROM tweets WHERE tweet_id IN ({placeholders})",
+                        ids_by_type["twitter"],
+                    ).fetchall()
+                    for row in rows:
+                        loaded[("twitter", row["tweet_id"])] = row["text"] or ""
+        except Exception as exc:
+            print(f"[ChatAgent] Warning: Could not expand source context: {exc}")
+        return loaded
+
+    def _expand_sources_for_context(self, query: str, sources: List[Source], options: Dict) -> List[Source]:
+        enabled = self._option_enabled(options, "context_expand_sources", "CHAT_CONTEXT_EXPAND_SOURCES", default="1")
+        if not enabled or not sources:
+            return sources
+        max_chars = int(options.get("context_expanded_chars", os.getenv("CHAT_CONTEXT_EXPANDED_CHARS", "900")))
+        full_texts = self._load_full_source_texts(sources)
+        if not full_texts:
+            return sources
+        expanded: list[Source] = []
+        for source in sources:
+            full_text = full_texts.get((source.type, source.id), "")
+            if full_text and len(full_text) > len(source.text or ""):
+                expanded.append(replace(source, text=self._query_focused_excerpt(full_text, query, max_chars)))
+            else:
+                expanded.append(source)
+        return expanded
+
+    def _option_enabled(self, options: Dict, option_name: str, env_name: str, default: str = "0") -> bool:
+        value = options.get(option_name)
+        if value is None:
+            value = os.getenv(env_name, default)
+        if isinstance(value, bool):
+            return value
+        return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+    def _get_reranker(self, model_name: str):
+        """Lazy-load a CrossEncoder reranker only when explicitly enabled."""
+        if model_name not in _RERANKER_CACHE:
+            from sentence_transformers import CrossEncoder
+
+            _RERANKER_CACHE[model_name] = CrossEncoder(model_name)
+        return _RERANKER_CACHE[model_name]
+
+    def _source_rerank_text(self, source: Source) -> str:
+        return " ".join(
+            part
+            for part in [
+                source.type,
+                source.author or "",
+                source.title or "",
+                source.text,
+                source.url,
+            ]
+            if part
+        )
+
+    def _score_sources_with_reranker(
+        self,
+        query: str,
+        sources: List[Source],
+        model_name: str,
+    ) -> List[float]:
+        model = self._get_reranker(model_name)
+        pairs = [[query, self._source_rerank_text(source)] for source in sources]
+        scores = model.predict(pairs)
+        return [float(score) for score in scores]
+
+    def _rerank_sources(self, query: str, sources: List[Source], options: Dict) -> tuple[List[Source], Dict]:
+        """
+        Optionally rerank retrieved candidates before prompt source compression.
+
+        This is disabled by default to avoid accidental model downloads in normal
+        local runs. Enable with CHAT_ENABLE_RERANKER=1 or options["enable_reranker"].
+        """
+        model_name = options.get(
+            "reranker_model",
+            os.getenv("CHAT_RERANKER_MODEL", "BAAI/bge-reranker-v2-m3"),
+        )
+        enabled = self._option_enabled(options, "enable_reranker", "CHAT_ENABLE_RERANKER")
+        info = {
+            "enabled": enabled,
+            "applied": False,
+            "model": model_name if enabled else "",
+            "warning": "",
+        }
+
+        if not enabled or not sources:
+            return sources, info
+
+        max_rerank = int(options.get("reranker_max_sources", os.getenv("CHAT_RERANKER_MAX_SOURCES", "15")))
+        candidates = sources[:max(0, max_rerank)]
+        remainder = sources[len(candidates):]
+        if not candidates:
+            return sources, info
+
+        try:
+            scores = self._score_sources_with_reranker(query, candidates, model_name)
+            scored = list(zip(scores, range(len(candidates)), candidates))
+            scored.sort(key=lambda item: (item[0], -item[1]), reverse=True)
+            info["applied"] = True
+            return [source for _, _, source in scored] + remainder, info
+        except Exception as exc:
+            warning = (
+                f"Reranker '{model_name}' unavailable; using base retrieval order. "
+                f"Reason: {exc}"
+            )
+            if model_name not in _RERANKER_WARNED:
+                print(f"[ChatAgent] {warning}")
+                _RERANKER_WARNED.add(model_name)
+            info["warning"] = warning
+            return sources, info
+
+    def _select_context_sources(self, query: str, sources: List[Source], options: Dict) -> List[Source]:
+        """
+        Select a small, diverse evidence pack from a wider retrieval set.
+
+        The production-seed eval showed that retrieving 10-15 candidates but
+        generating from the top 3 compressed sources is a better CPU-local path
+        than sending every candidate to the model.
+        """
+        max_context_sources = options.get(
+            "context_max_sources",
+            int(os.getenv("CHAT_CONTEXT_MAX_SOURCES", "3")),
+        )
+        if max_context_sources <= 0 or len(sources) <= max_context_sources:
+            return sources
+
+        sources = self._expand_sources_for_context(query, sources, options)
+
+        if options.get("_source_order_is_reranked"):
+            selected: list[Source] = []
+            seen_ids: set[str] = set()
+            covered_terms: set[str] = set()
+            remaining = list(enumerate(sources))
+            for source in sources:
+                if source.id in seen_ids:
+                    continue
+                selected.append(source)
+                seen_ids.add(source.id)
+                covered_terms.update(self._source_query_term_hits(query, source))
+                if len(selected) >= max_context_sources:
+                    return selected
+                break
+            while len(selected) < max_context_sources and remaining:
+                best: tuple[float, int, Source] | None = None
+                for rank_index, source in remaining:
+                    if source.id in seen_ids:
+                        continue
+                    hits = self._source_query_term_hits(query, source)
+                    new_hits = hits - covered_terms
+                    score = len(new_hits) * 3.0 + len(hits) * 0.5 + (1.0 / (rank_index + 1))
+                    item = (score, -rank_index, source)
+                    if best is None or item > best:
+                        best = item
+                if best is None:
+                    break
+                _, _, chosen = best
+                selected.append(chosen)
+                seen_ids.add(chosen.id)
+                covered_terms.update(self._source_query_term_hits(query, chosen))
+            return selected
+
+        scored = [
+            (self._source_rank_score(query, source, i), i, source)
+            for i, source in enumerate(sources)
+        ]
+        scored.sort(key=lambda item: (item[0], -item[1]), reverse=True)
+
+        selected: list[Source] = []
+        seen_ids: set[str] = set()
+        for _, _, source in scored:
+            if len(selected) >= max_context_sources:
+                break
+            if source.id in seen_ids:
+                continue
+            selected.append(source)
+            seen_ids.add(source.id)
+
+        # Stable numbering: keep original retrieval order for selected sources.
+        selected_order = {source.id: i for i, source in enumerate(sources)}
+        return sorted(selected, key=lambda source: selected_order.get(source.id, 10**9))
+
+    def _clip_source_text(self, text: str, max_chars: int) -> str:
+        clean = re.sub(r"\s+", " ", text or "").strip()
+        if len(clean) <= max_chars:
+            return clean
+        return clean[: max(0, max_chars - 3)].rstrip() + "..."
+
     def _build_context(self, sources: List[Source], history: List[Dict]) -> str:
         """
         Build context string with source formatting.
@@ -1210,15 +1700,160 @@ RESPONSE FORMAT:
         context = ""
 
         # Add sources
+        max_chars = int(os.getenv("CHAT_CONTEXT_SOURCE_CHARS", "250"))
         for i, source in enumerate(sources, 1):
             context += f"[{i}] {source.type.upper()}"
             if source.author:
                 context += f" - {source.author}"
             context += "\n"
-            context += f"    {source.text[:300]}\n"
+            context += f"    {self._clip_source_text(source.text, max_chars)}\n"
             context += f"    {source.url}\n\n"
 
         return context
+
+    def _llama_model_args(self, model: str) -> list[str]:
+        if ":" in model and model.endswith(".gguf"):
+            repo, hf_file = model.split(":", 1)
+            return ["--hf-repo", repo, "--hf-file", hf_file]
+        return ["-hf", model]
+
+    def _clean_llama_output(self, text: str) -> str:
+        clean = re.sub(r"\x1b\[[0-9;]*m", "", text or "")
+        clean = re.sub(r".\x08", "", clean)
+        if " ... (truncated)\n\n" in clean:
+            clean = clean.split(" ... (truncated)\n\n", 1)[-1]
+        if "ANSWER:" in clean:
+            clean = clean.rsplit("ANSWER:", 1)[-1]
+        clean = re.sub(r"\n?Exiting\.\.\.\s*$", "", clean)
+        clean = re.sub(r"\s*\[\s*Prompt:.*?Generation:.*?\]\s*$", "", clean, flags=re.S)
+        clean = re.sub(r"\[\s*N\s*\]", "", clean)
+        return clean.strip()
+
+    def _build_llama_prompt(
+        self,
+        query: str,
+        prompt: str,
+        citation_strict: bool,
+    ) -> str:
+        citation_rules = ""
+        if citation_strict:
+            citation_rules = """
+
+Every factual sentence must end with one or more numeric citations like [1] or [2].
+Never write a factual sentence without a citation.
+Do not write letters, email greetings, signoffs, subjects, or placeholders.
+Do not use [N]; use only source numbers that exist in the SOURCES list.
+
+Example style:
+Mastercard describes AI as a way to improve financial fraud detection and data-driven safeguards [1].
+Visa reports AI-enabled social-engineering threats in payments security [2].
+Together, these signals matter for regulated financial workflows because fraud, risk, and payment-network security are operational priorities [1][2].
+"""
+        return (
+            f"{self.SYSTEM_PROMPT}{citation_rules}\n\n"
+            f"{prompt}\n\n"
+            "ANSWER:"
+        )
+
+    def _run_llama_cli(self, prompt: str, options: Dict) -> tuple[str, dict[str, Any]]:
+        llama_cli = Path(options.get("llama_cli", os.getenv("CHAT_LLAMA_CLI", "~/opt/llama.cpp/llama-cli"))).expanduser()
+        model = options.get("llama_model", os.getenv("CHAT_LLAMA_MODEL", self.model_id))
+        ctx = int(options.get("llama_ctx", os.getenv("CHAT_LLAMA_CTX", "4096")))
+        threads = int(options.get("llama_threads", os.getenv("CHAT_LLAMA_THREADS", "4")))
+        temp = str(options.get("llama_temp", os.getenv("CHAT_LLAMA_TEMP", "0.1")))
+        timeout = int(options.get("llama_timeout", os.getenv("CHAT_LLAMA_TIMEOUT", "900")))
+        max_tokens = int(options.get("llama_max_tokens", os.getenv("CHAT_MAX_TOKENS", str(self.max_tokens))))
+
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix=".txt", delete=False) as prompt_file:
+            prompt_file.write(prompt)
+            prompt_path = Path(prompt_file.name)
+        cmd = [
+            str(llama_cli),
+            *self._llama_model_args(model),
+            "-f",
+            str(prompt_path),
+            "-c",
+            str(ctx),
+            "-n",
+            str(max_tokens),
+            "-t",
+            str(threads),
+            "--temp",
+            temp,
+            "--no-display-prompt",
+            "--single-turn",
+        ]
+        started = datetime.now()
+        try:
+            proc = subprocess.run(
+                cmd,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                capture_output=True,
+                timeout=timeout,
+                check=False,
+            )
+            elapsed = (datetime.now() - started).total_seconds()
+            output = self._clean_llama_output(proc.stdout)
+            return output, {
+                "returncode": proc.returncode,
+                "elapsed_sec": elapsed,
+                "stderr_tail": proc.stderr.strip()[-1000:],
+                "model": model,
+            }
+        finally:
+            try:
+                prompt_path.unlink()
+            except OSError:
+                pass
+
+    def _generate_local_llama_response(
+        self,
+        query: str,
+        prompt: str,
+        context_sources: List[Source],
+        options: Dict,
+    ) -> tuple[str, dict[str, Any]]:
+        base_prompt = self._build_llama_prompt(query, prompt, citation_strict=False)
+        answer, info = self._run_llama_cli(base_prompt, options)
+        info["retry_used"] = False
+        if info.get("returncode") != 0:
+            raise RuntimeError(f"llama.cpp exited with {info['returncode']}: {info.get('stderr_tail', '')}")
+
+        should_retry = self._option_enabled(
+            options,
+            "citation_retry_on_missing",
+            "CHAT_CITATION_RETRY_ON_MISSING",
+            default="1",
+        )
+        if should_retry and not self._looks_like_refusal(answer) and not self._extract_citations(answer, context_sources):
+            retry_prompt = self._build_llama_prompt(query, prompt, citation_strict=True)
+            retry_answer, retry_info = self._run_llama_cli(retry_prompt, options)
+            if retry_info.get("returncode") == 0 and self._extract_citations(retry_answer, context_sources):
+                retry_info["retry_used"] = True
+                retry_info["initial_elapsed_sec"] = info.get("elapsed_sec", 0.0)
+                retry_info["elapsed_sec"] = retry_info.get("elapsed_sec", 0.0) + info.get("elapsed_sec", 0.0)
+                return retry_answer, retry_info
+            info["retry_used"] = True
+            info["retry_returncode"] = retry_info.get("returncode")
+        return answer, info
+
+    def _looks_like_refusal(self, answer: str) -> bool:
+        lower = (answer or "").lower()
+        return any(
+            marker in lower
+            for marker in (
+                "not support",
+                "do not contain",
+                "cannot determine",
+                "insufficient",
+                "don't have",
+                "no information",
+                "not specified",
+                "not available",
+            )
+        )
 
     def _build_message_history(self, history: List[Dict]) -> List:
         """
@@ -1233,6 +1868,8 @@ RESPONSE FORMAT:
         Returns:
             List of ModelRequest/ModelResponse for pydantic-ai message_history
         """
+        from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart, UserPromptPart
+
         messages = []
         for msg in history[-10:]:  # Last 10 messages (5 turns)
             role = msg.get("role", "").lower()

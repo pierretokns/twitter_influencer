@@ -37,7 +37,7 @@ LINKEDIN_PASSWORD=your_password
 OPENAI_API_KEY=your_openai_api_key
 ```
 
-**Note:** For AI-powered content generation, the LinkedIn autopilot uses the Claude CLI tool (installed via `npm install -g @anthropic-ai/claude-code`). Make sure you're logged in to Claude via the CLI.
+**Local model note:** AI-powered text generation now defaults to local `llama.cpp` through `agents/llm_client.py`. Use `LLM_BACKEND=llama_cpp`, `LLM_LLAMA_CLI=~/opt/llama.cpp/llama-cli`, LFM2-2.6B for prose, and Phi-4-mini for structured JSON/control-plane calls. Hosted Bedrock is only used when explicitly selected with `LLM_BACKEND=bedrock`.
 
 **AI Images:** For viral, eye-catching images, set `OPENAI_API_KEY` to use DALL-E 3. Without it, the system falls back to simple quote card images.
 
@@ -151,8 +151,8 @@ uv run linkedin_autopilot.py --login --schedule --google-auth=your@gmail.com
 #### LinkedIn Autopilot Features
 
 - **Content Generation**: Creates engaging LinkedIn posts from scraped AI news
-  - Uses Claude CLI for intelligent content creation
-  - Falls back to templates if CLI unavailable
+  - Uses local `llama.cpp` by default for intelligent content creation
+  - Falls back to templates if local inference is unavailable
   - Multiple post types: news breakdowns, hot takes, curated lists, questions, insights
 
 - **Image Generation**: Creates professional images for posts

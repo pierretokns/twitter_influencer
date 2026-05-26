@@ -340,6 +340,18 @@ AI_INFLUENCERS = {
         "DarioAmodei",      # Anthropic CEO - safety focus
         "janaborsa",        # Jan Leike - alignment research
     ],
+
+    # -------------------------------------------------------------------------
+    # TIER 6: Finance / Regulated AI Context (Brandon Role Slice)
+    # -------------------------------------------------------------------------
+    "finance_ai": [
+        "jpmorgan",         # J.P. Morgan firm news
+        "JPMorganAM",       # J.P. Morgan Asset Management
+        "MastercardNews",   # Mastercard newsroom
+        "VisaNews",         # Visa newsroom
+        "Citadel",          # Citadel firm news
+        "AcadianAM",        # Acadian Asset Management
+    ],
 }
 
 # Flatten for easy iteration
@@ -500,6 +512,130 @@ WEB_SOURCES = {
         },
         "description": "Enterprise AI news and announcements",
     },
+
+    # -------------------------------------------------------------------------
+    # Finance / regulated-industry AI sources for Brandon's finance-facing role
+    # -------------------------------------------------------------------------
+    "jpmorgan_ai_research": {
+        "name": "J.P. Morgan AI Research",
+        "url": "https://www.jpmorgan.com/US/en/technology/artificial-intelligence",
+        "type": "html",
+        "category": "finance_ai",
+        "filter_keywords": ["ai", "artificial intelligence", "machine learning", "synthetic data", "explainable"],
+        "selectors": {
+            "article": "article, section, .card, [class*='card'], [class*='tile'], [class*='teaser']",
+            "title": "h1, h2, h3, h4, [class*='title'], [class*='headline']",
+            "link": "a[href]",
+            "date": "time, .date, [class*='date']",
+            "description": "p, [class*='description'], [class*='summary']",
+        },
+        "description": "J.P. Morgan AI research, financial synthetic data, explainability, model-risk themes",
+    },
+    "jpmorgan_asset_ai": {
+        "name": "J.P. Morgan Asset Management AI Insights",
+        "url": "https://am.jpmorgan.com/us/en/asset-management/liq/insights/market-themes/artificial-intelligence/",
+        "type": "html",
+        "category": "finance_ai",
+        "filter_keywords": ["ai", "artificial intelligence", "investment", "market", "productivity", "risk"],
+        "selectors": {
+            "article": "article, section, .card, [class*='card'], [class*='tile'], [class*='teaser']",
+            "title": "h1, h2, h3, h4, [class*='title'], [class*='headline']",
+            "link": "a[href]",
+            "date": "time, .date, [class*='date']",
+            "description": "p, [class*='description'], [class*='summary']",
+        },
+        "description": "Asset-management AI market insights and investment implications",
+    },
+    "mastercard_ai": {
+        "name": "Mastercard Artificial Intelligence Newsroom",
+        "url": "https://newsroom.mastercard.com/news/perspectives/featured-topics/artificial-intelligence/",
+        "type": "html",
+        "category": "finance_ai",
+        "filter_keywords": ["ai", "artificial intelligence", "generative", "fraud", "payments", "governance"],
+        "selectors": {
+            "article": "article, .card, [class*='card'], [class*='article'], [class*='post'], [class*='story']",
+            "title": "h1, h2, h3, h4, [class*='title'], [class*='headline']",
+            "link": "a[href]",
+            "date": "time, .date, [class*='date']",
+            "description": "p, .excerpt, [class*='excerpt'], [class*='summary']",
+        },
+        "description": "Payments AI, fraud detection, responsible AI, and governance",
+    },
+    "visa_newsroom_ai": {
+        "name": "Visa Newsroom AI and Agentic Commerce",
+        "url": "https://usa.visa.com/about-visa/newsroom.html",
+        "type": "html",
+        "category": "finance_ai",
+        "filter_keywords": ["ai", "artificial intelligence", "agentic", "fraud", "payments", "stablecoin"],
+        "selectors": {
+            "article": "article, tr, .card, [class*='card'], [class*='press'], [class*='news']",
+            "title": "h1, h2, h3, h4, td, [class*='title'], [class*='headline']",
+            "link": "a[href]",
+            "date": "time, .date, td:first-child, [class*='date']",
+            "description": "p, td, .excerpt, [class*='excerpt'], [class*='summary']",
+        },
+        "description": "Visa AI, risk, fraud, stablecoin, and agentic-commerce announcements",
+    },
+    "acadian_ai": {
+        "name": "Acadian Asset Management AI and Systematic Investing",
+        "url": "https://www.acadian-asset.com/our-edge",
+        "type": "html",
+        "category": "finance_ai",
+        "filter_keywords": ["ai", "artificial intelligence", "machine learning", "systematic", "risk", "portfolio"],
+        "selectors": {
+            "article": "article, section, .card, [class*='card'], [class*='insight'], [class*='tile']",
+            "title": "h1, h2, h3, h4, [class*='title'], [class*='headline']",
+            "link": "a[href]",
+            "date": "time, .date, [class*='date']",
+            "description": "p, [class*='description'], [class*='summary']",
+        },
+        "description": "Systematic investing, AI/ML, portfolio construction, and risk-management themes",
+    },
+    "balyasny_ai": {
+        "name": "Balyasny Asset Management AI",
+        "url": "https://www.bamfunds.com/news-and-insights/balyasny-openai-feature",
+        "type": "html",
+        "category": "finance_ai",
+        "filter_keywords": ["ai", "artificial intelligence", "openai", "research", "investment"],
+        "selectors": {
+            "article": "article, main, section, .card, [class*='card'], [class*='insight']",
+            "title": "h1, h2, h3, h4, [class*='title'], [class*='headline']",
+            "link": "a[href]",
+            "date": "time, .date, [class*='date']",
+            "description": "p, [class*='description'], [class*='summary']",
+        },
+        "description": "Balyasny AI research workflows and OpenAI customer story",
+    },
+    "citadel_ai": {
+        "name": "Citadel AI and Hedge Fund Technology",
+        "url": "https://www.efinancialcareers.com/news/citadel-ai",
+        "type": "html",
+        "category": "finance_ai",
+        "filter_keywords": ["ai", "artificial intelligence", "citadel", "hedge fund", "subramanian"],
+        "selectors": {
+            "article": "article, main, section, .card, [class*='card'], [class*='article']",
+            "title": "h1, h2, h3, h4, [class*='title'], [class*='headline']",
+            "link": "a[href]",
+            "date": "time, .date, [class*='date']",
+            "description": "p, [class*='description'], [class*='summary']",
+        },
+        "description": "Citadel AI and hedge-fund technology discussion",
+    },
+    "nvidia_nemo_curator": {
+        "name": "NVIDIA NeMo Curator",
+        "url": "https://docs.nvidia.com/nemo/curator/latest/home/welcome",
+        "type": "html",
+        "category": "data_curation",
+        "filter_keywords": ["curator", "data", "fine-tuning", "training", "deduplication", "synthetic"],
+        "selectors": {
+            "article": "article, section, li, .toctree-l1, [class*='card'], [class*='tile']",
+            "title": "h1, h2, h3, h4, a, [class*='title']",
+            "link": "a[href]",
+            "date": "time, .date, [class*='date']",
+            "description": "p, li, [class*='description'], [class*='summary']",
+        },
+        "description": "NVIDIA data curation, synthetic data, deduplication, and fine-tuning workflows",
+    },
 }
 
 
@@ -530,6 +666,16 @@ AI_KEYWORDS = [
     # Research terms
     "paper", "arxiv", "research", "sota", "state of the art",
     "breakthrough", "benchmark", "evaluation",
+
+    # Finance / regulated-industry AI terms
+    "fintech", "payments", "fraud detection", "model risk", "governance",
+    "risk management", "compliance", "bank", "asset management", "hedge fund",
+    "jpmorgan", "j.p. morgan", "mastercard", "visa", "citadel", "balyasny",
+    "acadian", "arrowstreet", "systematic investing", "portfolio construction",
+
+    # Local-model evaluation and data curation terms
+    "llama.cpp", "gguf", "qwen", "gemma", "liquidai", "lfm", "nemotron",
+    "nemo curator", "data flywheel", "llama-factory", "phoenix", "arize",
 ]
 
 # Blocked keywords - content containing these will be filtered out
@@ -537,7 +683,7 @@ AI_KEYWORDS = [
 BLOCKED_KEYWORDS = [
     "military", "armed forces", "troops", "defense contractor",
     "air force", "navy", "usmc", "marines",
-    "trump", "president",
+    "trump", "president trump", "donald trump",
 ]
 
 
