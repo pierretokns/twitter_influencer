@@ -1707,7 +1707,12 @@ Production model decision artifact:
     - `LFM2-2.6B`: 0/16, 10.6%, avg 4.5s, failed through llama.cpp sampler initialization errors on the JSON-schema path.
   - Decision: use Phi for structured/control-plane; FunctionGemma is no longer a general simple-gate candidate beyond trivial validated routes; LFM2 is counted out for constrained JSON control-plane under current llama.cpp.
 - Fine-tuning needed before first local deployment: `False` for current seed evidence.
-- Remaining before marking goal complete: human-label the review packet, use held-out traces as regression gates, add more traces as production behavior changes, and keep the disabled AgentCore/hosted paths guarded unless they are rewritten to call Hetzner-local services.
+- Added `tools/model_regression_gate.py` as the current deployment gate:
+  - Local and VM result: `deployment_gate_passed=true`.
+  - `fine_tune_ready=false` because the human-review split still has zero reviewed rows and zero approved training candidates.
+  - Hard checks cover LFM2-2.6B RAG primary, Phi citation-retry backup, Phi held-out structured control-plane, counted-out NVIDIA Nano RAG, counted-out FunctionGemma general structured use, counted-out LFM2 JSON-schema path, local ChatAgent smoke, local shared `llm_client` smoke, and hosted runtime guard status.
+  - Added `tools/local_llm_client_smoke.py` so the VM can generate `output_data/model_bench/llm_client_local_smoke/llm_client_local_smoke.json` with a real local Phi JSON call instead of relying on mocked tests.
+- Remaining before marking goal complete: human-label the review packet, keep the model regression gate passing, add more held-out traces as production behavior changes, and keep the disabled AgentCore/hosted paths guarded unless they are rewritten to call Hetzner-local services.
 
 ### Chat Service Source Compression - 2026-05-25
 

@@ -318,6 +318,16 @@ Hosted migration audit:
   - VM smoke artifact: `output_data/model_bench/llm_client_local_smoke/llm_client_local_smoke.json`.
   - VM smoke passed: `call_llm_json()` returned validated route JSON through local llama.cpp/Phi.
 
+Regression gate:
+
+- Added `tools/model_regression_gate.py`.
+- Gate result on local and VM artifacts: `deployment_gate_passed=true`.
+- Fine-tune readiness: `fine_tune_ready=false`; the only current warning is `fine_tune_labels_available` because human-review labels and approved train candidates are still absent.
+- Counted out by gate:
+  - `NVIDIA Nano`: user-facing RAG generation.
+  - `FunctionGemma 270M`: general structured/control-plane use.
+  - `LFM2-2.6B`: llama.cpp JSON-schema control-plane path.
+
 ## Counted Out For Current VM
 
 - `Qwen3.5-4B`: dominated in v2 and removed from VM cache.

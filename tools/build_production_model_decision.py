@@ -387,6 +387,30 @@ def local_chat_smoke_summary() -> dict[str, Any] | None:
     }
 
 
+def regression_gate_summary() -> dict[str, Any] | None:
+    path = "output_data/model_bench/regression_gate/model_regression_gate.json"
+    data = load_json_if_exists(path)
+    if not data:
+        return None
+    return {
+        "artifact": path,
+        "deployment_gate_passed": data.get("deployment_gate_passed"),
+        "fine_tune_ready": data.get("fine_tune_ready"),
+        "hard_failures": [row.get("name") for row in data.get("hard_failures", [])],
+        "warnings": [row.get("name") for row in data.get("warnings", [])],
+        "decision": data.get("decision", {}),
+        "checks": [
+            {
+                "name": row.get("name"),
+                "passed": row.get("passed"),
+                "severity": row.get("severity"),
+                "evidence": row.get("evidence"),
+            }
+            for row in data.get("checks", [])
+        ],
+    }
+
+
 def build_report() -> dict[str, Any]:
     expanded_generation_path = (
         "output_data/gold_eval/production_expanded_v2_generation_top3_compact/"
@@ -422,6 +446,7 @@ def build_report() -> dict[str, Any]:
     local_chat_smoke = local_chat_smoke_summary()
     heldout_traces = heldout_trace_summary()
     heldout_structured = heldout_structured_summary()
+    regression_gate = regression_gate_summary()
 
     return {
         "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
@@ -438,6 +463,7 @@ def build_report() -> dict[str, Any]:
             "heldout_production_traces": heldout_traces["artifact"] if heldout_traces else None,
             "heldout_structured_contracts": heldout_structured["artifacts"] if heldout_structured else None,
             "local_chat_backend_smoke": local_chat_smoke["artifact"] if local_chat_smoke else None,
+            "model_regression_gate": regression_gate["artifact"] if regression_gate else None,
             "service_shaped_rag_generation": (
                 "output_data/model_bench/rag_webchat_reranked_top3_numeric_citations_rescored/"
                 "rag_webchat_summary.json"
@@ -449,6 +475,7 @@ def build_report() -> dict[str, Any]:
                 "constrained_summary.json"
             ),
         },
+        "regression_gate": regression_gate,
         "workflow_decisions": {
             "retrieval": {
                 "decision": "base retrieval system mostly sufficient after candidate widening, BGE reranking, and top-3 context compression; structured-output retrieval still needs better evidence selection",
@@ -520,7 +547,7 @@ def build_report() -> dict[str, Any]:
         "llm_client_local_smoke": llm_client_smoke,
         "remaining_before_goal_completion": [
             "Human-label the generated review packet; current split summary has zero reviewed rows and zero approved training candidates.",
-            "Use the new held-out production traces as regression gates and add more traces as production behavior changes.",
+            "Keep the model regression gate passing and add more held-out traces as production behavior changes.",
             "Keep the disabled AgentCore/hosted paths guarded unless they are rewritten to call Hetzner-local services; current scanned hosted paths are either local-backed docs/code or disabled-by-default legacy runtimes.",
         ],
     }
@@ -538,6 +565,25 @@ def write_markdown(report: dict[str, Any], path: Path) -> None:
     dep = report["current_deployment_recommendation"]
     for key, value in dep.items():
         lines.append(f"- **{key}**: `{value}`")
+    if report.get("regression_gate"):
+        gate = report["regression_gate"]
+        lines.extend(
+            [
+                "",
+                "## Regression Gate",
+                "",
+                f"- Artifact: `{gate['artifact']}`",
+                f"- Deployment gate passed: `{gate['deployment_gate_passed']}`",
+                f"- Fine-tune ready: `{gate['fine_tune_ready']}`",
+                f"- Hard failures: `{', '.join(gate['hard_failures']) if gate['hard_failures'] else 'none'}`",
+                f"- Warnings: `{', '.join(gate['warnings']) if gate['warnings'] else 'none'}`",
+            ]
+        )
+        counted_out = gate.get("decision", {}).get("counted_out", {})
+        if counted_out:
+            lines.append("- Counted out by gate:")
+            for model, scope in counted_out.items():
+                lines.append(f"  - `{model}`: {scope}")
     lines.extend(["", "## Workflow Decisions", ""])
     for name, decision in report["workflow_decisions"].items():
         lines.append(f"### {name}")
