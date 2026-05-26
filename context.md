@@ -1807,3 +1807,18 @@ Scraper coverage updates:
 State-of-AI research note:
 
 - The requested local path `~/consulting/stateofai` was not present on this host. The public `stateofai.pages.dev` URL did not resolve through search/open during this pass, so deeper stateofai-specific ingestion remains pending until the repo or correct public route is available on this machine.
+
+### Scraper Schedule and Embedding Maintenance - 2026-05-26
+
+- The Hetzner VM crontab runs `/home/appuser/run_scrapers.sh` at 08:00 and 20:00 UTC daily.
+- That shell wrapper runs `uv run python run_scrapers.py --no-alert` from `/home/appuser/twitter_influencer`, then posts to the local tournament endpoint.
+- `run_scrapers.py` default behavior was changed to Brandon-news ingestion:
+  - web/news sources via `ai_news_scraper.py --web`;
+  - YouTube RSS sources via `youtube_channel_scraper.py`;
+  - content chunk backfill via `backfill_content_chunks.py --no-transcripts`;
+  - missing web/YouTube embeddings via `regenerate_embeddings.py --articles --youtube`.
+- Twitter/X scraping is now opt-in via `run_scrapers.py --twitter`; it is no longer part of the default cron path.
+- VM dry-run before this change found missing embeddings for 776 web articles and 1,516 YouTube videos, so the first scheduled run after deployment may be slower while it catches up.
+- `trafilatura` was missing in the VM venv during web-source scraping, so RSS/HTML metadata landed but full article bodies were not fetched for many web articles. The script headers declare `trafilatura>=1.6.0`; install/sync the script dependency environment if deeper article citations are required.
+- Bad YouTube channel IDs previously added for Microsoft Research, NVIDIA, MLCommons, and MIT CSAIL imported unrelated feeds. Those polluted video rows were removed on the VM, the bad channel IDs were deactivated, and the scraper now validates expected feed titles for corrected high-risk seed IDs.
+- Corey Quinn / Last Week in AWS was added as an `enterprise_ai_cloud` RSS source for snarky but useful AWS/cloud AI, cost, Bedrock, agent, and governance signal.
