@@ -428,6 +428,17 @@ def benchmark_coverage_summary() -> dict[str, Any] | None:
     }
 
 
+def model_slice_scoreboard_summary() -> dict[str, Any] | None:
+    path = "output_data/model_bench/slice_scoreboard/model_slice_scoreboard.json"
+    data = load_json_if_exists(path)
+    if not data:
+        return None
+    return {
+        "artifact": path,
+        "by_slice": data.get("by_slice", {}),
+    }
+
+
 def build_report() -> dict[str, Any]:
     expanded_generation_path = (
         "output_data/gold_eval/production_expanded_v2_generation_top3_compact/"
@@ -465,6 +476,7 @@ def build_report() -> dict[str, Any]:
     heldout_structured = heldout_structured_summary()
     regression_gate = regression_gate_summary()
     coverage_audit = benchmark_coverage_summary()
+    slice_scoreboard = model_slice_scoreboard_summary()
 
     return {
         "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
@@ -483,6 +495,7 @@ def build_report() -> dict[str, Any]:
             "local_chat_backend_smoke": local_chat_smoke["artifact"] if local_chat_smoke else None,
             "model_regression_gate": regression_gate["artifact"] if regression_gate else None,
             "benchmark_coverage_audit": coverage_audit["artifact"] if coverage_audit else None,
+            "model_slice_scoreboard": slice_scoreboard["artifact"] if slice_scoreboard else None,
             "service_shaped_rag_generation": (
                 "output_data/model_bench/rag_webchat_reranked_top3_numeric_citations_rescored/"
                 "rag_webchat_summary.json"
@@ -496,6 +509,7 @@ def build_report() -> dict[str, Any]:
         },
         "regression_gate": regression_gate,
         "benchmark_coverage": coverage_audit,
+        "model_slice_scoreboard": slice_scoreboard,
         "workflow_decisions": {
             "retrieval": {
                 "decision": "base retrieval system mostly sufficient after candidate widening, BGE reranking, and top-3 context compression; structured-output retrieval still needs better evidence selection",
@@ -629,6 +643,17 @@ def write_markdown(report: dict[str, Any], path: Path) -> None:
             lines.append("- Next coverage actions:")
             for action in coverage["next_actions"]:
                 lines.append(f"  - {action}")
+    if report.get("model_slice_scoreboard"):
+        scoreboard = report["model_slice_scoreboard"]
+        lines.extend(["", "## Slice Scoreboard", ""])
+        lines.append(f"- Artifact: `{scoreboard['artifact']}`")
+        for slice_name, rows in scoreboard.get("by_slice", {}).items():
+            lines.append(f"- `{slice_name}`:")
+            for row in rows[:4]:
+                lines.append(
+                    f"  - `{row['label']}`: pass `{row['passed']}/{row['cases']}` "
+                    f"({row['pass_rate'] * 100:.1f}%), avg score `{row['avg_score_pct']}`"
+                )
     lines.extend(["", "## Workflow Decisions", ""])
     for name, decision in report["workflow_decisions"].items():
         lines.append(f"### {name}")

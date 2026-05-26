@@ -152,6 +152,17 @@ def build_audit() -> dict[str, Any]:
     review_counts = review_split.get("counts", {})
     hard_failures = [row for row in slice_results if row["failures"]]
     warnings = [row for row in slice_results if row["warnings"]]
+    next_actions = []
+    if any(row["slice"] == "data_curation_eval" for row in hard_failures):
+        next_actions.append("Add more data_curation_eval gold cases; current coverage is below the slice gate.")
+    if not any(row["slice"] == "data_curation_eval" for row in hard_failures):
+        next_actions.append("Run the top local RAG models on the expanded data_curation_eval generation case.")
+    next_actions.extend(
+        [
+            "Add held-out structured/control-plane traces as schemas change.",
+            "Human-label review rows before using this data for fine-tuning.",
+        ]
+    )
     return {
         "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "coverage_gate_passed": not hard_failures,
@@ -177,11 +188,7 @@ def build_audit() -> dict[str, Any]:
         "by_slice": slice_results,
         "hard_failures": hard_failures,
         "warnings": warnings,
-        "next_actions": [
-            "Add more data_curation_eval gold cases; current coverage is below the slice gate.",
-            "Add held-out structured/control-plane traces as schemas change.",
-            "Human-label review rows before using this data for fine-tuning.",
-        ],
+        "next_actions": next_actions,
     }
 
 

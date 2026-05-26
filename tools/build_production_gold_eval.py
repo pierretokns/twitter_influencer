@@ -491,6 +491,17 @@ def build_cases(conn: sqlite3.Connection) -> list[dict[str, Any]]:
             "Gold sources emphasize eval/tracing and data-curation workflows before fine-tuning.",
         ),
         make_retrieval_case(
+            "retrieval_curation_prompt_traces_v1",
+            "data_curation_eval",
+            (
+                "Find sources about using Phoenix, Arize, DSPy, GEPA, prompt optimization, few-shot examples, "
+                "and traces to improve local-model evals before fine-tuning."
+            ),
+            first_by_term(prompt_optimization_sources + curation_sources, PROMPT_OPTIMIZATION_TERMS, max_sources=8),
+            PROMPT_OPTIMIZATION_TERMS,
+            "Gold sources emphasize prompt optimization and trace-based evals as pre-fine-tuning curation work.",
+        ),
+        make_retrieval_case(
             "retrieval_local_models_v1",
             "local_model_ops",
             "Find sources about local open models, GGUF, llama.cpp, Qwen, Gemma, LiquidAI, Phi, NVIDIA, CPU, and quants.",
@@ -542,12 +553,21 @@ def build_cases(conn: sqlite3.Connection) -> list[dict[str, Any]]:
         ),
         make_rag_case(
             "rag_curation_before_finetune_v1",
-            "pre_finetune_system_improvements",
+            "data_curation_eval",
             "What can we do to improve evals and datasets before fine-tuning tiny local models?",
             curation_sources[:8],
             ["phoenix", "nemo curator", "jsonl", "fine-tuning", "eval"],
             unsupported=False,
             notes="Tests whether the model recommends curation/eval improvements before training.",
+        ),
+        make_rag_case(
+            "rag_curation_prompt_traces_v1",
+            "pre_finetune_system_improvements",
+            "What prompt/eval improvements should we try before fine-tuning tiny local models?",
+            (prompt_optimization_sources[:5] + curation_sources[:3])[:8],
+            ["dspy", "gepa", "few-shot", "phoenix", "tracing", "eval"],
+            unsupported=False,
+            notes="Tests whether prompt optimization and tracing concepts are grounded before fine-tuning.",
         ),
         make_rag_case(
             "rag_finance_payments_risk_v1",

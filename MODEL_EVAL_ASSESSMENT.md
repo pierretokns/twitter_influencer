@@ -336,6 +336,13 @@ Benchmark coverage audit:
 - The only hard slice coverage failure is `data_curation_eval`; it needs more gold cases before making a strong per-slice fine-tuning decision.
 - This does not block first local deployment because the model regression gate passes, but it does block marking the overall model-evaluation goal complete.
 
+Unsloth Studio structured-output note:
+
+- Unsloth Studio advertises self-healing tool calling and OpenAI/Anthropic-compatible local inference endpoints, with release notes claiming fewer broken or malformed tool calls.
+- Treat this as a candidate A/B serving layer for malformed tool-call syntax, not a general semantic JSON fix.
+- It may help FunctionGemma-style malformed outputs, but it will not fix LFM2 llama.cpp JSON-schema sampler initialization failures, NVIDIA Nano thinking leakage, or semantic misses such as wrong booleans/status labels.
+- Keep Phi-4-mini constrained JSON as the current structured/control-plane default unless a VM smoke through Unsloth Studio passes the same held-out structured contracts.
+
 ## Counted Out For Current VM
 
 - `Qwen3.5-4B`: dominated in v2 and removed from VM cache.
