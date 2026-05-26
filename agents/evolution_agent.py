@@ -48,7 +48,13 @@ import re
 import time
 from typing import List
 
-from strands import tool
+try:
+    from strands import tool
+except ImportError:
+    def tool(func=None, **_kwargs):
+        if func is None:
+            return lambda wrapped: wrapped
+        return func
 
 from .post_variant import PostVariant
 from .llm_client import call_llm, LLMError
@@ -66,7 +72,7 @@ class EvolutionAgent:
     DEFAULT_THRESHOLD = 70
 
     # The evolution prompt template
-    EVOLUTION_PROMPT = '''You are a LinkedIn content EVOLUTION expert. Your job is to IMPROVE this post based on specific feedback.
+    EVOLUTION_PROMPT = '''You are Brandon's AI-news bulletin editor. Your job is to IMPROVE this candidate bulletin based on specific feedback.
 
 ===== ORIGINAL POST (QE Score: {qe_score}/100) =====
 {content}
@@ -84,21 +90,18 @@ class EvolutionAgent:
 {news_context}
 
 ===== YOUR TASK =====
-Rewrite this post to:
+Rewrite this bulletin to:
 1. FIX all the issues listed above
 2. KEEP all the strengths
-3. REFERENCE specific news/data from the context above
-4. Make the hook (first 2 lines) MORE scroll-stopping
-5. Keep under 1300 characters
-6. NO markdown formatting (no ** for bold, no # for headers)
-7. Max 2 emojis
-8. End with thought-provoking question
-9. 3-5 hashtags at the end
-
-CRITICAL FORMATTING: Use 2-3 paragraph breaks (empty lines) to create visual structure. LinkedIn posts need white space for readability. The hook should be its own paragraph.
+3. REFERENCE specific news/data from the context above with citations when available
+4. Prioritize things Brandon may have missed on x.com: model releases, YouTube/video drops, papers, repos, evals, RAG, data-curation tooling, conference/CFP deadlines, Boston/NYC AI events, and major frontier-lab events
+5. Keep finance-facing relevance only when supported by sources
+6. Use 3-6 compact bullets with short labels
+7. Remove narrative filler, viral hooks, hashtags, engagement questions, and motivational framing
+8. Keep under 900 characters unless a source-grounding caveat is necessary
 
 ===== OUTPUT =====
-Write ONLY the improved post. No explanation. Start directly with the hook:'''
+Write ONLY the improved bulletin. No explanation. Start directly with the first bullet:'''
 
     def __init__(self, threshold: int = None):
         """
@@ -243,7 +246,7 @@ _evolution_agent_instance = EvolutionAgent()
 
 @tool
 def evolve_post(content: str, issues: list[str], strengths: list[str], news_context: str, qe_score: int = 0) -> dict:
-    """Rewrite a low-scoring LinkedIn post to fix its issues while preserving strengths. Returns improved content."""
+    """Rewrite a low-scoring Brandon news bulletin while preserving strengths."""
     from .post_variant import PostVariant as _PV
     v = _PV(variant_id="tool_call", content=content, hook_style="unknown")
     v.qe_score = qe_score

@@ -103,6 +103,20 @@ SEED_CHANNELS = [
     ("UCOCLmqf7Jy3LcsO0SMBGP_Q", "Baseten", "official"),  # @baseten - ML model deployment platform
     ("UCipPA-ZHX6UYGH_Iyti1-Jw", "Alibaba Cloud", "official"),  # Qwen models & cloud infrastructure
     ("UC7vVhkEfw4nOGp8TyDk7RcQ", "Boston Dynamics", "official"),  # Robotics & embodied AI research
+
+    # Frontier labs, SLM providers, multimodal demos, and model-release channels
+    # Some IDs may fail if a channel changes handles; the scraper skips failed RSS feeds.
+    ("UCz5vTaEhvh7dOHEyd1efcaQ", "Microsoft Research", "research"),  # Phi/SLM, multimodal and enterprise AI research
+    ("UCFk8IJ1TwI7Xl7UUfAD8xPQ", "NVIDIA Developer", "official"),  # GTC, NeMo, NIM, evals, data curation
+    ("UCQ-W1KE9EYfdxhL6S4twUNw", "NVIDIA", "official"),  # Frontier AI announcements and GTC keynotes
+    ("UCmWf47El6J_yOC8j_Br1VKA", "Qwen", "official"),  # Qwen model releases and demos where RSS resolves
+    ("UCyUBeVgE3Q2v8h5xyH1ZDlg", "Databricks", "official"),  # Mosaic/enterprise AI, governance, data platforms
+
+    # Benchmark, eval, governance, and enterprise AI channels
+    ("UCs_tLP3AiwYKwdUHpltJPuA", "MLCommons", "benchmarks"),  # MLPerf, AILuminate, benchmark and safety eval updates
+    ("UCj5G2WwU0q7e6YjKk0i5H7A", "NIST", "governance"),  # AI RMF, standards, assurance talks if RSS resolves
+    ("UC2D2CMWXMOVWx7giW1n3LIg", "MIT CSAIL", "events"),  # Boston/Cambridge AI seminars and research talks
+    ("UCwge83yA8gDLr_u94vR1R5w", "NYU Data Science", "events"),  # NYC AI/data-science seminars when available
 ]
 
 # Keywords to identify AI-relevant videos
@@ -113,6 +127,15 @@ AI_KEYWORDS = [
     'stable diffusion', 'midjourney', 'dall-e', 'sora', 'copilot',
     'agent', 'agi', 'generative', 'gen ai', 'foundation model',
     'disco', 'gentabs',  # Google's new product
+    'model release', 'small language model', 'slm', 'qwen', 'gemma', 'phi',
+    'liquid ai', 'lfm', 'nemotron', 'mistral', 'ministral', 'gguf',
+    'multimodal', 'vision language', 'video generation', 'voice ai',
+    'benchmark', 'eval', 'evaluation', 'leaderboard', 'mlperf', 'ailuminate',
+    'helm', 'lm-evaluation-harness', 'red team', 'safety benchmark',
+    'governance', 'ai verify', 'model ai governance framework', 'nist ai rmf',
+    'enterprise ai', 'model risk', 'compliance', 'agentic ai',
+    'conference', 'keynote', 'workshop', 'call for papers', 'cfp', 'deadline',
+    'boston', 'cambridge', 'nyc', 'new york', 'mit', 'csail', 'nyu',
 ]
 
 

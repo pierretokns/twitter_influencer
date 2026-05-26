@@ -545,7 +545,10 @@ def build_cases(conn: sqlite3.Connection) -> list[dict[str, Any]]:
         make_rag_case(
             "rag_finance_brief_v1",
             "finance_domain_signal",
-            "Write Brandon a concise finance-facing AI news brief from these sources.",
+            (
+                "Write Brandon terse finance-facing AI news bulletins from these sources. "
+                "Prioritize genuinely useful items he may have missed on x.com, and avoid narrative filler."
+            ),
             finance_sources[:8],
             ["j.p. morgan", "balyasny", "arrowstreet", "acadian", "mastercard", "visa"],
             unsupported=False,
@@ -573,8 +576,9 @@ def build_cases(conn: sqlite3.Connection) -> list[dict[str, Any]]:
             "rag_finance_payments_risk_v1",
             "finance_domain_signal",
             (
-                "Write Brandon a short note on AI signals from regulated payments and financial services. "
-                "Highlight Mastercard, Visa, risk, fraud, or compliance only when the sources support them."
+                "Write Brandon terse bulletins on AI signals from regulated payments and financial services. "
+                "Highlight Mastercard, Visa, risk, fraud, or compliance only when the sources support them. "
+                "Avoid broad narrative claims."
             ),
             finance_payment_sources[:7],
             ["mastercard", "visa", "payments", "fraud", "risk", "compliance"],

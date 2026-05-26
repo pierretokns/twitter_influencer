@@ -1767,3 +1767,43 @@ Important implementation note:
   - Reranker fixed the compressed evidence pack for finance and improved local-model context from 1 to 2 parent-source hits.
 - VM storage after adding the reranker: `/dev/sda1` has about 15 GB free; `~/.cache/huggingface/hub/models--BAAI--bge-reranker-v2-m3` uses about 2.2 GB.
 - Next benchmark step: rerun the top provided-source/local generation models through the service-shaped RAG path with `CHAT_ENABLE_RERANKER=1` and compare answer/citation/refusal scores against the source-compression baseline.
+
+### Brandon Bulletin Style and Source Coverage - 2026-05-26
+
+Updated product target:
+
+- Brandon does not want narrative LinkedIn-style summaries. He wants terse internal news bulletins.
+- Prioritize things he may not already have seen on x.com:
+  - YouTube/video drops and demos;
+  - model releases, GGUF/local-model availability, and SLM provider updates;
+  - genuinely novel papers, benchmarks, eval harnesses, and datasets;
+  - GitHub/project releases, RAG tooling, data curation, governance, and enterprise AI;
+  - conference deadlines, calls for papers, Boston/NYC AI events, and major frontier-lab events.
+- De-emphasize generic X discourse, influencer hooks, hashtags, engagement questions, motivational framing, and broad "AI is transforming X" filler.
+
+Prompt/ranking updates:
+
+- `agents/chat_agent.py` now frames the local RAG assistant as Brandon's source-grounded news scout and defaults to compact bulletins.
+- `agents/variant_generator.py` now generates bulletin variants by focus area rather than viral LinkedIn hook style.
+- `agents/qe_agent.py` now scores missed-news value, novelty/source quality, source grounding, finance/workflow relevance, bulletin format, and actionability.
+- `agents/debate_agent.py` now ranks candidates by Brandon usefulness rather than virality.
+- `agents/evolution_agent.py` now rewrites toward compact cited bulletins and removes narrative/viral mechanics.
+- `tools/local_chat_backend_smoke.py` now checks for bulletin style, novelty terms, citations, and narrative-filler hits.
+
+Scraper coverage updates:
+
+- `ai_news_scraper.py` now includes more source categories for:
+  - frontier lab releases: OpenAI, Anthropic, Google DeepMind, Meta AI;
+  - SLM/model providers: Mistral, Hugging Face, Liquid AI, Qwen;
+  - benchmark/eval sources: MLCommons, lm-evaluation-harness releases, Stanford HELM;
+  - enterprise AI governance: Singapore IMDA AI Verify, Singapore agentic AI governance framework, NIST AI RMF;
+  - conferences/events/CFPs: ConferenceDeadlines, MIT CSAIL, MIT calendar, NYU CDS.
+- `youtube_channel_scraper.py` is the authoritative YouTube scraper; it already runs from `run_scrapers.py`. It now has expanded channel and keyword coverage for frontier labs, SLM providers, multimodal demos, eval/governance sources, and Boston/NYC events.
+- Singapore governance signal:
+  - IMDA / AI Verify published the Model AI Governance Framework for Generative AI in 2024.
+  - IMDA launched the Model AI Governance Framework for Agentic AI on January 22, 2026 and published an updated version on May 20, 2026.
+  - For Brandon, this should be summarized as an enterprise-agent governance checklist: agent autonomy boundaries, sensitive data/tool access, human accountability, testing/evals, transparency, audit logs, and runtime controls.
+
+State-of-AI research note:
+
+- The requested local path `~/consulting/stateofai` was not present on this host. The public `stateofai.pages.dev` URL did not resolve through search/open during this pass, so deeper stateofai-specific ingestion remains pending until the repo or correct public route is available on this machine.

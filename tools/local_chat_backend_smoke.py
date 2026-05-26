@@ -21,14 +21,54 @@ if str(ROOT) not in sys.path:
 
 DEFAULT_QUERIES = [
     {
-        "id": "finance_targeted",
+        "id": "missed_items_bulletin",
         "query": (
-            "What AI news mentions Balyasny, J.P. Morgan, Mastercard, Visa, "
-            "or investment research? Give Brandon a concise cited update."
+            "Write Brandon terse AI news bulletins focused on things he may not have seen on x.com: "
+            "model releases, YouTube/video drops, genuinely novel papers, GitHub/project releases, "
+            "evals, RAG, data curation, conference deadlines, calls for papers, and Boston/NYC AI events. "
+            "Avoid narrative filler. Cite every bullet."
         ),
         "expect_citations": True,
+        "expect_bulletins": True,
     },
 ]
+
+NARRATIVE_FILLER = (
+    "the vibe",
+    "deeper shift",
+    "fundamental reframing",
+    "underscore",
+    "underscores",
+    "highlighting the growing",
+    "these developments",
+    "as ai becomes",
+    "ai is transforming",
+    "the future of",
+    "signals a",
+)
+
+NOVELTY_TERMS = (
+    "model",
+    "release",
+    "paper",
+    "github",
+    "youtube",
+    "video",
+    "eval",
+    "rag",
+    "benchmark",
+    "dataset",
+    "curation",
+    "conference",
+    "deadline",
+    "cfp",
+    "call for papers",
+    "boston",
+    "nyc",
+    "new york",
+    "open-source",
+    "local",
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -77,9 +117,22 @@ def run_query(agent: Any, query_spec: dict[str, Any]) -> dict[str, Any]:
     has_timing_leak = bool(re.search(r"\[\s*Prompt:|Generation:|llama_print_timings", answer))
     citation_markers = sorted({int(match) for match in re.findall(r"\[(\d+)\]", answer)})
     citations_count = int(done.get("citations_count", len(citations)) or 0)
+    lines = [line.strip() for line in answer.splitlines() if line.strip()]
+    bullet_lines = [
+        line
+        for line in lines
+        if re.match(r"^(\-|\*|•|\d+[\.\)]|[A-Za-z][\w /+-]{1,48}:)", line)
+    ]
+    answer_lower = answer.lower()
+    narrative_hits = [term for term in NARRATIVE_FILLER if term in answer_lower]
+    novelty_hits = sorted({term for term in NOVELTY_TERMS if term in answer_lower})
+    style_passed = True
+    if query_spec.get("expect_bulletins"):
+        style_passed = len(bullet_lines) >= 3 and len(narrative_hits) <= 1 and len(novelty_hits) >= 2
     passed = (
         not errors
         and not has_timing_leak
+        and style_passed
         and (
             not query_spec.get("expect_citations")
             or citations_count > 0
@@ -95,6 +148,12 @@ def run_query(agent: Any, query_spec: dict[str, Any]) -> dict[str, Any]:
         "answer_chars": len(answer),
         "citations_count": citations_count,
         "citation_markers": citation_markers,
+        "style": {
+            "bullet_lines": len(bullet_lines),
+            "narrative_filler_hits": narrative_hits,
+            "novelty_hits": novelty_hits,
+            "passed": style_passed,
+        },
         "sources": sources_event.get("sources", []),
         "retrieved_source_count": sources_event.get("retrieved_source_count"),
         "reranked": sources_event.get("reranked"),

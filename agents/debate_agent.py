@@ -5,9 +5,8 @@ DebateAgent - Self-Play Debate Agent
 AGENT TYPE: Self-Play Argumentative Agent (Google Co-Scientist inspired)
 
 PURPOSE:
-    Simulates debates between two posts to determine which is more likely to
-    go viral on LinkedIn. Unlike simple comparison, this agent argues FOR
-    each post before making a decision, producing richer reasoning.
+    Simulates debates between two candidate Brandon news bulletins to determine
+    which is more useful, novel, source-grounded, and aligned with his workflow.
 
 KEY INSIGHT (from Google Co-Scientist):
     The "self-play scientific debate" mechanism has the model argue BOTH sides
@@ -16,18 +15,18 @@ KEY INSIGHT (from Google Co-Scientist):
 
 DEBATE FORMAT:
     1. Argue FOR Post A (as if you wrote it)
-       - Why is its hook superior?
-       - What unique value does it provide?
-       - Why will it get more engagement?
+       - Which missed items does it surface?
+       - How well does it cite primary sources?
+       - Why is it useful for Brandon?
 
     2. Argue FOR Post B (as if you wrote it)
        - Same questions
 
     3. As neutral judge, declare winner based on:
-       - Hook stopping power (40% weight)
-       - Authenticity & uniqueness (25% weight)
-       - Clear value/insight (20% weight)
-       - Engagement potential (15% weight)
+       - Missed-news/novelty value (30% weight)
+       - Source-grounding/citation quality (30% weight)
+       - Finance/workflow relevance (20% weight)
+       - Bulletin concision/actionability (20% weight)
 
 OUTPUT STRUCTURE:
     {
@@ -51,7 +50,13 @@ USAGE:
 
 from typing import Dict
 
-from strands import tool
+try:
+    from strands import tool
+except ImportError:
+    def tool(func=None, **_kwargs):
+        if func is None:
+            return lambda wrapped: wrapped
+        return func
 
 from .post_variant import PostVariant
 from .llm_client import call_llm_json, LLMError
@@ -68,14 +73,14 @@ class DebateAgent:
 
     # Judging weights (should sum to 100%)
     JUDGING_WEIGHTS = {
-        "hook_stopping_power": 40,
-        "authenticity_uniqueness": 25,
-        "clear_value_insight": 20,
-        "engagement_potential": 15,
+        "missed_news_novelty": 30,
+        "source_grounding": 30,
+        "finance_workflow_relevance": 20,
+        "concision_actionability": 20,
     }
 
     # The debate prompt template
-    DEBATE_PROMPT = '''You are moderating a DEBATE between two LinkedIn posts competing for virality.
+    DEBATE_PROMPT = '''You are moderating a DEBATE between two candidate Brandon AI-news bulletins.
 
 ===== POST A ({style_a}) =====
 {content_a}
@@ -85,20 +90,22 @@ class DebateAgent:
 
 ===== DEBATE FORMAT =====
 First, argue FOR Post A (as if you wrote it):
-- Why is its hook superior?
-- What unique value does it provide?
-- Why will it get more engagement?
+- Which missed model releases, YouTube/video items, papers, repos, conference/CFP deadlines, Boston/NYC events, eval/tooling changes, or primary-source updates does it surface?
+- How well are its factual claims cited and grounded?
+- Why is it useful for Brandon's finance/workflow context?
 
 Then, argue FOR Post B (as if you wrote it):
-- Why is its hook superior?
-- What unique value does it provide?
-- Why will it get more engagement?
+- Which missed model releases, YouTube/video items, papers, repos, conference/CFP deadlines, Boston/NYC events, eval/tooling changes, or primary-source updates does it surface?
+- How well are its factual claims cited and grounded?
+- Why is it useful for Brandon's finance/workflow context?
 
 Finally, as a neutral judge, declare a WINNER based on:
-1. Hook stopping power (40% weight)
-2. Authenticity & uniqueness (25% weight)
-3. Clear value/insight (20% weight)
-4. Engagement potential (15% weight)
+1. Missed-news and novelty value (30% weight)
+2. Source-grounding and citation quality (30% weight)
+3. Finance/workflow relevance when supported (20% weight)
+4. Bulletin concision and actionability (20% weight)
+
+Penalize narrative filler, influencer hooks, hashtags, engagement questions, and generic "AI is transforming X" claims.
 
 Respond in JSON format:
 {{"argument_for_a": "2-3 sentence argument", "argument_for_b": "2-3 sentence argument", "winner": "A" or "B", "reasoning": "Why the winner is better", "confidence": 0.5-1.0}}'''
@@ -196,7 +203,7 @@ _debate_agent_instance = DebateAgent()
 
 @tool
 def debate_posts(post_a_content: str, post_b_content: str, post_a_style: str = "unknown", post_b_style: str = "unknown") -> dict:
-    """Run a self-play debate between two LinkedIn posts to determine which is more likely to go viral. Returns winner (A or B), reasoning, and confidence score."""
+    """Run a self-play debate between two Brandon news bulletins and return the more useful candidate."""
     from .post_variant import PostVariant as _PV
     a = _PV(variant_id="A", content=post_a_content, hook_style=post_a_style)
     b = _PV(variant_id="B", content=post_b_content, hook_style=post_b_style)

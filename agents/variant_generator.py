@@ -57,42 +57,38 @@ from .post_variant import PostVariant
 from .llm_client import call_llm, LLMError
 
 
-# Viral hook styles with example templates
+# Bulletin focus styles with example labels. These names are kept in the
+# hook_style field for backwards-compatible tournament persistence.
 VIRAL_HOOKS = {
-    "curiosity_gap": [
-        "Most people don't realize this about {topic}...",
-        "I discovered something unexpected about {topic}",
-        "The hidden truth about {topic} that nobody talks about",
-        "What {topic} really means (and why it matters)",
-        "Everyone's missing this about {topic}",
+    "missed_releases": [
+        "Model/release watch",
+        "Release Brandon may have missed",
+        "New model/tool drop",
     ],
-    "bold_claim": [
-        "This will change everything we know about {topic}",
-        "{topic} is dead. Here's what's replacing it.",
-        "Forget everything you learned about {topic}",
-        "The {topic} revolution is here",
-        "{topic} just changed the game forever",
+    "paper_signal": [
+        "Paper worth checking",
+        "Novel research signal",
+        "Benchmark or eval shift",
     ],
-    "personal_story": [
-        "I was skeptical about {topic} until I saw this...",
-        "My experience with {topic} taught me something valuable",
-        "I spent 6 months studying {topic}. Here's what I learned.",
-        "The {topic} lesson that changed my perspective",
-        "When I first heard about {topic}, I didn't believe it",
+    "video_youtube": [
+        "Video/drop to review",
+        "YouTube or demo signal",
+        "Watchlist item",
     ],
-    "data_driven": [
-        "97% of professionals are missing this about {topic}",
-        "New data reveals surprising truth about {topic}",
-        "The numbers don't lie: {topic} is transforming everything",
-        "3 statistics about {topic} that will surprise you",
-        "{topic}: The data tells a different story",
+    "finance_workflow": [
+        "Finance workflow relevance",
+        "Regulated-finance signal",
+        "Risk/compliance angle",
     ],
-    "practical_value": [
-        "How to leverage {topic} (step-by-step)",
-        "Save 10 hours per week with {topic}",
-        "The only {topic} guide you'll ever need",
-        "Stop struggling with {topic}. Do this instead.",
-        "My proven {topic} framework (works every time)",
+    "evals_tooling": [
+        "Eval/tooling update",
+        "RAG/data curation signal",
+        "Local-model ops note",
+    ],
+    "conference_cfp": [
+        "Conference/CFP watch",
+        "Boston/NYC event signal",
+        "Paper deadline to track",
     ],
 }
 
@@ -112,9 +108,9 @@ class PostVariantGenerator:
     MAX_EMOJIS = 3  # 1-3 emojis = +25% engagement
     HASHTAG_RANGE = (3, 5)
 
-    # The generation prompt template (research-backed formatting)
+    # The generation prompt template for Brandon's news bulletin workflow.
     # Uses prompt-based citation generation (Stage 1 of hybrid pipeline)
-    GENERATION_PROMPT = '''You are a LinkedIn content creator with 100K+ followers. Write a viral post about TODAY'S AI NEWS.
+    GENERATION_PROMPT = '''You are Brandon's source-grounded AI news scout. Write a terse internal news bulletin, not a LinkedIn post.
 
 ===== TODAY'S AI NEWS (NUMBERED SOURCES) =====
 {news_context}
@@ -132,39 +128,35 @@ Rules:
 
 Example: "OpenAI released GPT-5 with multimodal capabilities[1]. This represents a major shift..."
 
+===== BRANDON TARGET =====
+He wants items he probably did not already see on x.com:
+- YouTube/video drops and demos
+- model releases and GGUF/local-model availability
+- genuinely novel papers, benchmarks, evals, and datasets
+- GitHub/project releases and RAG/data-curation tooling
+- conference deadlines, calls for papers, Boston/NYC AI events, and major frontier-lab events
+- finance-facing signals: payments, fraud/risk, compliance, banks, asset managers, hedge funds, regulated workflows
+
 ===== YOUR TASK =====
-Write a LinkedIn post that:
-1. MUST reference specific news from above (mention the actual development, company, or finding)
-2. FOCUS primarily on news item [{focus_item}] but can reference others
-3. Add YOUR unique insight, opinion, or takeaway - don't just summarize
-4. Make it feel timely and current ("Just saw that...", "This week...", "Breaking:")
-5. Include [N] citations for specific facts from sources (NOT for your opinions)
+Write a bulletin that:
+1. References specific news from the numbered sources.
+2. Focuses primarily on news item [{focus_item}] but may include better high-signal adjacent items.
+3. Prioritizes missed, novel, primary-source, or operationally useful items over generic X discourse.
+4. Explains "what changed", "why Brandon should care", and "what to check next"; include deadline/location for events or calls for papers.
+5. Includes [N] citations for specific facts from sources.
 
-===== HOOK STYLE: {hook_style} =====
-Example: "{hook_example}"
+===== BULLETIN FOCUS: {hook_style} =====
+Example label: "{hook_example}"
 
-===== FORMAT REQUIREMENTS (research-backed for 2024/2025 algorithm) =====
-
-STRUCTURE:
-- First 210 characters = CRITICAL hook (this shows before "see more" button)
-- One sentence per line with blank lines between paragraphs (gives eyes room to rest)
-- Short sentences under 12 words perform best (+20% reach)
-- 2-3 sentences max per paragraph block
-- End with a thought-provoking QUESTION (+35% engagement, +20% reach)
-
-LENGTH:
-- Target 1,500-1,900 characters (sweet spot for text posts)
-- Posts under 1,000 chars get -25% reach penalty
-- Use the space to develop your insight fully
-
-FORMATTING:
-- NO markdown symbols (no ** or # - LinkedIn doesn't render them)
-- Use blank lines liberally for white space (+57% engagement)
-- 1-3 emojis strategically placed (+25% engagement)
-- 3-5 hashtags at the very end
+===== FORMAT REQUIREMENTS =====
+- 3-6 compact bullets.
+- Start each bullet with a short label followed by a colon.
+- No story opener, no narrative arc, no viral hook, no hashtags, no engagement question.
+- No broad claims like "AI is transforming finance" unless the source specifically supports it.
+- Keep it under 900 characters unless sources require caveats.
 
 ===== OUTPUT =====
-Write ONLY the post text. No intro, no explanation. Start directly with the hook:'''
+Write ONLY the bulletin. No intro, no explanation. Start directly with the first bullet:'''
 
     def __init__(self):
         """Initialize the generator with available hook styles"""

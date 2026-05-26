@@ -5,7 +5,7 @@ QEAgent - Quality Evaluation Agent
 AGENT TYPE: Evaluation Agent (Single-turn reasoning with structured output)
 
 PURPOSE:
-    Scores LinkedIn posts against best practices using an 8-criteria rubric.
+    Scores Brandon news bulletins against source-grounded usefulness.
     Returns detailed breakdown with strengths and issues for evolution feedback.
 
 PROMPT ENGINEERING:
@@ -15,14 +15,12 @@ PROMPT ENGINEERING:
     - Total score: 100 points across 8 dimensions
 
 SCORING CRITERIA (100 points total):
-    1. Hook Strength (25pts): First 2-3 lines compelling?
-    2. Single Focus (15pts): One clear idea, not cramming multiple tips?
-    3. Mobile Format (15pts): Short paragraphs (1-3 lines), scannable?
-    4. Authenticity (15pts): Personal, genuine voice, not generic?
-    5. Engagement CTA (10pts): Ends with thought-provoking question?
-    6. Hashtag Usage (5pts): 3-5 relevant hashtags at end?
-    7. Clarity (10pts): Easy to understand, clear takeaway?
-    8. Grammar (5pts): No spelling/grammar errors?
+    1. Missed-news value (25pts): Surfaces items Brandon likely did not see on x.com.
+    2. Novelty/source quality (20pts): Prioritizes releases, papers, videos, repos, primary sources.
+    3. Source-grounding/citations (20pts): Claims are cited and supported.
+    4. Finance/workflow relevance (15pts): Connects to Brandon's finance-facing work when supported.
+    5. Bulletin format (10pts): Terse scan-friendly bullets, no narrative filler.
+    6. Actionability (10pts): Clear "check next" implications.
 
 IMPLEMENTATION NOTES:
     - Uses Claude CLI for evaluation
@@ -39,7 +37,13 @@ USAGE:
 import time
 from typing import List
 
-from strands import tool
+try:
+    from strands import tool
+except ImportError:
+    def tool(func=None, **_kwargs):
+        if func is None:
+            return lambda wrapped: wrapped
+        return func
 
 from .post_variant import PostVariant
 from .llm_client import call_llm_json, LLMError
@@ -48,75 +52,64 @@ from .models import QEResult
 
 class QEAgent:
     """
-    Quality Evaluation Agent - Scores posts against LinkedIn best practices.
+    Quality Evaluation Agent - Scores Brandon news bulletins.
 
     This agent implements a rubric-based evaluation system that provides
     detailed feedback for the Evolution Agent to use when improving posts.
     """
 
-    # Scoring criteria with point allocations (updated for 2024/2025 algorithm)
+    # Scoring criteria with point allocations for Brandon's news workflow.
     CRITERIA = {
-        "hook_strength": 25,      # First 210 chars compelling?
-        "length_depth": 15,       # 1500-1900 chars, insight fully developed?
-        "format_whitespace": 15,  # One sentence/line, white space, short sentences?
-        "authenticity": 15,       # Personal voice, not generic AI content?
-        "question_cta": 10,       # Thought-provoking question at end?
-        "hashtag_usage": 5,       # 3-5 relevant hashtags?
-        "clarity": 10,            # Clear takeaway, easy to understand?
-        "grammar": 5,             # No errors, no markdown symbols?
+        "missed_news_value": 25,
+        "novelty_source_quality": 20,
+        "source_grounding": 20,
+        "finance_workflow_relevance": 15,
+        "bulletin_format": 10,
+        "actionability": 10,
     }
 
-    # The evaluation prompt template (updated with 2024/2025 algorithm research)
-    EVALUATION_PROMPT = '''You are a LinkedIn content QA expert. Evaluate this post against 2024/2025 research-backed best practices.
+    # The evaluation prompt template for the Brandon news product.
+    EVALUATION_PROMPT = '''You are Brandon's AI-news QA reviewer. Evaluate this candidate news bulletin for Brandon, not for LinkedIn virality.
 
-POST ({char_count} characters):
+BULLETIN ({char_count} characters):
 {content}
 
 ===== SCORING CRITERIA (total 100 points) =====
 
-1. HOOK STRENGTH (25pts):
-   - First 210 characters CRITICAL (shows before "see more")
-   - Would it stop someone scrolling?
-   - Curiosity gap, bold claim, or value promise?
+1. MISSED-NEWS VALUE (25pts):
+   - Prioritizes items Brandon likely did not already see on x.com.
+   - Rewards YouTube/video drops, model releases, repos, papers, conference/CFP deadlines, Boston/NYC AI events, primary-source announcements, eval/tooling changes.
+   - Penalizes generic X discourse and obvious summaries.
 
-2. LENGTH & DEPTH (15pts):
-   - Sweet spot: 1,500-1,900 characters
-   - Under 1,000 chars = -25% reach penalty
-   - Is the insight fully developed, not surface-level?
+2. NOVELTY & SOURCE QUALITY (20pts):
+   - Separates genuinely novel releases/papers/tools from commentary.
+   - Names concrete models, papers, repos, videos, datasets, companies, or benchmark changes when supported.
 
-3. FORMAT & WHITE SPACE (15pts):
-   - One sentence per line with blank lines between thoughts
-   - Short sentences (<12 words ideal = +20% reach)
-   - Uses white space liberally (+57% engagement)
-   - NOT dense wall of text
+3. SOURCE-GROUNDING & CITATIONS (20pts):
+   - Every factual bullet has numeric citations.
+   - No unsupported extrapolation.
+   - Clearly admits when sources are thin.
 
-4. AUTHENTICITY (15pts):
-   - Personal voice, specific details
-   - Not generic AI-sounding content
-   - Unique angle or insight
+4. FINANCE / WORKFLOW RELEVANCE (15pts):
+   - Highlights finance-facing relevance when supported: payments, fraud/risk, compliance, banks, asset managers, hedge funds, regulated workflows.
+   - Does not force finance relevance when the sources do not support it.
 
-5. QUESTION CTA (10pts):
-   - Ends with thought-provoking question (+35% engagement)
-   - NOT engagement bait ("Comment YES!")
-   - Invites genuine discussion
+5. BULLETIN FORMAT (10pts):
+   - 3-6 compact bullets.
+   - Starts bullets with short labels.
+   - No narrative opener, story arc, influencer tone, hashtags, or engagement CTA.
 
-6. HASHTAGS (5pts): 3-5 relevant hashtags at end
-
-7. CLARITY (10pts): Clear takeaway, easy to understand
-
-8. GRAMMAR/POLISH (5pts): No errors, clean formatting, no markdown symbols
+6. ACTIONABILITY (10pts):
+   - Says what Brandon should inspect, test, save, or ignore next.
 
 ===== PENALIZE HEAVILY =====
-- Generic intros ("Here's my thoughts...")
-- Engagement bait ("Like if you agree!")
-- Dense paragraphs (no line breaks)
-- Too many emojis (>3)
-- Markdown symbols (** or # - LinkedIn doesn't render)
-- Multiple unrelated topics crammed in
-- Posts under 1,000 characters
+- Narrative filler: "the deeper shift", "these developments underscore", "AI is transforming..."
+- Social-post mechanics: hooks, hashtags, engagement questions, motivational framing.
+- Any claim about a company, model, paper, or release without a citation.
+- Repeating obvious x.com discourse instead of primary-source or missed items.
 
 Respond in JSON format ONLY:
-{{"score": 0-100, "breakdown": {{"hook": 0-25, "length": 0-15, "format": 0-15, "authenticity": 0-15, "cta": 0-10, "hashtags": 0-5, "clarity": 0-10, "grammar": 0-5}}, "feedback": "brief specific feedback", "strengths": ["strength1"], "issues": ["issue1"]}}'''
+{{"score": 0-100, "breakdown": {{"missed_news_value": 0-25, "novelty_source_quality": 0-20, "source_grounding": 0-20, "finance_workflow_relevance": 0-15, "bulletin_format": 0-10, "actionability": 0-10}}, "feedback": "brief specific feedback", "strengths": ["strength1"], "issues": ["issue1"]}}'''
 
     def __init__(self):
         """Initialize the QE Agent"""
@@ -187,7 +180,7 @@ _qe_agent_instance = QEAgent()
 
 @tool
 def evaluate_post_quality(content: str) -> dict:
-    """Evaluate a LinkedIn post against the 8-criteria quality rubric. Returns score 0-100 with detailed breakdown, strengths, and issues for evolution."""
+    """Evaluate a Brandon news bulletin against the source-grounded usefulness rubric."""
     from .post_variant import PostVariant as _PV
     v = _PV(variant_id="tool_call", content=content, hook_style="unknown")
     result = _qe_agent_instance.evaluate_post(v)
