@@ -105,19 +105,22 @@ SEED_CHANNELS = [
     ("UC7vVhkEfw4nOGp8TyDk7RcQ", "Boston Dynamics", "official"),  # Robotics & embodied AI research
 
     # Frontier labs, SLM providers, multimodal demos, and model-release channels
-    # Some IDs may fail if a channel changes handles; the scraper skips failed RSS feeds.
-    ("UCz5vTaEhvh7dOHEyd1efcaQ", "Microsoft Research", "research"),  # Phi/SLM, multimodal and enterprise AI research
-    ("UCFk8IJ1TwI7Xl7UUfAD8xPQ", "NVIDIA Developer", "official"),  # GTC, NeMo, NIM, evals, data curation
-    ("UCQ-W1KE9EYfdxhL6S4twUNw", "NVIDIA", "official"),  # Frontier AI announcements and GTC keynotes
-    ("UCmWf47El6J_yOC8j_Br1VKA", "Qwen", "official"),  # Qwen model releases and demos where RSS resolves
-    ("UCyUBeVgE3Q2v8h5xyH1ZDlg", "Databricks", "official"),  # Mosaic/enterprise AI, governance, data platforms
+    ("UCCb9_Kn8F_Opb3UCGm-lILQ", "Microsoft Research", "research"),  # Phi/SLM, multimodal and enterprise AI research
+    ("UCBHcMCGaiJhv-ESTcWGJPcw", "NVIDIA Developer", "official"),  # GTC, NeMo, NIM, evals, data curation
+    ("UCWeqUXS57KQhmup0wlymlIQ", "Qwen", "official"),  # Qwen model releases and demos
+    ("UC3q8O3Bh2Le8Rj1-Q-_UUbA", "Databricks", "official"),  # Mosaic/enterprise AI, governance, data platforms
 
     # Benchmark, eval, governance, and enterprise AI channels
-    ("UCs_tLP3AiwYKwdUHpltJPuA", "MLCommons", "benchmarks"),  # MLPerf, AILuminate, benchmark and safety eval updates
-    ("UCj5G2WwU0q7e6YjKk0i5H7A", "NIST", "governance"),  # AI RMF, standards, assurance talks if RSS resolves
-    ("UC2D2CMWXMOVWx7giW1n3LIg", "MIT CSAIL", "events"),  # Boston/Cambridge AI seminars and research talks
-    ("UCwge83yA8gDLr_u94vR1R5w", "NYU Data Science", "events"),  # NYC AI/data-science seminars when available
+    ("UCBpxspUNl1Th33XbugiHJzw", "MIT CSAIL", "events"),  # Boston/Cambridge AI seminars and research talks
 ]
+
+EXPECTED_FEED_TITLES = {
+    "UCCb9_Kn8F_Opb3UCGm-lILQ": "Microsoft Research",
+    "UCBHcMCGaiJhv-ESTcWGJPcw": "NVIDIA Developer",
+    "UCWeqUXS57KQhmup0wlymlIQ": "Qwen",
+    "UC3q8O3Bh2Le8Rj1-Q-_UUbA": "Databricks",
+    "UCBpxspUNl1Th33XbugiHJzw": "MIT CSAIL",
+}
 
 # Keywords to identify AI-relevant videos
 AI_KEYWORDS = [
@@ -340,6 +343,17 @@ class YouTubeRSSScraper:
             return parsed.path.lstrip('/')
         return None
 
+    def _feed_matches_expected_channel(self, channel_id: str, feed_title: str) -> bool:
+        """Protect against bad seed IDs silently importing an unrelated channel."""
+        expected = EXPECTED_FEED_TITLES.get(channel_id)
+        if not expected:
+            return True
+
+        def normalize(value: str) -> str:
+            return re.sub(r"[^a-z0-9]+", "", value.lower())
+
+        return normalize(expected) == normalize(feed_title or "")
+
     def scrape_channel(self, channel_id: str, channel_name: str = "") -> List[YouTubeVideo]:
         """Scrape videos from a channel's RSS feed"""
         url = self.RSS_URL_TEMPLATE.format(channel_id=channel_id)
@@ -349,6 +363,14 @@ class YouTubeRSSScraper:
 
             if feed.bozo and not feed.entries:
                 print(f"[!] Failed to parse feed for {channel_name or channel_id}")
+                return []
+
+            feed_title = feed.feed.get('title', '')
+            if not self._feed_matches_expected_channel(channel_id, feed_title):
+                print(
+                    f"[!] Feed title mismatch for {channel_name or channel_id}: "
+                    f"got '{feed_title}', skipping"
+                )
                 return []
 
             videos = []
@@ -379,7 +401,7 @@ class YouTubeRSSScraper:
                 video = YouTubeVideo(
                     video_id=video_id,
                     channel_id=channel_id,
-                    channel_name=channel_name or feed.feed.get('title', ''),
+                    channel_name=channel_name or feed_title,
                     title=title,
                     description=description[:1000] if description else "",
                     url=entry.link,

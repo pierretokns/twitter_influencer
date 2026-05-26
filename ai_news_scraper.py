@@ -460,6 +460,18 @@ WEB_SOURCES = {
         "category": "ai_research",
         "description": "AI research journalism, interviews, analysis",
     },
+    "last_week_in_aws": {
+        "name": "Last Week in AWS",
+        "url": "https://www.lastweekinaws.com/",
+        "rss_url": "https://www.lastweekinaws.com/feed/",
+        "type": "rss",
+        "category": "enterprise_ai_cloud",
+        "filter_keywords": [
+            "ai", "artificial intelligence", "agent", "agentic", "bedrock", "q developer",
+            "sagemaker", "nova", "anthropic", "openai", "cloud", "governance", "cost"
+        ],
+        "description": "Corey Quinn's snarky AWS/cloud analysis, including AI services, cost, and governance signals",
+    },
 
     # -------------------------------------------------------------------------
     # HTML Sources (server-side rendered, BeautifulSoup compatible)
