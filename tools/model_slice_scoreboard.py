@@ -87,6 +87,23 @@ def role_for_case_type(case_type: str) -> str:
     return case_type or "unknown"
 
 
+def comparative_score(pass_rate: float, avg_score_pct: float) -> float:
+    """A quality-first score for comparing models within the same slice role."""
+    return round((70.0 * pass_rate) + (30.0 * (avg_score_pct / 100.0)), 1)
+
+
+def recommendation_for(row: dict[str, Any], role_rows: list[dict[str, Any]]) -> str:
+    if row["rank"] == 1 and row["pass_rate"] >= 0.8:
+        return "keep_primary"
+    if row["pass_rate"] >= 0.8:
+        return "keep_candidate"
+    if row["pass_rate"] >= 0.5 and row["avg_score_pct"] >= 75.0:
+        return "investigate_or_repair"
+    if row["cases"] <= 1 and row["pass_rate"] == 0 and len(role_rows) < 3:
+        return "needs_more_evidence"
+    return "count_out_for_role"
+
+
 def build_scoreboard() -> dict[str, Any]:
     case_map = heldout_case_map()
     buckets: dict[tuple[str, str, str], dict[str, Any]] = {}
@@ -147,6 +164,8 @@ def build_scoreboard() -> dict[str, Any]:
     by_slice_role: dict[str, dict[str, list[dict[str, Any]]]] = defaultdict(lambda: defaultdict(list))
     for bucket in buckets.values():
         cases = max(1, bucket["cases"])
+        pass_rate = round(bucket["passed"] / cases, 3)
+        avg_score_pct = round(bucket["score_sum"] / cases, 1)
         row = {
             "slice": bucket["slice"],
             "role": bucket["role"],
@@ -154,8 +173,9 @@ def build_scoreboard() -> dict[str, Any]:
             "label": bucket["label"],
             "cases": bucket["cases"],
             "passed": bucket["passed"],
-            "pass_rate": round(bucket["passed"] / cases, 3),
-            "avg_score_pct": round(bucket["score_sum"] / cases, 1),
+            "pass_rate": pass_rate,
+            "avg_score_pct": avg_score_pct,
+            "comparative_score_pct": comparative_score(pass_rate, avg_score_pct),
             "avg_elapsed_sec": round(bucket["elapsed_sum"] / cases, 3),
             "case_types": sorted(bucket["case_types"]),
             "artifacts": sorted(bucket["artifacts"]),
@@ -164,12 +184,21 @@ def build_scoreboard() -> dict[str, Any]:
         by_slice[row["slice"]].append(row)
         by_slice_role[row["slice"]][row["role"]].append(row)
     for rows in by_slice.values():
-        rows.sort(key=lambda item: (item["pass_rate"], item["avg_score_pct"], -item["avg_elapsed_sec"]), reverse=True)
+        rows.sort(
+            key=lambda item: (item["comparative_score_pct"], item["pass_rate"], item["avg_score_pct"], -item["avg_elapsed_sec"]),
+            reverse=True,
+        )
     by_slice_role_out: dict[str, dict[str, list[dict[str, Any]]]] = {}
     for slice_name, roles in by_slice_role.items():
         by_slice_role_out[slice_name] = {}
         for role, rows in roles.items():
-            rows.sort(key=lambda item: (item["pass_rate"], item["avg_score_pct"], -item["avg_elapsed_sec"]), reverse=True)
+            rows.sort(
+                key=lambda item: (item["comparative_score_pct"], item["pass_rate"], item["avg_score_pct"], -item["avg_elapsed_sec"]),
+                reverse=True,
+            )
+            for index, row in enumerate(rows, start=1):
+                row["rank"] = index
+                row["recommendation"] = recommendation_for(row, rows)
             by_slice_role_out[slice_name][role] = rows
     return {
         "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
@@ -192,8 +221,10 @@ def write_markdown(report: dict[str, Any], path: Path) -> None:
             lines.append(f"### {role}")
             for row in rows:
                 lines.append(
-                    f"- `{row['label']}`: pass `{row['passed']}/{row['cases']}` "
-                    f"({row['pass_rate'] * 100:.1f}%), avg score `{row['avg_score_pct']}`, "
+                    f"- #{row['rank']} `{row['label']}`: comparative `{row['comparative_score_pct']}`, "
+                    f"pass `{row['passed']}/{row['cases']}` ({row['pass_rate'] * 100:.1f}%), "
+                    f"avg score `{row['avg_score_pct']}`, "
+                    f"status `{row['recommendation']}`, "
                     f"avg `{row['avg_elapsed_sec']}` sec"
                 )
                 if row["failures"]:

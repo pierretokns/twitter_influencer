@@ -654,8 +654,11 @@ def write_markdown(report: dict[str, Any], path: Path) -> None:
                 lines.append(f"  - `{role}`:")
                 for row in rows[:4]:
                     lines.append(
-                        f"    - `{row['label']}`: pass `{row['passed']}/{row['cases']}` "
-                        f"({row['pass_rate'] * 100:.1f}%), avg score `{row['avg_score_pct']}`"
+                        f"    - #{row.get('rank', '?')} `{row['label']}`: comparative "
+                        f"`{row.get('comparative_score_pct', 'n/a')}`, "
+                        f"pass `{row['passed']}/{row['cases']}` "
+                        f"({row['pass_rate'] * 100:.1f}%), avg score `{row['avg_score_pct']}`, "
+                        f"status `{row.get('recommendation', 'n/a')}`"
                     )
     lines.extend(["", "## Workflow Decisions", ""])
     for name, decision in report["workflow_decisions"].items():

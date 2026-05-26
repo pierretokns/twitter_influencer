@@ -1715,10 +1715,21 @@ Production model decision artifact:
   - Added `tools/local_llm_client_smoke.py` so the VM can generate `output_data/model_bench/llm_client_local_smoke/llm_client_local_smoke.json` with a real local Phi JSON call instead of relying on mocked tests.
 - Remaining before marking goal complete: human-label the review packet, keep the model regression gate passing, add more held-out traces as production behavior changes, and keep the disabled AgentCore/hosted paths guarded unless they are rewritten to call Hetzner-local services.
 - Added `tools/benchmark_coverage_audit.py` to audit benchmark maturity by workflow slice.
-  - Current result: deployment/model gate passes, but benchmark coverage gate does not fully pass because `data_curation_eval` has too few gold cases.
+  - Current result: deployment/model gate passes and benchmark coverage passes after adding more `data_curation_eval` cases, but `human_label_ready=false` because the review split still has zero reviewed rows and zero approved training candidates.
   - `structured_control_plane` coverage is counted through all held-out structured contracts, not only rows literally tagged with that slice.
   - The audit is non-blocking for first local deployment but blocks any claim that fine-tuning readiness is complete.
 - Added `tools/model_slice_scoreboard.py` to aggregate current model pass rates and average scores per workflow slice and role/case type from the available result artifacts. Use the role-grouped view for decisions; the raw slice-level view can mix RAG and structured-control-plane checks.
+  - The scoreboard now emits a per-role `comparative_score_pct`, rank, and recommendation (`keep_primary`, `keep_candidate`, `investigate_or_repair`, `count_out_for_role`).
+  - Comparative score is quality-first: `70 * pass_rate + 30 * avg_score_pct/100`. Runtime remains visible but is only a tie-breaker because this background workflow can tolerate slow models if quality converges.
+  - Current VM role leaders:
+    - `data_curation_eval` RAG: `LFM2-2.6B` and `Phi-4-mini` both pass the currently scored curation generation case; `NVIDIA Nano` is counted out for this role.
+    - `finance_domain_signal` RAG: `LFM2-2.6B` leads; `Phi-4-mini` remains an investigate/repair backup; `NVIDIA Nano` is counted out.
+    - Structured finance relevance, delivery payload, citation verification, and retrieval gate: `Phi-4-mini` leads.
+    - Unsupported-source route: `FunctionGemma 270M` and `Phi-4-mini` both pass; keep FunctionGemma only for this narrow validated route, not general structured control-plane.
+    - Source-grounded refusal generation: `LFM2-2.6B` leads by current pass/failure status; keep deterministic insufficient-source gates because refusal average-score fields are less meaningful than pass/fail here.
+  - Authoritative VM artifacts:
+    - `output_data/model_bench/slice_scoreboard/model_slice_scoreboard.{json,md}`
+    - `output_data/model_bench/production_decision/production_model_decision.{json,md}`
 
 ### Chat Service Source Compression - 2026-05-25
 
