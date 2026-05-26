@@ -412,6 +412,22 @@ def regression_gate_summary() -> dict[str, Any] | None:
     }
 
 
+def benchmark_coverage_summary() -> dict[str, Any] | None:
+    path = "output_data/model_bench/benchmark_coverage/benchmark_coverage_audit.json"
+    data = load_json_if_exists(path)
+    if not data:
+        return None
+    return {
+        "artifact": path,
+        "coverage_gate_passed": data.get("coverage_gate_passed"),
+        "human_label_ready": data.get("human_label_ready"),
+        "hard_failures": [row.get("slice") for row in data.get("hard_failures", [])],
+        "warnings": [row.get("slice") for row in data.get("warnings", [])],
+        "totals": data.get("totals", {}),
+        "next_actions": data.get("next_actions", []),
+    }
+
+
 def build_report() -> dict[str, Any]:
     expanded_generation_path = (
         "output_data/gold_eval/production_expanded_v2_generation_top3_compact/"
@@ -448,6 +464,7 @@ def build_report() -> dict[str, Any]:
     heldout_traces = heldout_trace_summary()
     heldout_structured = heldout_structured_summary()
     regression_gate = regression_gate_summary()
+    coverage_audit = benchmark_coverage_summary()
 
     return {
         "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
@@ -465,6 +482,7 @@ def build_report() -> dict[str, Any]:
             "heldout_structured_contracts": heldout_structured["artifacts"] if heldout_structured else None,
             "local_chat_backend_smoke": local_chat_smoke["artifact"] if local_chat_smoke else None,
             "model_regression_gate": regression_gate["artifact"] if regression_gate else None,
+            "benchmark_coverage_audit": coverage_audit["artifact"] if coverage_audit else None,
             "service_shaped_rag_generation": (
                 "output_data/model_bench/rag_webchat_reranked_top3_numeric_citations_rescored/"
                 "rag_webchat_summary.json"
@@ -477,6 +495,7 @@ def build_report() -> dict[str, Any]:
             ),
         },
         "regression_gate": regression_gate,
+        "benchmark_coverage": coverage_audit,
         "workflow_decisions": {
             "retrieval": {
                 "decision": "base retrieval system mostly sufficient after candidate widening, BGE reranking, and top-3 context compression; structured-output retrieval still needs better evidence selection",
@@ -592,6 +611,24 @@ def write_markdown(report: dict[str, Any], path: Path) -> None:
                     f"  - `{row['label']}`: `{row['status']}` for {row['task']} "
                     f"(good_enough=`{row['good_enough']}`)"
                 )
+    if report.get("benchmark_coverage"):
+        coverage = report["benchmark_coverage"]
+        lines.extend(
+            [
+                "",
+                "## Benchmark Coverage",
+                "",
+                f"- Artifact: `{coverage['artifact']}`",
+                f"- Coverage gate passed: `{coverage['coverage_gate_passed']}`",
+                f"- Human-label ready: `{coverage['human_label_ready']}`",
+                f"- Hard coverage failures: `{', '.join(coverage['hard_failures']) if coverage['hard_failures'] else 'none'}`",
+                f"- Coverage warnings: `{', '.join(coverage['warnings']) if coverage['warnings'] else 'none'}`",
+            ]
+        )
+        if coverage.get("next_actions"):
+            lines.append("- Next coverage actions:")
+            for action in coverage["next_actions"]:
+                lines.append(f"  - {action}")
     lines.extend(["", "## Workflow Decisions", ""])
     for name, decision in report["workflow_decisions"].items():
         lines.append(f"### {name}")

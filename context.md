@@ -1714,6 +1714,10 @@ Production model decision artifact:
   - The gate now emits a `model_roster` that records keep/count-out status by task, so future model tests can be compared against the same deployment roles instead of a single blended score.
   - Added `tools/local_llm_client_smoke.py` so the VM can generate `output_data/model_bench/llm_client_local_smoke/llm_client_local_smoke.json` with a real local Phi JSON call instead of relying on mocked tests.
 - Remaining before marking goal complete: human-label the review packet, keep the model regression gate passing, add more held-out traces as production behavior changes, and keep the disabled AgentCore/hosted paths guarded unless they are rewritten to call Hetzner-local services.
+- Added `tools/benchmark_coverage_audit.py` to audit benchmark maturity by workflow slice.
+  - Current result: deployment/model gate passes, but benchmark coverage gate does not fully pass because `data_curation_eval` has too few gold cases.
+  - `structured_control_plane` coverage is counted through all held-out structured contracts, not only rows literally tagged with that slice.
+  - The audit is non-blocking for first local deployment but blocks any claim that fine-tuning readiness is complete.
 
 ### Chat Service Source Compression - 2026-05-25
 

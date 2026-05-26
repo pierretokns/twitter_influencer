@@ -329,6 +329,13 @@ Regression gate:
   - `FunctionGemma 270M`: general structured/control-plane use.
   - `LFM2-2.6B`: llama.cpp JSON-schema control-plane path.
 
+Benchmark coverage audit:
+
+- Added `tools/benchmark_coverage_audit.py`.
+- Current result: `coverage_gate_passed=false`, `human_label_ready=false`.
+- The only hard slice coverage failure is `data_curation_eval`; it needs more gold cases before making a strong per-slice fine-tuning decision.
+- This does not block first local deployment because the model regression gate passes, but it does block marking the overall model-evaluation goal complete.
+
 ## Counted Out For Current VM
 
 - `Qwen3.5-4B`: dominated in v2 and removed from VM cache.
