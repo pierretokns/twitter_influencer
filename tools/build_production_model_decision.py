@@ -398,6 +398,7 @@ def regression_gate_summary() -> dict[str, Any] | None:
         "fine_tune_ready": data.get("fine_tune_ready"),
         "hard_failures": [row.get("name") for row in data.get("hard_failures", [])],
         "warnings": [row.get("name") for row in data.get("warnings", [])],
+        "model_roster": data.get("model_roster", []),
         "decision": data.get("decision", {}),
         "checks": [
             {
@@ -584,6 +585,13 @@ def write_markdown(report: dict[str, Any], path: Path) -> None:
             lines.append("- Counted out by gate:")
             for model, scope in counted_out.items():
                 lines.append(f"  - `{model}`: {scope}")
+        if gate.get("model_roster"):
+            lines.append("- Model roster:")
+            for row in gate["model_roster"]:
+                lines.append(
+                    f"  - `{row['label']}`: `{row['status']}` for {row['task']} "
+                    f"(good_enough=`{row['good_enough']}`)"
+                )
     lines.extend(["", "## Workflow Decisions", ""])
     for name, decision in report["workflow_decisions"].items():
         lines.append(f"### {name}")

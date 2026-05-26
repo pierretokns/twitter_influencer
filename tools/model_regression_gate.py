@@ -230,10 +230,93 @@ def build_gate() -> dict[str, Any]:
 
     hard_failures = [row for row in checks if row["severity"] == "hard" and not row["passed"]]
     warnings = [row for row in checks if row["severity"] == "warn" and not row["passed"]]
+    model_roster = [
+        {
+            "model": "LiquidAI/LFM2-2.6B-GGUF:LFM2-2.6B-Q4_K_M.gguf",
+            "label": "LFM2-2.6B",
+            "status": "keep_primary",
+            "task": "RAG/news/webchat generation",
+            "good_enough": True,
+            "fine_tune_needed": False,
+            "evidence": rag_summary_path,
+            "notes": "8/8 expanded compact RAG; VM ChatAgent smoke passed with citations and no timing leakage.",
+        },
+        {
+            "model": "unsloth/Phi-4-mini-instruct-GGUF:Phi-4-mini-instruct-Q3_K_M.gguf",
+            "label": "Phi-4-mini",
+            "status": "keep_primary",
+            "task": "structured/control-plane JSON",
+            "good_enough": True,
+            "fine_tune_needed": False,
+            "evidence": heldout_structured_path,
+            "notes": "16/16 held-out production structured contracts with constrained JSON.",
+        },
+        {
+            "model": "unsloth/Phi-4-mini-instruct-GGUF:Phi-4-mini-instruct-Q3_K_M.gguf",
+            "label": "Phi-4-mini",
+            "status": "keep_backup",
+            "task": "RAG/news/webchat generation",
+            "good_enough": True,
+            "fine_tune_needed": False,
+            "evidence": phi_retry_path,
+            "notes": "8/8 expanded RAG with numeric citation prompt plus validation retry; slower than LFM2.",
+        },
+        {
+            "model": "BAAI/bge-m3",
+            "label": "BGE-M3",
+            "status": "keep_component",
+            "task": "retrieval embeddings",
+            "good_enough": True,
+            "fine_tune_needed": False,
+            "evidence": "output_data/model_bench/production_decision/production_model_decision.json",
+            "notes": "Current retrieval default paired with candidate widening and BGE reranking.",
+        },
+        {
+            "model": "BAAI/bge-reranker-v2-m3",
+            "label": "BGE reranker v2 m3",
+            "status": "keep_component",
+            "task": "source reranking/top-3 context pack",
+            "good_enough": True,
+            "fine_tune_needed": False,
+            "evidence": "output_data/model_bench/production_decision/production_model_decision.json",
+            "notes": "Current reranker default for source compression before local generation.",
+        },
+        {
+            "model": "nvidia/NVIDIA-Nemotron-3-Nano-4B-GGUF:NVIDIA-Nemotron3-Nano-4B-Q4_K_M.gguf",
+            "label": "NVIDIA Nano",
+            "status": "count_out",
+            "task": "user-facing RAG/news/webchat generation",
+            "good_enough": False,
+            "fine_tune_needed": None,
+            "evidence": rag_summary_path,
+            "notes": "0/8 expanded compact RAG with thinking leakage; do not use for user-facing generation.",
+        },
+        {
+            "model": "lmstudio-community/functiongemma-270m-it-GGUF:functiongemma-270m-it-F16.gguf",
+            "label": "FunctionGemma 270M",
+            "status": "count_out_general",
+            "task": "general structured/control-plane JSON",
+            "good_enough": False,
+            "fine_tune_needed": None,
+            "evidence": heldout_structured_path,
+            "notes": "7/16 held-out production traces; keep only for trivial validated routes if ever used.",
+        },
+        {
+            "model": "LiquidAI/LFM2-2.6B-GGUF:LFM2-2.6B-Q4_K_M.gguf",
+            "label": "LFM2-2.6B",
+            "status": "count_out_for_task",
+            "task": "llama.cpp JSON-schema control-plane path",
+            "good_enough": False,
+            "fine_tune_needed": None,
+            "evidence": heldout_lfm_structured_path,
+            "notes": "0/16 held-out structured contracts with sampler initialization / invalid JSON failures.",
+        },
+    ]
     return {
         "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "deployment_gate_passed": not hard_failures,
         "fine_tune_ready": not warnings,
+        "model_roster": model_roster,
         "hard_failures": hard_failures,
         "warnings": warnings,
         "checks": checks,
@@ -273,6 +356,15 @@ def write_markdown(report: dict[str, Any], path: Path) -> None:
                 lines.append(f"  - `{model}`: {scope}")
         else:
             lines.append(f"- {key}: `{value}`")
+    if report.get("model_roster"):
+        lines.extend(["", "## Model Roster", ""])
+        for row in report["model_roster"]:
+            lines.append(
+                f"- `{row['label']}`: `{row['status']}` for {row['task']} "
+                f"(good_enough=`{row['good_enough']}`, fine_tune_needed=`{row['fine_tune_needed']}`)"
+            )
+            lines.append(f"  - Evidence: `{row['evidence']}`")
+            lines.append(f"  - Notes: {row['notes']}")
     lines.extend(["", "## Checks", ""])
     for row in report["checks"]:
         status = "pass" if row["passed"] else "fail"

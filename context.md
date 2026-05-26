@@ -1711,6 +1711,7 @@ Production model decision artifact:
   - Local and VM result: `deployment_gate_passed=true`.
   - `fine_tune_ready=false` because the human-review split still has zero reviewed rows and zero approved training candidates.
   - Hard checks cover LFM2-2.6B RAG primary, Phi citation-retry backup, Phi held-out structured control-plane, counted-out NVIDIA Nano RAG, counted-out FunctionGemma general structured use, counted-out LFM2 JSON-schema path, local ChatAgent smoke, local shared `llm_client` smoke, and hosted runtime guard status.
+  - The gate now emits a `model_roster` that records keep/count-out status by task, so future model tests can be compared against the same deployment roles instead of a single blended score.
   - Added `tools/local_llm_client_smoke.py` so the VM can generate `output_data/model_bench/llm_client_local_smoke/llm_client_local_smoke.json` with a real local Phi JSON call instead of relying on mocked tests.
 - Remaining before marking goal complete: human-label the review packet, keep the model regression gate passing, add more held-out traces as production behavior changes, and keep the disabled AgentCore/hosted paths guarded unless they are rewritten to call Hetzner-local services.
 

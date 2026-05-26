@@ -323,6 +323,7 @@ Regression gate:
 - Added `tools/model_regression_gate.py`.
 - Gate result on local and VM artifacts: `deployment_gate_passed=true`.
 - Fine-tune readiness: `fine_tune_ready=false`; the only current warning is `fine_tune_labels_available` because human-review labels and approved train candidates are still absent.
+- The gate emits a `model_roster` with per-task keep/count-out status, which is now surfaced in the production decision report.
 - Counted out by gate:
   - `NVIDIA Nano`: user-facing RAG generation.
   - `FunctionGemma 270M`: general structured/control-plane use.
