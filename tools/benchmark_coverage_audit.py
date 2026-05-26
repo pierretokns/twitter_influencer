@@ -19,6 +19,11 @@ HELDOUT_PATH = "output_data/gold_eval/heldout_production_traces_v1/heldout_trace
 ANSWER_REVIEW_PATH = "output_data/gold_eval/human_review_v1/answer_review.jsonl"
 CITATION_REVIEW_PATH = "output_data/gold_eval/human_review_v1/citation_span_review.jsonl"
 REVIEW_SPLIT_PATH = "output_data/gold_eval/human_review_v1_splits/split_summary.json"
+GENERATION_RESULT_PATHS = [
+    "output_data/gold_eval/production_expanded_v2_generation_top3_compact/production_gold_results.jsonl",
+    "output_data/gold_eval/production_expanded_v2_generation_phi_citation_retry/production_gold_results.jsonl",
+    "output_data/gold_eval/production_expanded_v2_generation_curation_delta_top3/production_gold_results.jsonl",
+]
 
 SLICE_GATES = {
     "rag_webchat_inline_citations": {
@@ -94,6 +99,33 @@ def count_by(rows: list[dict[str, Any]], key: str) -> Counter[str]:
     return Counter(str(row.get(key)) for row in rows if row.get(key) is not None)
 
 
+def model_short(model: str) -> str:
+    if "LFM2-2.6B" in model:
+        return "LFM2-2.6B"
+    if "Phi-4-mini" in model:
+        return "Phi-4-mini"
+    if "NVIDIA-Nemotron" in model:
+        return "NVIDIA Nano"
+    if "functiongemma" in model.lower():
+        return "FunctionGemma 270M"
+    return model
+
+
+def generation_runs_by_slice_case() -> dict[tuple[str, str], set[str]]:
+    runs: dict[tuple[str, str], set[str]] = defaultdict(set)
+    for rel_path in GENERATION_RESULT_PATHS:
+        for row in load_jsonl(rel_path):
+            if row.get("case_type") != "rag_generation":
+                continue
+            slice_name = row.get("slice")
+            case_id = row.get("case_id")
+            model = row.get("model")
+            if not slice_name or not case_id or not model:
+                continue
+            runs[(str(slice_name), str(case_id))].add(model_short(str(model)))
+    return runs
+
+
 def build_audit() -> dict[str, Any]:
     gold_rows = load_jsonl(GOLD_PATH)
     heldout_rows = load_jsonl(HELDOUT_PATH)
@@ -108,9 +140,12 @@ def build_audit() -> dict[str, Any]:
 
     gold_case_types_by_slice: dict[str, set[str]] = defaultdict(set)
     heldout_trace_types_by_slice: dict[str, set[str]] = defaultdict(set)
+    rag_generation_case_ids_by_slice: dict[str, set[str]] = defaultdict(set)
     for row in gold_rows:
         if row.get("slice") and row.get("case_type"):
             gold_case_types_by_slice[str(row["slice"])].add(str(row["case_type"]))
+            if row.get("case_type") == "rag_generation":
+                rag_generation_case_ids_by_slice[str(row["slice"])].add(str(row.get("case_id")))
     for row in heldout_rows:
         if row.get("slice") and row.get("trace_type"):
             heldout_trace_types_by_slice[str(row["slice"])].add(str(row["trace_type"]))
@@ -152,10 +187,19 @@ def build_audit() -> dict[str, Any]:
     review_counts = review_split.get("counts", {})
     hard_failures = [row for row in slice_results if row["failures"]]
     warnings = [row for row in slice_results if row["warnings"]]
+    generation_runs = generation_runs_by_slice_case()
+    required_top_rag_models = {"LFM2-2.6B", "Phi-4-mini"}
+    missing_data_curation_runs = []
+    for case_id in sorted(rag_generation_case_ids_by_slice.get("data_curation_eval", set())):
+        ran_models = generation_runs.get(("data_curation_eval", case_id), set())
+        missing_models = sorted(required_top_rag_models - ran_models)
+        if missing_models:
+            missing_data_curation_runs.append({"case_id": case_id, "missing_models": missing_models})
+
     next_actions = []
     if any(row["slice"] == "data_curation_eval" for row in hard_failures):
         next_actions.append("Add more data_curation_eval gold cases; current coverage is below the slice gate.")
-    if not any(row["slice"] == "data_curation_eval" for row in hard_failures):
+    if missing_data_curation_runs:
         next_actions.append("Run the top local RAG models on the expanded data_curation_eval generation case.")
     next_actions.extend(
         [
@@ -184,6 +228,12 @@ def build_audit() -> dict[str, Any]:
             "citation_review_rows": len(citation_rows),
             "reviewed_rows": review_counts.get("reviewed_rows", 0),
             "candidate_train_pending_approval_rows": review_counts.get("candidate_train_pending_approval_rows", 0),
+        },
+        "completed_actions": {
+            "data_curation_eval_top_rag_generation_run": not missing_data_curation_runs,
+        },
+        "missing_runs": {
+            "data_curation_eval_top_rag_generation": missing_data_curation_runs,
         },
         "by_slice": slice_results,
         "hard_failures": hard_failures,
