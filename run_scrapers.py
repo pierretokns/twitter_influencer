@@ -425,7 +425,7 @@ def run_embedding_maintenance(dry_run: bool = False) -> List[ScrapeResult]:
     commands = [
         (
             "Content Chunk Backfill",
-            ["uv", "run", "python", "backfill_content_chunks.py", "--no-transcripts"],
+            ["uv", "run", "python", "backfill_content_chunks.py", "--no-transcripts", "--no-embeddings"],
         ),
         (
             "Article/YouTube Embeddings",

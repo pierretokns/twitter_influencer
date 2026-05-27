@@ -21,6 +21,7 @@ dependencies = [
     "youtube-transcript-api>=1.0.0",
     "dateparser>=1.2.0",
     "beautifulsoup4>=4.12.0",
+    "trafilatura>=1.6.0",
     "feedparser>=6.0.0",
     "opentelemetry-api>=1.20.0",
     "opentelemetry-sdk>=1.20.0",

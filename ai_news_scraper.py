@@ -472,6 +472,30 @@ WEB_SOURCES = {
         ],
         "description": "Corey Quinn's snarky AWS/cloud analysis, including AI services, cost, and governance signals",
     },
+    "augment_code_blog": {
+        "name": "Augment Code Blog",
+        "url": "https://www.augmentcode.com/blog",
+        "rss_url": "https://www.augmentcode.com/blog/rss.xml",
+        "type": "rss",
+        "category": "ai_engineering",
+        "filter_keywords": [
+            "agent", "agents", "ai-native", "coding", "code review", "model routing",
+            "context", "enterprise", "engineering", "eval", "benchmark", "cost", "quality"
+        ],
+        "description": "AI coding, agent workflows, model routing, enterprise software engineering, cost and quality signals",
+    },
+    "steve_yegge_medium": {
+        "name": "Steve Yegge on Medium",
+        "url": "https://steve-yegge.medium.com/",
+        "rss_url": "https://medium.com/feed/@steve-yegge",
+        "type": "rss",
+        "category": "ai_engineering",
+        "filter_keywords": [
+            "ai", "agent", "agents", "llm", "coding", "software", "programming",
+            "model", "engineering", "developer", "tool", "tools"
+        ],
+        "description": "Steve Yegge's long-form software and AI engineering analysis",
+    },
 
     # -------------------------------------------------------------------------
     # HTML Sources (server-side rendered, BeautifulSoup compatible)
