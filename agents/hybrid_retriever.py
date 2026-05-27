@@ -770,6 +770,10 @@ def encode_texts_hybrid(
 
         sparse_embeddings = np.array(sparse_list, dtype=np.float32)
 
+        if use_cache and len(texts) == 1:
+            cache_key = texts[0].lower().strip()
+            _embedding_cache[cache_key] = (dense_embeddings[0], sparse_embeddings[0])
+
         return dense_embeddings, sparse_embeddings
 
     except Exception as e:

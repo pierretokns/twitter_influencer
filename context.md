@@ -1822,3 +1822,12 @@ State-of-AI research note:
 - `trafilatura` was missing in the VM venv during web-source scraping, so RSS/HTML metadata landed but full article bodies were not fetched for many web articles. The script headers declare `trafilatura>=1.6.0`; install/sync the script dependency environment if deeper article citations are required.
 - Bad YouTube channel IDs previously added for Microsoft Research, NVIDIA, MLCommons, and MIT CSAIL imported unrelated feeds. Those polluted video rows were removed on the VM, the bad channel IDs were deactivated, and the scraper now validates expected feed titles for corrected high-risk seed IDs.
 - Corey Quinn / Last Week in AWS was added as an `enterprise_ai_cloud` RSS source for snarky but useful AWS/cloud AI, cost, Bedrock, agent, and governance signal.
+
+### Retrieval Query Embedding Runtime - 2026-05-26
+
+- Retrieval still needs an embedding model at query time because sqlite-vec can only search stored vectors after the incoming user query is converted into the same vector space.
+- The stored tweet/article/YouTube vectors are not recomputed during chat retrieval; `ChatAgent._retrieve_sources()` calls `encode_texts_hybrid([query])` once for the query, then searches `*_embeddings_dense` / `*_embeddings_sparse` tables.
+- Production Flask chat already calls `warmup_embedding_model(precompute_queries=COMMON_CHAT_QUERIES)` at `linkedin_feed.py` startup, so the normal service should pay the BGE-M3 load once per process rather than once per request.
+- Benchmark/smoke scripts start fresh Python processes, so their logs can show repeated BGE-M3 loads even though a long-running service would keep the singleton model in memory.
+- `agents/hybrid_retriever.py` now caches single-query embeddings after first encode, not only startup-precomputed queries. Repeated identical chat queries in the same process should skip re-encoding.
+- `agents/chat_agent.py` now returns a clear retrieval warning if the query embedder is unavailable, because stored vectors cannot be searched without a query vector.

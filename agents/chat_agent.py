@@ -440,6 +440,11 @@ RESPONSE FORMAT:
         try:
             # Encode query with BGE-M3 (dense + sparse)
             query_dense, query_sparse = encode_texts_hybrid([query])
+            if query_dense is None or query_sparse is None:
+                return [], (
+                    "Embedding model unavailable for query encoding; "
+                    "stored vectors cannot be searched without a query vector"
+                )
             query_dense = query_dense[0] if query_dense.ndim > 1 else query_dense
             query_sparse = query_sparse[0] if query_sparse.ndim > 1 else query_sparse
 
