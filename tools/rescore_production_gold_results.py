@@ -5,8 +5,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from pathlib import Path
 from typing import Any
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from agents.chat_agent import ChatAgent, Source
 from production_gold_bench import load_cases, score_answer, summarize
