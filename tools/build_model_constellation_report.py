@@ -184,6 +184,48 @@ def leaders_from_overall_retrieval(summary: dict[str, Any], source: str, limit: 
     return out
 
 
+def leaders_from_fast_finance_retrieval(
+    summary: dict[str, Any],
+    source: str,
+    limit: int = 3,
+    max_online_avg_sec: float = 1.0,
+) -> list[dict[str, Any]]:
+    rows = []
+    for row in summary.get("finance_ai_gate", []):
+        timings = row.get("timings") or {}
+        online_avg = timings.get("online_avg_per_query_sec")
+        if not row.get("ok") or not row.get("passed_finance_ai_gate"):
+            continue
+        if online_avg is None or float(online_avg) > max_online_avg_sec:
+            continue
+        rows.append(row)
+    rows.sort(
+        key=lambda row: (
+            retrieval_score(row),
+            row.get("finance_ai_context_recall", 0.0),
+            row.get("finance_ai_top10_recall", 0.0),
+        ),
+        reverse=True,
+    )
+    out: list[dict[str, Any]] = []
+    for row in rows[:limit]:
+        timings = row.get("timings") or {}
+        out.append(
+            leader(
+                retrieval_row_label(row),
+                retrieval_score(row),
+                source,
+                passed=1,
+                notes=[
+                    f"finance_ai_gate={row.get('finance_ai_context_recall')}/{row.get('finance_ai_top10_recall')}",
+                    f"online_avg_sec={timings.get('online_avg_per_query_sec')}",
+                    f"fast_gate_sec<={max_online_avg_sec}",
+                ],
+            )
+        )
+    return out
+
+
 def build_report(root: Path) -> dict[str, Any]:
     bench = root / "output_data" / "model_bench"
     expanded = load_json(bench / "expanded_v1" / "expanded_summary.json")
@@ -240,6 +282,11 @@ def build_report(root: Path) -> dict[str, Any]:
         "retrieval_embeddings": {
             "top3": (
                 leaders_from_finance_retrieval(finance_retrieval, "retrieval_pipeline_matrix_finance_ai_gate_v1")
+                if finance_retrieval
+                else retrieval["ranked"][:3]
+            ),
+            "fast_top3": (
+                leaders_from_fast_finance_retrieval(finance_retrieval, "retrieval_pipeline_matrix_finance_ai_gate_v1")
                 if finance_retrieval
                 else retrieval["ranked"][:3]
             ),
@@ -358,6 +405,17 @@ def write_markdown(report: dict[str, Any], path: Path) -> None:
                 f"| {i} | `{row.get('model', row.get('model', ''))}` | {row.get('score_pct', row.get('mrr', ''))} | {row.get('source', '')} | {notes} |"
             )
         lines.append("")
+        if data.get("fast_top3"):
+            lines.append("Fast CPU shortlist:")
+            lines.append("")
+            lines.append("| Rank | Model | Score | Source | Notes |")
+            lines.append("|---:|---|---:|---|---|")
+            for i, row in enumerate(data["fast_top3"], 1):
+                notes = "; ".join(row.get("notes", []))
+                lines.append(
+                    f"| {i} | `{row.get('model', '')}` | {row.get('score_pct', '')} | {row.get('source', '')} | {notes} |"
+                )
+            lines.append("")
     lines.append("## Remaining Gaps")
     lines.append("")
     for gap in report["remaining_gaps"]:
