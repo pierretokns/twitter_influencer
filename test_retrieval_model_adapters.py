@@ -2,6 +2,7 @@
 """Regression checks for retrieval benchmark model-family adapters."""
 
 from tools.retrieval_model_adapters import adapter_for_model, format_texts_for_model
+from tools.retrieval_pipeline_matrix_bench import E2RANK_LISTWISE_RERANKER, build_e2rank_listwise_prompt
 
 
 def test_qwen_query_prompt_metadata() -> None:
@@ -44,6 +45,29 @@ def test_e2rank_instruction_and_eos() -> None:
     assert formatted.endswith("<|endoftext|>")
 
 
+def test_e2rank_listwise_prompt_shape() -> None:
+    class FakeTokenizer:
+        def apply_chat_template(self, messages, tokenize, add_generation_prompt, enable_thinking=False):
+            assert tokenize is False
+            assert add_generation_prompt is True
+            assert enable_thinking is False
+            return messages[0]["content"] + "\n<assistant>"
+
+    prompt = build_e2rank_listwise_prompt(
+        FakeTokenizer(),
+        "finance AI workflows",
+        [
+            {"id": "1", "type": "web", "source": "source", "title": "J.P. Morgan AI controls", "text": "model risk", "url": "https://example.com/1"},
+            {"id": "2", "type": "web", "source": "source", "title": "Visa fraud AI", "text": "payments", "url": "https://example.com/2"},
+        ],
+        num_input_docs=2,
+    )
+    assert E2RANK_LISTWISE_RERANKER == "e2rank-listwise"
+    assert "Documents:\n[1]" in prompt
+    assert "Search Query:finance AI workflows" in prompt
+    assert prompt.count("<|endoftext|>") == 2
+
+
 def test_non_single_vector_models_are_rejected_from_current_matrix() -> None:
     colbert = adapter_for_model("LiquidAI/LFM2-ColBERT-350M")
     assert colbert.kind == "late_interaction"
@@ -59,5 +83,6 @@ if __name__ == "__main__":
     test_jina_task_metadata()
     test_nomic_task_prefixes()
     test_e2rank_instruction_and_eos()
+    test_e2rank_listwise_prompt_shape()
     test_non_single_vector_models_are_rejected_from_current_matrix()
     print("retrieval model adapter tests passed")

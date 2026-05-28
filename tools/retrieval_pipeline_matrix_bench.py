@@ -36,7 +36,10 @@ DEFAULT_RERANKERS = [
     "Alibaba-NLP/gte-reranker-modernbert-base",
     "mixedbread-ai/mxbai-rerank-base-v2",
     "Qwen/Qwen3-Reranker-0.6B",
+    "e2rank-listwise",
 ]
+
+E2RANK_LISTWISE_RERANKER = "e2rank-listwise"
 
 
 PRODUCTION_RERANKERS = {
@@ -244,6 +247,58 @@ def encode_with_sentence_transformer(
     return np.asarray(emb, dtype=np.float32)
 
 
+def last_token_pool(last_hidden_states: Any, attention_mask: Any) -> Any:
+    left_padding = bool((attention_mask[:, -1].sum() == attention_mask.shape[0]).item())
+    if left_padding:
+        return last_hidden_states[:, -1]
+    sequence_lengths = attention_mask.sum(dim=1) - 1
+    batch_size = last_hidden_states.shape[0]
+    return last_hidden_states[
+        __import__("torch").arange(batch_size, device=last_hidden_states.device),
+        sequence_lengths,
+    ]
+
+
+def load_e2rank_model(model_name: str) -> tuple[Any, Any]:
+    hf_env()
+    from transformers import AutoModel, AutoTokenizer
+
+    tokenizer = AutoTokenizer.from_pretrained(model_name, padding_side="left", trust_remote_code=True)
+    model = AutoModel.from_pretrained(model_name, trust_remote_code=True)
+    model.eval()
+    return tokenizer, model
+
+
+def encode_with_e2rank_transformers(
+    tokenizer: Any,
+    model: Any,
+    texts: list[str],
+    batch_size: int,
+    model_max_length: int | None,
+) -> np.ndarray:
+    import torch
+    import torch.nn.functional as F
+
+    max_length = model_max_length or 8192
+    chunks: list[np.ndarray] = []
+    for start in range(0, len(texts), batch_size):
+        batch = texts[start : start + batch_size]
+        batch_dict = tokenizer(
+            batch,
+            padding=True,
+            truncation=True,
+            max_length=max_length,
+            return_tensors="pt",
+        )
+        batch_dict = {key: value.to(model.device) for key, value in batch_dict.items()}
+        with torch.no_grad():
+            outputs = model(**batch_dict)
+            embeddings = last_token_pool(outputs.last_hidden_state, batch_dict["attention_mask"])
+            embeddings = F.normalize(embeddings, p=2, dim=1)
+        chunks.append(embeddings.detach().cpu().numpy().astype(np.float32))
+    return np.vstack(chunks)
+
+
 def prompt_for_embedder(model_name: str, is_query: bool) -> str | None:
     adapter = adapter_for_model(model_name)
     return adapter.query_prompt_name if is_query else adapter.document_prompt_name
@@ -309,6 +364,33 @@ def rerank_docs(model: Any, query: str, docs: list[dict[str, Any]], batch_size: 
     scores = model.predict(pairs, batch_size=batch_size, show_progress_bar=False)
     ranked = sorted(zip(docs, scores), key=lambda item: float(item[1]), reverse=True)
     return [{**doc, "rerank_score": round(float(score), 5)} for doc, score in ranked]
+
+
+def build_e2rank_listwise_prompt(tokenizer: Any, query: str, docs: list[dict[str, Any]], num_input_docs: int) -> str:
+    task = "Given a web search query and some relevant documents, rerank the documents that answer the query:"
+    input_docs = "\n".join(
+        f"[{index}] {doc_blob(doc)[:2400]}<|endoftext|>"
+        for index, doc in enumerate(docs[:num_input_docs], start=1)
+    )
+    messages = [
+        {
+            "role": "user",
+            "content": f"{task}\nDocuments:\n{input_docs}Search Query:{query}",
+        }
+    ]
+    try:
+        return tokenizer.apply_chat_template(
+            messages,
+            tokenize=False,
+            add_generation_prompt=True,
+            enable_thinking=False,
+        )
+    except TypeError:
+        return tokenizer.apply_chat_template(
+            messages,
+            tokenize=False,
+            add_generation_prompt=True,
+        )
 
 
 def score_ranked(case: RetrievalCase, ranked: list[dict[str, Any]], context_k: int) -> dict[str, Any]:
@@ -408,6 +490,8 @@ def evaluate_pipeline(
             doc_texts = format_texts_for_model(embedder_name, [doc_blob(doc) for doc in docs], is_query=False)
             query_texts = format_texts_for_model(embedder_name, [case.query for case in CASES], is_query=True)
             task = adapter.task
+            e2rank_tokenizer = None
+            e2rank_model = None
             cache_path = (
                 embedding_cache_path(
                     embedding_cache_dir,
@@ -428,27 +512,49 @@ def evaluate_pipeline(
             else:
                 timings["embedding_cache_hit"] = 0.0
                 load_started = time.time()
-                model = load_sentence_transformer(embedder_name, model_max_length)
+                if adapter.family == "e2rank":
+                    e2rank_tokenizer, e2rank_model = load_e2rank_model(embedder_name)
+                    model = e2rank_model
+                else:
+                    model = load_sentence_transformer(embedder_name, model_max_length)
                 timings["offline_model_load_sec"] = round(time.time() - load_started, 3)
                 doc_started = time.time()
-                doc_emb = encode_with_sentence_transformer(
-                    model,
-                    doc_texts,
-                    batch_size,
-                    truncate_dim,
-                    task=task,
-                    prompt_name=prompt_for_embedder(embedder_name, is_query=False),
-                )
+                if adapter.family == "e2rank":
+                    doc_emb = encode_with_e2rank_transformers(
+                        e2rank_tokenizer,
+                        e2rank_model,
+                        doc_texts,
+                        batch_size,
+                        model_max_length,
+                    )
+                else:
+                    doc_emb = encode_with_sentence_transformer(
+                        model,
+                        doc_texts,
+                        batch_size,
+                        truncate_dim,
+                        task=task,
+                        prompt_name=prompt_for_embedder(embedder_name, is_query=False),
+                    )
                 timings["offline_doc_encode_sec"] = round(time.time() - doc_started, 3)
                 query_started = time.time()
-                query_emb = encode_with_sentence_transformer(
-                    model,
-                    query_texts,
-                    batch_size,
-                    truncate_dim,
-                    task=task,
-                    prompt_name=prompt_for_embedder(embedder_name, is_query=True),
-                )
+                if adapter.family == "e2rank":
+                    query_emb = encode_with_e2rank_transformers(
+                        e2rank_tokenizer,
+                        e2rank_model,
+                        query_texts,
+                        batch_size,
+                        model_max_length,
+                    )
+                else:
+                    query_emb = encode_with_sentence_transformer(
+                        model,
+                        query_texts,
+                        batch_size,
+                        truncate_dim,
+                        task=task,
+                        prompt_name=prompt_for_embedder(embedder_name, is_query=True),
+                    )
                 timings["online_query_encode_sec"] = round(time.time() - query_started, 3)
                 if cache_path is not None:
                     cache_started = time.time()
@@ -457,14 +563,37 @@ def evaluate_pipeline(
             search_started = time.time()
             scores = query_emb @ doc_emb.T
             timings["online_vector_score_sec"] = round(time.time() - search_started, 3)
-            reranker = None if reranker_name == "none" else load_reranker(reranker_name)
+            if reranker_name == E2RANK_LISTWISE_RERANKER and adapter.family != "e2rank":
+                raise ValueError("e2rank-listwise reranker requires an Alibaba-NLP/E2Rank-* embedder")
+            reranker = None if reranker_name in {"none", E2RANK_LISTWISE_RERANKER} else load_reranker(reranker_name)
             rerank_total = 0.0
             for i, case in enumerate(CASES):
                 rank_started = time.time()
                 top_idx = list(np.argsort(-scores[i]))[:max_sources]
                 ranked = [{**docs[j], "score": round(float(scores[i, j]), 5)} for j in top_idx]
                 timings["online_vector_rank_sec"] = round(timings.get("online_vector_rank_sec", 0.0) + (time.time() - rank_started), 3)
-                if reranker is not None:
+                if reranker_name == E2RANK_LISTWISE_RERANKER:
+                    if e2rank_tokenizer is None or e2rank_model is None:
+                        load_started = time.time()
+                        e2rank_tokenizer, e2rank_model = load_e2rank_model(embedder_name)
+                        timings["online_e2rank_model_load_sec"] = round(time.time() - load_started, 3)
+                    rerank_started = time.time()
+                    pseudo_query = build_e2rank_listwise_prompt(e2rank_tokenizer, case.query, ranked, max_sources)
+                    pseudo_emb = encode_with_e2rank_transformers(
+                        e2rank_tokenizer,
+                        e2rank_model,
+                        [pseudo_query],
+                        1,
+                        model_max_length,
+                    )[0]
+                    doc_indices = np.asarray(top_idx)
+                    e2_scores = doc_emb[doc_indices] @ pseudo_emb.T
+                    ranked = [
+                        {**doc, "rerank_score": round(float(score), 5)}
+                        for doc, score in sorted(zip(ranked, e2_scores), key=lambda item: float(item[1]), reverse=True)
+                    ]
+                    rerank_total += time.time() - rerank_started
+                elif reranker is not None:
                     rerank_started = time.time()
                     ranked = rerank_docs(reranker, case.query, ranked, batch_size)
                     rerank_total += time.time() - rerank_started
@@ -675,6 +804,8 @@ def main() -> int:
         for embedder in args.embedders:
             for reranker in args.rerankers:
                 if embedder == "production_bge_m3_hybrid" and reranker not in PRODUCTION_RERANKERS:
+                    continue
+                if reranker == E2RANK_LISTWISE_RERANKER and adapter_for_model(embedder).family != "e2rank":
                     continue
                 if args.resume and (embedder, reranker) in completed:
                     print(f"SKIP existing embedder={embedder} reranker={reranker}", flush=True)
