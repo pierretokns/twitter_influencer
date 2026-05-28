@@ -30,9 +30,19 @@ DEFAULT_EMBEDDERS = [
 DEFAULT_RERANKERS = [
     "none",
     "BAAI/bge-reranker-v2-m3",
+    "Alibaba-NLP/gte-reranker-modernbert-base",
     "mixedbread-ai/mxbai-rerank-base-v2",
     "Qwen/Qwen3-Reranker-0.6B",
 ]
+
+
+PRODUCTION_RERANKERS = {
+    "none",
+    "BAAI/bge-reranker-v2-m3",
+    "Alibaba-NLP/gte-reranker-modernbert-base",
+    "mixedbread-ai/mxbai-rerank-base-v2",
+    "Qwen/Qwen3-Reranker-0.6B",
+}
 
 
 @dataclass(frozen=True)
@@ -591,7 +601,7 @@ def main() -> int:
     with results_path.open(mode, encoding="utf-8") as out:
         for embedder in args.embedders:
             for reranker in args.rerankers:
-                if embedder == "production_bge_m3_hybrid" and reranker not in {"none", "BAAI/bge-reranker-v2-m3", "mixedbread-ai/mxbai-rerank-base-v2", "Qwen/Qwen3-Reranker-0.6B"}:
+                if embedder == "production_bge_m3_hybrid" and reranker not in PRODUCTION_RERANKERS:
                     continue
                 if args.resume and (embedder, reranker) in completed:
                     print(f"SKIP existing embedder={embedder} reranker={reranker}", flush=True)
