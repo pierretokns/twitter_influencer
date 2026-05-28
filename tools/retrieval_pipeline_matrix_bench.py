@@ -497,6 +497,8 @@ def evaluate_pipeline(
             "timings": timings,
             "cases": rows,
         }
+    except (BrokenPipeError, KeyboardInterrupt):
+        raise
     except Exception as exc:
         return {
             "embedder": embedder_name,
