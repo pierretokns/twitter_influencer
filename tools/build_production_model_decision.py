@@ -440,6 +440,27 @@ def model_slice_scoreboard_summary() -> dict[str, Any] | None:
     }
 
 
+def constellation_retrieval_summary() -> dict[str, Any] | None:
+    path = "output_data/model_bench/constellation/model_constellation_report.json"
+    data = load_json_if_exists(path)
+    if not data:
+        return None
+    retrieval = data.get("slices", {}).get("retrieval_embeddings", {})
+    deployment = data.get("deployment", {})
+    return {
+        "artifact": path,
+        "quality_top3": retrieval.get("top3", []),
+        "fast_top3": retrieval.get("fast_top3", []),
+        "overall_top3": retrieval.get("overall_top3", []),
+        "counted_out_or_deprioritized": retrieval.get("counted_out_or_deprioritized", []),
+        "recommendation": retrieval.get("recommendation"),
+        "fine_tune": retrieval.get("fine_tune"),
+        "current_retriever": deployment.get("retriever"),
+        "candidate_retriever_for_next_reindex": deployment.get("candidate_retriever_for_next_reindex"),
+        "fallback_retriever": deployment.get("fallback_retriever"),
+    }
+
+
 def build_report() -> dict[str, Any]:
     expanded_generation_path = (
         "output_data/gold_eval/production_expanded_v2_generation_top3_compact/"
@@ -478,6 +499,7 @@ def build_report() -> dict[str, Any]:
     regression_gate = regression_gate_summary()
     coverage_audit = benchmark_coverage_summary()
     slice_scoreboard = model_slice_scoreboard_summary()
+    constellation_retrieval = constellation_retrieval_summary()
 
     return {
         "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
@@ -497,6 +519,7 @@ def build_report() -> dict[str, Any]:
             "model_regression_gate": regression_gate["artifact"] if regression_gate else None,
             "benchmark_coverage_audit": coverage_audit["artifact"] if coverage_audit else None,
             "model_slice_scoreboard": slice_scoreboard["artifact"] if slice_scoreboard else None,
+            "model_constellation_report": constellation_retrieval["artifact"] if constellation_retrieval else None,
             "service_shaped_rag_generation": (
                 "output_data/model_bench/rag_webchat_reranked_top3_numeric_citations_rescored/"
                 "rag_webchat_summary.json"
@@ -513,12 +536,13 @@ def build_report() -> dict[str, Any]:
         "model_slice_scoreboard": slice_scoreboard,
         "workflow_decisions": {
             "retrieval": {
-                "decision": "base retrieval system mostly sufficient after candidate widening, BGE reranking, and top-3 context compression; structured-output retrieval still needs better evidence selection",
-                "recommended_setting": "retrieve 15 sources, rerank with BAAI/bge-reranker-v2-m3, then compress to top 3 for local generation",
+                "decision": "base retrieval system is sufficient for first deployment, but the latest finance-AI matrix splits quality-first from CPU-fast choices; keep BGE-M3 wired until reindexing, then test Granite 97M or EmbeddingGemma as the fast production retriever",
+                "recommended_setting": "current service: BGE-M3 hybrid retrieval plus BGE reranking for background quality paths; next reindex candidate: Granite 97M no-reranker for fast finance-AI retrieval, with EmbeddingGemma as backup",
                 "k10": retrieval_k10,
                 "k15": retrieval_k15,
                 "expanded_v1": expanded_retrieval,
                 "service_shaped_rag_retrieval": service_rag.get("retrieval") if service_rag else None,
+                "constellation": constellation_retrieval,
                 "fine_tune_needed": False,
             },
             "rag_generation_and_webchat": {
@@ -563,6 +587,16 @@ def build_report() -> dict[str, Any]:
             "simple_gate_candidate": "lmstudio-community/functiongemma-270m-it-GGUF:functiongemma-270m-it-F16.gguf",
             "avoid_for_webchat_until_fixed": "unsloth/gemma-4-E2B-it-GGUF:gemma-4-E2B-it-UD-IQ2_M.gguf",
             "retriever": "BAAI/bge-m3",
+            "candidate_retriever_for_next_reindex": (
+                constellation_retrieval.get("candidate_retriever_for_next_reindex")
+                if constellation_retrieval
+                else "ibm-granite/granite-embedding-97m-multilingual-r2"
+            ),
+            "fast_retriever_backup": (
+                "google/embeddinggemma-300m"
+                if constellation_retrieval
+                else "not yet captured as artifact"
+            ),
             "reranker": "BAAI/bge-reranker-v2-m3",
             "chat_backend": "CHAT_BACKEND=llama_cpp",
             "chat_llama_cli": "CHAT_LLAMA_CLI=~/opt/llama.cpp/llama-cli",
@@ -668,6 +702,23 @@ def write_markdown(report: dict[str, Any], path: Path) -> None:
         lines.append(f"- Fine-tune needed: `{decision['fine_tune_needed']}`")
         if "recommended_setting" in decision:
             lines.append(f"- Setting: {decision['recommended_setting']}")
+        if decision.get("constellation"):
+            constellation = decision["constellation"]
+            lines.append(f"- Latest constellation artifact: `{constellation['artifact']}`")
+            if constellation.get("quality_top3"):
+                lines.append("- Quality-first retrieval top models:")
+                for row in constellation["quality_top3"][:3]:
+                    notes = "; ".join(row.get("notes", []))
+                    lines.append(f"  - `{row['label']}`: score `{row['score_pct']}` ({notes})")
+            if constellation.get("fast_top3"):
+                lines.append("- Fast CPU retrieval shortlist:")
+                for row in constellation["fast_top3"][:3]:
+                    notes = "; ".join(row.get("notes", []))
+                    lines.append(f"  - `{row['label']}`: score `{row['score_pct']}` ({notes})")
+            if constellation.get("counted_out_or_deprioritized"):
+                lines.append("- Counted out/deprioritized retrieval paths:")
+                for item in constellation["counted_out_or_deprioritized"]:
+                    lines.append(f"  - {item}")
         if "primary" in decision:
             lines.append(f"- Primary: `{decision['primary']}`")
         if "backup" in decision:
