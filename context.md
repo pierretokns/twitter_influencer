@@ -1916,6 +1916,17 @@ State-of-AI research note:
   - `perplexity-ai/pplx-embed-context-v1-0.6b`: ran successfully, avg context/top-10 0.149/0.276, online 0.186s/query, offline doc encode 224.0s, failed pass threshold and failed finance-AI gate at 0.091/0.091.
   - MiniLM baseline in the same small run: avg context/top-10 0.190/0.354, online 0.007s/query, failed finance-AI gate at 0.045/0.091.
   - Decision: PPLX 0.6B is provisionally counted out as a top Brandon finance-AI retrieval candidate on this local CPU/SentenceTransformers path. It is not a global model-quality count-out; revisit only if testing TEI/ONNX, 4B, or true contextualized multi-chunk document inputs.
+- Retrieval matrix embedding cache:
+  - `tools/retrieval_pipeline_matrix_bench.py` now stores reusable non-production doc/query embeddings under `OUT_DIR/embedding_cache` by default. The cache key includes model name, adapter metadata, formatted document/query text fingerprints, `model_max_length`, `truncate_dim`, and normalized-embedding mode.
+  - VM smoke `retrieval_cache_smoke` verified cache behavior: first MiniLM row saved embeddings, second identical row loaded from disk with `embedding_cache_hit: 1.0` and `embedding_cache_load_sec: 0.005`.
+  - Interrupted rows now re-raise `BrokenPipeError`/`KeyboardInterrupt` instead of recording fake model failures. Generated `BrokenPipeError` rows from forced stops were removed from `retrieval_pipeline_matrix_finance_ai_gate_v1`.
+- Finance-AI retrieval matrix update (`retrieval_pipeline_matrix_finance_ai_gate_v1`, 1,200 docs, 1,200 chars, max length 512):
+  - Current clean matrix has 14 completed rows. Qwen full-gate row was stopped because the doc encode projected roughly 30 minutes, and the prompt-corrected Qwen smoke already failed finance/governance; rerun explicitly only if Qwen remains strategically important.
+  - Overall leader by average context/top-10 is `ibm-granite/granite-embedding-97m-multilingual-r2` + `Alibaba-NLP/gte-reranker-modernbert-base`: 0.490/0.618, cache hit, online 5.729s/query.
+  - Best fast finance-AI gate pass without reranker is `ibm-granite/granite-embedding-97m-multilingual-r2`: finance-AI gate 0.382/0.673, avg 0.433/0.641, online 0.018s/query after a one-time 76.1s doc encode.
+  - `google/embeddinggemma-300m` without reranker is also strong: finance-AI gate 0.341/0.673, avg 0.475/0.637, online 0.059s/query after a one-time 309.7s doc encode.
+  - `ibm-granite/granite-embedding-small-english-r2` is viable but just misses finance-AI gate without reranker: 0.291/0.673, avg 0.451/0.626, online 0.019s/query after a one-time 99.2s doc encode.
+  - Practical retrieval shortlist from this run: Granite 97M no reranker for fast Brandon finance-AI retrieval, EmbeddingGemma no reranker for quality/latency balance, production BGE-M3 hybrid + ModernBERT for production-shaped citation/chat validation, and Granite 97M + ModernBERT for slower background synthesis quality.
 
 ### Gemini/Hosted Chat Retrieval Audit - 2026-05-28
 
