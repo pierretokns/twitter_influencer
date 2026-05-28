@@ -8,6 +8,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+from agents.chat_agent import ChatAgent, Source
 from production_gold_bench import load_cases, score_answer, summarize
 
 
@@ -26,6 +27,7 @@ def main() -> int:
     parser.add_argument("--gold", required=True)
     parser.add_argument("--results", required=True)
     parser.add_argument("--out-dir", required=True)
+    parser.add_argument("--apply-chat-guardrails", action="store_true")
     args = parser.parse_args()
 
     gold_path = Path(args.gold).expanduser().resolve()
@@ -34,6 +36,7 @@ def main() -> int:
     out_dir.mkdir(parents=True, exist_ok=True)
 
     cases = {case["case_id"]: case for case in load_cases(gold_path)}
+    guardrail_agent = object.__new__(ChatAgent) if args.apply_chat_guardrails else None
     rescored = []
     for row in load_jsonl(results_path):
         case = cases.get(row.get("case_id"))
@@ -41,9 +44,29 @@ def main() -> int:
             rescored.append(row)
             continue
         updated = dict(row)
+        answer = row.get("answer", "")
+        if guardrail_agent is not None:
+            sources = [
+                Source(
+                    id=str(source.get("source_uid", index + 1)),
+                    type=str(source.get("source_type", source.get("type", "source"))),
+                    author=source.get("author"),
+                    title=source.get("title"),
+                    text=source.get("text", ""),
+                    url=source.get("url", ""),
+                    published_at=source.get("published_at"),
+                )
+                for index, source in enumerate(case.get("provided_sources", [])[: row.get("source_limit") or None])
+            ]
+            answer = guardrail_agent._postprocess_generated_answer(case.get("query", ""), answer, sources)
+            updated["answer"] = answer
+            updated["postprocess"] = {
+                "chat_guardrails_applied": True,
+                "source_count": len(sources),
+            }
         score = score_answer(
             case,
-            row.get("answer", ""),
+            answer,
             row.get("source_limit"),
             row.get("source_char_limit"),
         )
@@ -60,6 +83,7 @@ def main() -> int:
     summary = {
         "gold_path": str(gold_path),
         "source_results_path": str(results_path),
+        "chat_guardrails_applied": bool(args.apply_chat_guardrails),
         "rows": len(rescored),
         **summarize(rescored),
         "outputs": {"results": str(out_results), "summary": str(out_summary)},

@@ -163,6 +163,34 @@ def test_snippet_extraction():
     return passed == len(test_cases)
 
 
+def test_chat_postprocess_guardrails():
+    """Test deterministic local-answer guardrails."""
+    print("\n[Test 4] Chat Postprocess Guardrails\n")
+
+    agent = object.__new__(ChatAgent)
+    sources = [
+        Source(id="1", type="web", text="Source one"),
+        Source(id="2", type="web", text="Source two"),
+        Source(id="3", type="web", text="Source three"),
+    ]
+
+    citation_answer = "Good claim [1]. Bad claim [4]. Another [2][99]."
+    cleaned = agent._postprocess_generated_answer("summarize", citation_answer, sources)
+    citation_ok = "[1]" in cleaned and "[2]" in cleaned and "[4]" not in cleaned and "[99]" not in cleaned
+    print(f"  Invalid citation stripping [{ 'PASS' if citation_ok else 'FAIL' }]: {cleaned}")
+
+    hallucinated = "Balyasny signed a private NVIDIA contract for $1 million over 12 months."
+    guarded = agent._postprocess_generated_answer(
+        "What private NVIDIA contract price and term length did Balyasny sign?",
+        hallucinated,
+        sources,
+    )
+    refusal_ok = "do not support" in guarded.lower() or "cannot determine" in guarded.lower()
+    print(f"  Unsupported private-detail guard [{ 'PASS' if refusal_ok else 'FAIL' }]: {guarded}")
+
+    return citation_ok and refusal_ok
+
+
 def test_keyword_search_db():
     """Test keyword search against the actual database."""
     print("\n[Test 4] Database Keyword Search\n")
@@ -474,6 +502,7 @@ def run_all_tests():
     results.append(("wordninja segmentation", test_wordninja_segmentation()))
     results.append(("split_camel_or_concat", test_split_camel_or_concat()))
     results.append(("snippet extraction", test_snippet_extraction()))
+    results.append(("chat postprocess guardrails", test_chat_postprocess_guardrails()))
     results.append(("database keyword search", test_keyword_search_db()))
     results.append(("multi-keyword AND logic", test_multi_keyword_search()))
     results.append(("OTEL spans", test_otel_spans_exist()))

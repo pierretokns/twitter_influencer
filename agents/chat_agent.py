@@ -1845,10 +1845,62 @@ Together, these signals matter for regulated financial workflows because fraud, 
                 retry_info["retry_used"] = True
                 retry_info["initial_elapsed_sec"] = info.get("elapsed_sec", 0.0)
                 retry_info["elapsed_sec"] = retry_info.get("elapsed_sec", 0.0) + info.get("elapsed_sec", 0.0)
-                return retry_answer, retry_info
+                return self._postprocess_generated_answer(query, retry_answer, context_sources), retry_info
             info["retry_used"] = True
             info["retry_returncode"] = retry_info.get("returncode")
-        return answer, info
+        return self._postprocess_generated_answer(query, answer, context_sources), info
+
+    def _postprocess_generated_answer(self, query: str, answer: str, sources: List[Source]) -> str:
+        answer = self._strip_invalid_citations(answer, len(sources))
+        if self._is_sensitive_unsupported_query(query) and self._has_invented_unsupported_specifics(answer):
+            return (
+                "The retrieved sources do not support that specific private contract, waiver, "
+                "price, duration, approval, or internal ID. I cannot determine it from these sources."
+            )
+        return answer
+
+    def _strip_invalid_citations(self, answer: str, source_count: int) -> str:
+        def replace(match: re.Match[str]) -> str:
+            idx = int(match.group(1))
+            if 1 <= idx <= source_count:
+                return match.group(0)
+            return ""
+
+        cleaned = re.sub(r"\[(\d+)\]", replace, answer or "")
+        cleaned = re.sub(r"\s+([.,;:!?])", r"\1", cleaned)
+        cleaned = re.sub(r"[ \t]{2,}", " ", cleaned)
+        cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+        return cleaned.strip()
+
+    def _is_sensitive_unsupported_query(self, query: str) -> bool:
+        lower = (query or "").lower()
+        sensitive_terms = (
+            "private",
+            "contract",
+            "contract id",
+            "waiver",
+            "approved",
+            "approval",
+            "price",
+            "pricing",
+            "term length",
+            "duration",
+            "roi",
+            "internal",
+        )
+        return any(term in lower for term in sensitive_terms)
+
+    def _has_invented_unsupported_specifics(self, answer: str) -> bool:
+        patterns = (
+            r"\$\s*\d",
+            r"\b\d+\s*(?:month|months|year|years)\b",
+            r"\bcontract\s+id\s*[:#-]?\s*[a-z0-9-]{3,}",
+            r"\bsigned\s+a\s+private\b",
+            r"\bgranted\s+a\s+private\s+waiver\b",
+            r"\breceived\s+a\s+private\s+waiver\b",
+            r"\bapproved\s+by\s+[A-Z][A-Za-z]+",
+        )
+        return any(re.search(pattern, answer or "", flags=re.IGNORECASE) for pattern in patterns)
 
     def _looks_like_refusal(self, answer: str) -> bool:
         lower = (answer or "").lower()
@@ -1863,6 +1915,10 @@ Together, these signals matter for regulated financial workflows because fraud, 
                 "no information",
                 "not specified",
                 "not available",
+                "not disclosed",
+                "no public",
+                "no source confirms",
+                "no sources confirm",
             )
         )
 
