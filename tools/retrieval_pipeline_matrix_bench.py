@@ -280,10 +280,7 @@ def score_ranked(case: RetrievalCase, ranked: list[dict[str, Any]], context_k: i
     }
 
 
-def production_retrieve(db_path: Path, case: RetrievalCase, max_sources: int, context_k: int, reranker: str) -> list[dict[str, Any]]:
-    from agents.chat_agent import ChatAgent
-
-    agent = ChatAgent(db_path=str(db_path))
+def production_retrieve_with_agent(agent: Any, case: RetrievalCase, max_sources: int, context_k: int, reranker: str) -> list[dict[str, Any]]:
     options = {
         "max_sources": max_sources,
         "context_max_sources": context_k,
@@ -312,6 +309,13 @@ def production_retrieve(db_path: Path, case: RetrievalCase, max_sources: int, co
     ]
 
 
+def production_retrieve(db_path: Path, case: RetrievalCase, max_sources: int, context_k: int, reranker: str) -> list[dict[str, Any]]:
+    from agents.chat_agent import ChatAgent
+
+    agent = ChatAgent(db_path=str(db_path))
+    return production_retrieve_with_agent(agent, case, max_sources, context_k, reranker)
+
+
 def evaluate_pipeline(
     db_path: Path,
     docs: list[dict[str, Any]],
@@ -328,14 +332,22 @@ def evaluate_pipeline(
     try:
         timings: dict[str, float] = {}
         if embedder_name == "production_bge_m3_hybrid":
-            retrieve_total = 0.0
+            from agents.chat_agent import ChatAgent
+
+            agent = ChatAgent(db_path=str(db_path))
+            retrieve_times: list[float] = []
             for case in CASES:
                 retrieve_started = time.time()
-                ranked = production_retrieve(db_path, case, max_sources, context_k, reranker_name)
-                retrieve_total += time.time() - retrieve_started
+                ranked = production_retrieve_with_agent(agent, case, max_sources, context_k, reranker_name)
+                retrieve_times.append(time.time() - retrieve_started)
                 rows.append(score_ranked(case, ranked, context_k))
+            retrieve_total = sum(retrieve_times)
             timings["online_retrieve_total_sec"] = round(retrieve_total, 3)
             timings["online_retrieve_avg_sec"] = round(retrieve_total / len(CASES), 3)
+            timings["online_retrieve_first_sec"] = round(retrieve_times[0], 3)
+            warm_times = retrieve_times[1:] or retrieve_times
+            timings["online_retrieve_warm_avg_sec"] = round(sum(warm_times) / len(warm_times), 3)
+            timings["online_retrieve_warm_p95_sec"] = round(float(np.percentile(warm_times, 95)), 3)
         else:
             doc_texts = format_texts_for_embedder(embedder_name, [doc_blob(doc) for doc in docs], is_query=False)
             query_texts = format_texts_for_embedder(embedder_name, [case.query for case in CASES], is_query=True)
