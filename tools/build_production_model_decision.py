@@ -107,6 +107,16 @@ def strict_generation_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def generation_summary_from_results(path: str) -> dict[str, Any] | None:
+    rows = load_jsonl_if_exists(path)
+    if not rows:
+        return None
+    summary = strict_generation_summary(rows)
+    summary["artifact"] = path
+    summary["rows"] = len(rows)
+    return summary
+
+
 def retrieval_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
     retrieval_rows = [row for row in rows if row.get("case_type") == "retrieval"]
     return {
@@ -466,11 +476,16 @@ def build_report() -> dict[str, Any]:
         "output_data/gold_eval/production_expanded_v2_generation_top3_compact/"
         "production_gold_results.jsonl"
     )
+    enhanced_generation_path = (
+        "output_data/gold_eval/production_expanded_v2_generation_top3_compact_v2/"
+        "production_gold_results.jsonl"
+    )
     seed_generation_path = (
         "output_data/gold_eval/production_seed_v1_generation_rag_top3_singleturn_v2/"
         "production_gold_results.jsonl"
     )
     generation_rows = load_jsonl_if_exists(expanded_generation_path if (ROOT / expanded_generation_path).exists() else seed_generation_path)
+    enhanced_generation = generation_summary_from_results(enhanced_generation_path)
     retrieval_rows_k10 = load_jsonl_if_exists(
         "output_data/gold_eval/production_seed_v1_bench_parent_recall/production_gold_results.jsonl"
     )
@@ -507,6 +522,7 @@ def build_report() -> dict[str, Any]:
             "production_seed_gold": "output_data/gold_eval/production_seed_v1.jsonl",
             "production_expanded_gold": "output_data/gold_eval/production_expanded_v2.jsonl",
             "production_rag_generation": expanded_generation_path if (ROOT / expanded_generation_path).exists() else seed_generation_path,
+            "production_rag_generation_enhanced_v2": enhanced_generation_path if enhanced_generation else None,
             "production_expanded_retrieval_citation": expanded_retrieval_path if expanded_retrieval_rows else None,
             "phi_citation_retry": phi_retry["artifact"] if phi_retry else None,
             "human_review_packet": human_review["artifact"] if human_review else None,
@@ -546,16 +562,17 @@ def build_report() -> dict[str, Any]:
                 "fine_tune_needed": False,
             },
             "rag_generation_and_webchat": {
-                "decision": "base models are sufficient for expanded compact RAG with LFM2-2.6B; Phi-4-mini remains a backup but needs stricter citation prompting, while NVIDIA Nano is counted out for user-facing RAG due thinking leakage and 0/8 expanded pass",
+                "decision": "base LFM2-2.6B remains the best user-facing RAG generator, but the enhanced 24-case benchmark shows base models are not fully sufficient without validators/retries; Gemma 4 E2B is counted out for this role due thinking leakage on every enhanced case",
                 "top_models": generation["models"],
+                "enhanced_v2": enhanced_generation,
                 "phi_backup_with_retry": phi_retry,
                 "service_shaped_top_models": service_rag.get("generation", []) if service_rag else [],
                 "slice_leaders": service_rag.get("slice_leaders", {}) if service_rag else {},
                 "local_chat_backend_smoke": local_chat_smoke,
                 "primary": "LFM2-2.6B",
                 "backup": "Phi-4-mini",
-                "demote": "NVIDIA Nano is not a RAG generator after 0/8 expanded compact pass with thinking leakage; Gemma 4 E2B remains demoted for thinking leakage",
-                "fine_tune_needed": False,
+                "demote": "Gemma 4 E2B is not a user-facing RAG generator after 0/10 enhanced pass with thinking leakage on every case; NVIDIA Nano remains counted out from the earlier 0/8 expanded compact pass",
+                "fine_tune_needed": "not first; add deterministic citation-number cleanup, unsupported-source routing, and model-specific no-thinking controls before deciding on SFT",
             },
             "source_grounded_refusal": {
                 "decision": "base sufficient on seed refusal cases with LFM2-2.6B or Phi; keep deterministic insufficient-source gates",
@@ -747,6 +764,15 @@ def write_markdown(report: dict[str, Any], path: Path) -> None:
                 passed = row.get("passed_cases", row.get("strict_pass", row.get("passed")))
                 cases = row.get("cases", "")
                 lines.append(f"  - `{model}`: score `{score}`, pass `{passed}/{cases}`")
+        if decision.get("enhanced_v2"):
+            enhanced = decision["enhanced_v2"]
+            lines.append(f"- Enhanced v2 generation artifact: `{enhanced['artifact']}`")
+            for row in enhanced.get("models", [])[:4]:
+                lines.append(
+                    f"  - `{row['label']}`: strict `{row['strict_pass']}/{row['cases']}` "
+                    f"({row['strict_pass_rate'] * 100:.1f}%), raw `{row['raw_pass']}/{row['cases']}`, "
+                    f"avg `{row['avg_elapsed_sec']}` sec"
+                )
         if decision.get("heldout_structured"):
             lines.append("- Held-out structured traces:")
             for row in decision["heldout_structured"]["models"][:3]:
