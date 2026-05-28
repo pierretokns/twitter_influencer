@@ -1900,6 +1900,15 @@ State-of-AI research note:
   - No reranker: avg context/top-10 0.398/0.456, passes threshold. First cold query 17.7s, warm average 0.868s/query, warm p95 0.976s/query.
   - With `BAAI/bge-reranker-v2-m3`: avg context/top-10 0.460/0.535, passes and improves quality. Warm average 8.543s/query, warm p95 8.977s/query.
   - Decision: BGE-M3 hybrid remains the strongest production-shaped retrieval baseline, especially for finance. BGE reranking is useful for slow background synthesis or high-stakes citation checks, but too expensive to enable unconditionally in interactive chat unless `reranker_max_sources` is reduced or replaced by a faster reranker.
+- Brandon relevance gate:
+  - The benchmark now includes a second explicit `finance_ai` case for finance + AI workflow intersections, not just generic finance company/entity retrieval.
+  - Summary output now includes a `finance_ai_gate`; a retrieval model is not a Brandon top candidate unless the combined `finance` + `finance_ai` gate passes, even if its generic AI-news average is strong.
+- Fast reranker frontier component smoke (`reranker_components_fast_frontier_v1`):
+  - `Alibaba-NLP/gte-reranker-modernbert-base`: score 1.0, retrieval MRR 1.0, citation pairwise 1.0, total 9.9s. New best fast CrossEncoder-compatible reranker candidate.
+  - `BAAI/bge-reranker-v2-m3`: score 1.0, retrieval MRR 1.0, citation pairwise 1.0, total 14.1s. Still strong but slower.
+  - `mixedbread-ai/mxbai-rerank-base-v2`: score 0.413, retrieval MRR 0.326, citation pairwise 0.5. Count out for now unless model-card-specific scoring shows current CrossEncoder path is wrong.
+  - Ettin rerankers 17M/32M/150M/400M: accessible but failed in the current VM CrossEncoder stack with `Tokenizer class TokenizersBackend does not exist`; do not count out quality yet, but they need runtime/version-specific loader work before retest.
+  - `jinaai/jina-reranker-v2-base-multilingual`: accessible but missing `einops`; retest only after dependency/runtime work.
 
 ### Gemini/Hosted Chat Retrieval Audit - 2026-05-28
 

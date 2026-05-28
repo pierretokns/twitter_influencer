@@ -51,6 +51,12 @@ CASES = [
         ("j.p. morgan", "jpmorgan", "citadel", "mastercard", "visa", "balyasny", "arrowstreet", "acadian", "hedge fund", "payments"),
     ),
     RetrievalCase(
+        "finance_ai_workflows",
+        "finance_ai",
+        "Finance AI workflows for Brandon: hedge fund research triage, bank model-risk controls, payments fraud AI, compliance, Citadel, J.P. Morgan, Mastercard, Visa, Acadian, Balyasny, and Arrowstreet.",
+        ("hedge fund", "research triage", "model-risk", "controls", "payments", "fraud", "compliance", "citadel", "j.p. morgan", "mastercard", "visa"),
+    ),
+    RetrievalCase(
         "local_cpu_models",
         "local_models",
         "Local CPU model candidates, GGUF, llama.cpp, Qwen, Gemma, Phi, LiquidAI, NVIDIA, and quantized open models.",
@@ -493,6 +499,34 @@ def write_summary(
         slice_summary[slice_name] = [
             {"rank": index + 1, **row} for index, row in enumerate(slice_rows)
         ]
+    finance_gate: list[dict[str, Any]] = []
+    for row in rows:
+        cases = [case for case in row.get("cases", []) if case.get("slice") in {"finance", "finance_ai"}]
+        if not cases:
+            continue
+        avg_context = sum(case.get("context_recall", 0.0) for case in cases) / len(cases)
+        avg_top10 = sum(case.get("top10_recall", 0.0) for case in cases) / len(cases)
+        finance_gate.append(
+            {
+                "embedder": row["embedder"],
+                "reranker": row["reranker"],
+                "ok": row["ok"],
+                "passed_finance_ai_gate": row["ok"] and avg_context >= 0.30 and avg_top10 >= 0.50,
+                "finance_ai_context_recall": round(avg_context, 3),
+                "finance_ai_top10_recall": round(avg_top10, 3),
+                "elapsed_sec": row.get("elapsed_sec"),
+                "timings": row.get("timings"),
+            }
+        )
+    finance_gate.sort(
+        key=lambda row: (
+            row.get("passed_finance_ai_gate", False),
+            row.get("finance_ai_context_recall", 0.0),
+            row.get("finance_ai_top10_recall", 0.0),
+            -row.get("elapsed_sec", 1e9),
+        ),
+        reverse=True,
+    )
     summary = {
         "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "db": str(db_path),
@@ -502,6 +536,9 @@ def write_summary(
         "complete_rows": len(rows),
         "slice_count": len(slice_names),
         "slice_summary": slice_summary,
+        "finance_ai_gate": [
+            {"rank": index + 1, **row} for index, row in enumerate(finance_gate)
+        ],
         "ranked": [
             {
                 "rank": i + 1,
