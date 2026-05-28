@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import sqlite3
@@ -248,6 +249,54 @@ def prompt_for_embedder(model_name: str, is_query: bool) -> str | None:
     return adapter.query_prompt_name if is_query else adapter.document_prompt_name
 
 
+def cache_slug(model_name: str) -> str:
+    return "".join(ch if ch.isalnum() else "-" for ch in model_name).strip("-")[:80]
+
+
+def text_fingerprint(texts: list[str]) -> str:
+    digest = hashlib.sha256()
+    for text in texts:
+        encoded = text.encode("utf-8", errors="replace")
+        digest.update(len(encoded).to_bytes(8, "big"))
+        digest.update(encoded)
+    return digest.hexdigest()
+
+
+def embedding_cache_path(
+    cache_dir: Path,
+    model_name: str,
+    doc_texts: list[str],
+    query_texts: list[str],
+    model_max_length: int | None,
+    truncate_dim: int | None,
+) -> Path:
+    payload = {
+        "model": model_name,
+        "model_max_length": model_max_length,
+        "truncate_dim": truncate_dim,
+        "doc_fingerprint": text_fingerprint(doc_texts),
+        "query_fingerprint": text_fingerprint(query_texts),
+        "normalize_embeddings": True,
+        "adapter": adapter_for_model(model_name).__dict__,
+    }
+    key = hashlib.sha256(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()[:24]
+    return cache_dir / f"{cache_slug(model_name)}-{key}.npz"
+
+
+def load_cached_embeddings(cache_path: Path) -> tuple[np.ndarray, np.ndarray] | None:
+    if not cache_path.exists():
+        return None
+    data = np.load(cache_path)
+    return np.asarray(data["doc_emb"], dtype=np.float32), np.asarray(data["query_emb"], dtype=np.float32)
+
+
+def save_cached_embeddings(cache_path: Path, doc_emb: np.ndarray, query_emb: np.ndarray) -> None:
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = cache_path.with_suffix(".tmp.npz")
+    np.savez(tmp_path, doc_emb=doc_emb.astype(np.float32), query_emb=query_emb.astype(np.float32))
+    tmp_path.replace(cache_path)
+
+
 def load_reranker(model_name: str) -> Any:
     hf_env()
     from sentence_transformers import CrossEncoder
@@ -329,6 +378,7 @@ def evaluate_pipeline(
     context_k: int,
     model_max_length: int | None,
     truncate_dim: int | None,
+    embedding_cache_dir: Path | None,
 ) -> dict[str, Any]:
     started = time.time()
     rows: list[dict[str, Any]] = []
@@ -358,29 +408,52 @@ def evaluate_pipeline(
             doc_texts = format_texts_for_model(embedder_name, [doc_blob(doc) for doc in docs], is_query=False)
             query_texts = format_texts_for_model(embedder_name, [case.query for case in CASES], is_query=True)
             task = adapter.task
-            load_started = time.time()
-            model = load_sentence_transformer(embedder_name, model_max_length)
-            timings["offline_model_load_sec"] = round(time.time() - load_started, 3)
-            doc_started = time.time()
-            doc_emb = encode_with_sentence_transformer(
-                model,
-                doc_texts,
-                batch_size,
-                truncate_dim,
-                task=task,
-                prompt_name=prompt_for_embedder(embedder_name, is_query=False),
+            cache_path = (
+                embedding_cache_path(
+                    embedding_cache_dir,
+                    embedder_name,
+                    doc_texts,
+                    query_texts,
+                    model_max_length,
+                    truncate_dim,
+                )
+                if embedding_cache_dir is not None
+                else None
             )
-            timings["offline_doc_encode_sec"] = round(time.time() - doc_started, 3)
-            query_started = time.time()
-            query_emb = encode_with_sentence_transformer(
-                model,
-                query_texts,
-                batch_size,
-                truncate_dim,
-                task=task,
-                prompt_name=prompt_for_embedder(embedder_name, is_query=True),
-            )
-            timings["online_query_encode_sec"] = round(time.time() - query_started, 3)
+            cached = load_cached_embeddings(cache_path) if cache_path is not None else None
+            if cached is not None:
+                doc_emb, query_emb = cached
+                timings["embedding_cache_hit"] = 1.0
+                timings["embedding_cache_load_sec"] = round(time.time() - started, 3)
+            else:
+                timings["embedding_cache_hit"] = 0.0
+                load_started = time.time()
+                model = load_sentence_transformer(embedder_name, model_max_length)
+                timings["offline_model_load_sec"] = round(time.time() - load_started, 3)
+                doc_started = time.time()
+                doc_emb = encode_with_sentence_transformer(
+                    model,
+                    doc_texts,
+                    batch_size,
+                    truncate_dim,
+                    task=task,
+                    prompt_name=prompt_for_embedder(embedder_name, is_query=False),
+                )
+                timings["offline_doc_encode_sec"] = round(time.time() - doc_started, 3)
+                query_started = time.time()
+                query_emb = encode_with_sentence_transformer(
+                    model,
+                    query_texts,
+                    batch_size,
+                    truncate_dim,
+                    task=task,
+                    prompt_name=prompt_for_embedder(embedder_name, is_query=True),
+                )
+                timings["online_query_encode_sec"] = round(time.time() - query_started, 3)
+                if cache_path is not None:
+                    cache_started = time.time()
+                    save_cached_embeddings(cache_path, doc_emb, query_emb)
+                    timings["embedding_cache_save_sec"] = round(time.time() - cache_started, 3)
             search_started = time.time()
             scores = query_emb @ doc_emb.T
             timings["online_vector_score_sec"] = round(time.time() - search_started, 3)
@@ -571,12 +644,21 @@ def main() -> int:
     parser.add_argument("--model-max-length", type=int, default=None, help="Override SentenceTransformer max_seq_length")
     parser.add_argument("--truncate-dim", type=int, default=None, help="Use Matryoshka truncate_dim for models that support it")
     parser.add_argument("--resume", action="store_true", help="Append to existing results and skip completed embedder/reranker pairs")
+    parser.add_argument(
+        "--embedding-cache-dir",
+        default=None,
+        help="Directory for reusable non-production doc/query embeddings; defaults to OUT_DIR/embedding_cache",
+    )
+    parser.add_argument("--no-embedding-cache", action="store_true", help="Disable reusable benchmark embedding cache")
     args = parser.parse_args()
 
     db_path = (ROOT / args.db).resolve()
     out_dir = (ROOT / args.out_dir).resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
     docs = load_corpus(db_path, args.limit, args.text_chars)
+    embedding_cache_dir = None
+    if not args.no_embedding_cache:
+        embedding_cache_dir = (ROOT / args.embedding_cache_dir).resolve() if args.embedding_cache_dir else out_dir / "embedding_cache"
 
     results_path = out_dir / "retrieval_pipeline_matrix_results.jsonl"
     summary_path = out_dir / "retrieval_pipeline_matrix_summary.json"
@@ -606,6 +688,7 @@ def main() -> int:
                     args.context_k,
                     args.model_max_length,
                     args.truncate_dim,
+                    embedding_cache_dir,
                 )
                 rows.append(row)
                 out.write(json.dumps(row, ensure_ascii=False) + "\n")
