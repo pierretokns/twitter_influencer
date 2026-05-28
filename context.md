@@ -1878,6 +1878,14 @@ State-of-AI research note:
   - Check the model card/runtime notes first: query prompts/instructions, EOS requirements, max sequence length, matryoshka/truncate dimensions, batch size, tokenizer padding side, ONNX/GGUF/TEI availability, and whether the model is single-vector, multi-vector, or listwise.
   - Count out only after either the recommended CPU path is tested or the recommended path is incompatible with the 8 GB Hetzner VM.
   - ColBERT needs a separate late-interaction benchmark path with indexed token vectors or a rerank-only top-N mode; E2Rank needs a unified embed/listwise rerank path; EBCAR needs implementation work before a fair model comparison.
+- Other cutting-edge model families to keep in the retrieval tournament:
+  - Jina v5 text/omni embeddings: `jinaai/jina-embeddings-v5-text-small`, `jinaai/jina-embeddings-v5-text-small-retrieval`, and `jinaai/jina-embeddings-v5-omni-small-retrieval`. These add task-targeted distillation, Matryoshka dimensions, ONNX/TEI paths, and multimodal text/image/audio/video retrieval. License is not production-friendly without checking commercial terms.
+  - Nomic MoE embeddings: `nomic-ai/nomic-embed-text-v2-moe` and GGUF variant. This is an MoE embedding path with task prefixes and Matryoshka truncation; test because active parameters may be CPU-friendly relative to total parameters.
+  - Tiny/modern rerankers: `cross-encoder/ettin-reranker-*`, `Alibaba-NLP/gte-reranker-modernbert-base`, Qwen3 reranker GGUF, Jina reranker v3 GGUF/MLX, and NVIDIA Nemotron rerank 1B/VL. These are separate from embedding speed: online query/rerank latency is the real production gate.
+- Corrected Qwen3 embedding prompt smoke on the VM (`retrieval_pipeline_matrix_qwen_prompt_smoke_v1`, 300 docs, 800 chars, max length 512):
+  - `Qwen/Qwen3-Embedding-0.6B`: context recall 0.271, top-10 recall 0.426, elapsed 244.1s, failed current pass threshold.
+  - Per-slice weakness is severe for finance and governance in this small sample: finance context/top-10 recall 0.0/0.0, governance 0.125/0.25. YouTube is strong at 0.778/1.0.
+  - Interpretation: do not count Qwen3 embedding out globally yet because this was a small sample and index speed is less important than online retrieval speed, but it is not a current top-3 candidate for Brandon finance/governance retrieval without a better runtime or retrieval formulation.
 
 ### Gemini/Hosted Chat Retrieval Audit - 2026-05-28
 
