@@ -30,6 +30,12 @@ def load_json(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def load_json_if_exists(path: Path) -> dict[str, Any] | None:
+    if not path.exists():
+        return None
+    return load_json(path)
+
+
 def short_model(model: str) -> str:
     return MODEL_LABELS.get(model, model)
 
@@ -102,6 +108,82 @@ def append_unique(base: list[dict[str, Any]], extras: list[dict[str, Any]], limi
     return out[:limit]
 
 
+def retrieval_row_label(row: dict[str, Any]) -> str:
+    embedder = row.get("embedder") or row.get("model") or "unknown"
+    reranker = row.get("reranker")
+    if reranker and reranker != "none":
+        return f"{embedder} + {reranker}"
+    return embedder
+
+
+def retrieval_score(row: dict[str, Any]) -> float:
+    context = float(row.get("finance_ai_context_recall", row.get("avg_context_recall") or 0.0))
+    top10 = float(row.get("finance_ai_top10_recall", row.get("avg_top10_recall") or 0.0))
+    return round(100.0 * ((0.6 * context) + (0.4 * top10)), 1)
+
+
+def leaders_from_finance_retrieval(summary: dict[str, Any], source: str, limit: int = 3) -> list[dict[str, Any]]:
+    rows = [
+        row
+        for row in summary.get("finance_ai_gate", [])
+        if row.get("ok") and row.get("passed_finance_ai_gate")
+    ]
+    rows.sort(
+        key=lambda row: (
+            retrieval_score(row),
+            row.get("finance_ai_context_recall", 0.0),
+            row.get("finance_ai_top10_recall", 0.0),
+            -float((row.get("timings") or {}).get("online_avg_per_query_sec", row.get("elapsed_sec") or 1e9)),
+        ),
+        reverse=True,
+    )
+    out: list[dict[str, Any]] = []
+    for row in rows[:limit]:
+        timings = row.get("timings") or {}
+        out.append(
+            leader(
+                retrieval_row_label(row),
+                retrieval_score(row),
+                source,
+                passed=1,
+                notes=[
+                    f"finance_ai_gate={row.get('finance_ai_context_recall')}/{row.get('finance_ai_top10_recall')}",
+                    f"online_avg_sec={timings.get('online_avg_per_query_sec')}",
+                ],
+            )
+        )
+    return out
+
+
+def leaders_from_overall_retrieval(summary: dict[str, Any], source: str, limit: int = 3) -> list[dict[str, Any]]:
+    rows = [row for row in summary.get("ranked", []) if row.get("ok") and row.get("passed")]
+    rows.sort(
+        key=lambda row: (
+            row.get("avg_context_recall", 0.0),
+            row.get("avg_top10_recall", 0.0),
+            -float((row.get("timings") or {}).get("online_avg_per_query_sec", row.get("elapsed_sec") or 1e9)),
+        ),
+        reverse=True,
+    )
+    out: list[dict[str, Any]] = []
+    for row in rows[:limit]:
+        timings = row.get("timings") or {}
+        score = round(100.0 * ((0.6 * row.get("avg_context_recall", 0.0)) + (0.4 * row.get("avg_top10_recall", 0.0))), 1)
+        out.append(
+            leader(
+                retrieval_row_label(row),
+                score,
+                source,
+                passed=1,
+                notes=[
+                    f"avg={row.get('avg_context_recall')}/{row.get('avg_top10_recall')}",
+                    f"online_avg_sec={timings.get('online_avg_per_query_sec')}",
+                ],
+            )
+        )
+    return out
+
+
 def build_report(root: Path) -> dict[str, Any]:
     bench = root / "output_data" / "model_bench"
     expanded = load_json(bench / "expanded_v1" / "expanded_summary.json")
@@ -109,6 +191,10 @@ def build_report(root: Path) -> dict[str, Any]:
     rag = load_json(bench / "rag_webchat_focus_k10_rescored_citations" / "rag_webchat_summary.json")
     retrieval = load_json(bench / "retrieval_components_v1" / "retrieval_component_summary.json")
     alias_retrieval = load_json(bench / "rag_webchat_alias_retrieval_probe_v2" / "rag_webchat_summary.json")
+    finance_retrieval = load_json_if_exists(bench / "retrieval_pipeline_matrix_finance_ai_gate_v1" / "retrieval_pipeline_matrix_summary.json")
+    e2rank_retrieval = load_json_if_exists(bench / "e2rank_listwise_smoke_300" / "retrieval_pipeline_matrix_summary.json")
+    pplx_retrieval = load_json_if_exists(bench / "retrieval_pipeline_matrix_pplx_0_6b_smoke_300_v1" / "retrieval_pipeline_matrix_summary.json")
+    colbert_probe = load_json_if_exists(bench / "colbert_late_interaction_mixedbread_smoke" / "colbert_late_interaction_summary.json")
     constrained_structured_path = bench / "constrained_structured_v1" / "constrained_structured_summary.json"
     constrained_structured = load_json(constrained_structured_path)
 
@@ -152,8 +238,19 @@ def build_report(root: Path) -> dict[str, Any]:
             "fine_tune": "Do not fine-tune first. Constrained decoding solved schema validity for the top candidates; add more planning cases before training. Fine-tune only if semantic role/tool choices fail after schema constraints and retries.",
         },
         "retrieval_embeddings": {
-            "top3": retrieval["ranked"][:3],
-            "recommendation": "Keep BGE-M3 as primary retrieval model and MiniLM as fallback. EmbeddingGemma is gated in the current account; NVIDIA embedding options were blocked by dependency mismatch or OOM.",
+            "top3": (
+                leaders_from_finance_retrieval(finance_retrieval, "retrieval_pipeline_matrix_finance_ai_gate_v1")
+                if finance_retrieval
+                else retrieval["ranked"][:3]
+            ),
+            "overall_top3": leaders_from_overall_retrieval(finance_retrieval, "retrieval_pipeline_matrix_finance_ai_gate_v1") if finance_retrieval else retrieval["ranked"][:3],
+            "counted_out_or_deprioritized": [
+                "PPLX 0.6B failed the 300-doc finance-AI gate on the current SentenceTransformers path.",
+                "E2Rank-0.6B custom path works, but the 300-doc smoke missed the pass threshold and scored 0.0/0.0 on finance-AI.",
+                "ColBERT probes are not fair quality evidence yet because tested HF repos fell back to generic SentenceTransformers mean-pooling.",
+                "NVIDIA Nemotron embed 1B remains impractical on this 8GB CPU VM without an optimized runtime/swap plan.",
+            ],
+            "recommendation": "For fast Brandon finance-AI retrieval, prioritize Granite 97M no-reranker and EmbeddingGemma no-reranker. Keep production BGE-M3 hybrid for the currently wired service path until a reindex/backfill migration is implemented. Use ModernBERT reranking only for slower background synthesis or validation paths.",
             "fine_tune": "No LLM fine-tune needed for retrieval yet; source coverage and reranking are higher leverage.",
         },
     }
@@ -164,7 +261,8 @@ def build_report(root: Path) -> dict[str, Any]:
         "structured_planner_candidate": "LiquidAI/LFM2-2.6B-GGUF:LFM2-2.6B-Q4_K_M.gguf",
         "structured_planner_backup": "unsloth/Phi-4-mini-instruct-GGUF:Phi-4-mini-instruct-Q3_K_M.gguf",
         "retriever": "BAAI/bge-m3",
-        "fallback_retriever": "sentence-transformers/all-MiniLM-L6-v2",
+        "candidate_retriever_for_next_reindex": "ibm-granite/granite-embedding-97m-multilingual-r2",
+        "fallback_retriever": "google/embeddinggemma-300m or sentence-transformers/all-MiniLM-L6-v2 depending on storage/runtime constraints",
         "base_model_sufficient_for_first_deployment": True,
         "fine_tuning_needed_before_first_deployment": False,
         "fine_tuning_priority": [
@@ -197,12 +295,18 @@ def build_report(root: Path) -> dict[str, Any]:
             "rag_webchat_rescored": str(bench / "rag_webchat_focus_k10_rescored_citations" / "rag_webchat_summary.json"),
             "rag_alias_retrieval": str(bench / "rag_webchat_alias_retrieval_probe_v2" / "rag_webchat_summary.json"),
             "retrieval_components": str(bench / "retrieval_components_v1" / "retrieval_component_summary.json"),
+            "finance_ai_retrieval_matrix": str(bench / "retrieval_pipeline_matrix_finance_ai_gate_v1" / "retrieval_pipeline_matrix_summary.json") if finance_retrieval else None,
+            "pplx_retrieval_smoke": str(bench / "retrieval_pipeline_matrix_pplx_0_6b_smoke_300_v1" / "retrieval_pipeline_matrix_summary.json") if pplx_retrieval else None,
+            "e2rank_retrieval_smoke": str(bench / "e2rank_listwise_smoke_300" / "retrieval_pipeline_matrix_summary.json") if e2rank_retrieval else None,
+            "colbert_runtime_probe": str(bench / "colbert_late_interaction_mixedbread_smoke" / "colbert_late_interaction_summary.json") if colbert_probe else None,
         },
         "deployment": deployment,
         "slices": slices,
         "remaining_gaps": [
             "Acadian and payments still missing from the finance top-10 retrieval probe.",
             "Citation-webchat retrieval passes only at the minimum gate and should get richer citation/retrieval eval sources.",
+            "Production service is still wired to BGE-M3 hybrid embeddings; Granite/EmbeddingGemma retrieval leaders need a reindex/backfill path before they can replace production retrieval.",
+            "ColBERT needs a model-specific loader or official example path before quality count-out.",
             "Structured output now passes one bounded constrained-schema planning contract for LFM2-2.6B, Phi-4-mini, and Gemma 4 E2B, but needs more planning cases and a production wrapper around llama-completion raw mode.",
             "Need a final production wiring change from hosted Claude/Bedrock to local llama.cpp service if deployment migration is in scope.",
         ],
@@ -225,9 +329,11 @@ def write_markdown(report: dict[str, Any], path: Path) -> None:
         "structured_planner_candidate",
         "structured_planner_backup",
         "retriever",
+        "candidate_retriever_for_next_reindex",
         "fallback_retriever",
     ]:
-        lines.append(f"- **{key}**: `{dep[key]}`")
+        if key in dep:
+            lines.append(f"- **{key}**: `{dep[key]}`")
     lines.extend(
         [
             f"- **Base model sufficient for first deployment**: `{dep['base_model_sufficient_for_first_deployment']}`",
