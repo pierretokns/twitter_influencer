@@ -372,6 +372,38 @@ def write_summary(
         ),
         reverse=True,
     )
+    slice_names = sorted({case.slice for case in CASES})
+    slice_summary: dict[str, list[dict[str, Any]]] = {}
+    for slice_name in slice_names:
+        slice_rows = []
+        for row in rows:
+            cases = [case for case in row.get("cases", []) if case.get("slice") == slice_name]
+            if not cases:
+                continue
+            avg_context = sum(case.get("context_recall", 0.0) for case in cases) / len(cases)
+            avg_top10 = sum(case.get("top10_recall", 0.0) for case in cases) / len(cases)
+            slice_rows.append(
+                {
+                    "embedder": row["embedder"],
+                    "reranker": row["reranker"],
+                    "ok": row["ok"],
+                    "context_recall": round(avg_context, 3),
+                    "top10_recall": round(avg_top10, 3),
+                    "elapsed_sec": row.get("elapsed_sec"),
+                }
+            )
+        slice_rows.sort(
+            key=lambda row: (
+                row.get("ok", False),
+                row.get("context_recall", 0.0),
+                row.get("top10_recall", 0.0),
+                -row.get("elapsed_sec", 1e9),
+            ),
+            reverse=True,
+        )
+        slice_summary[slice_name] = [
+            {"rank": index + 1, **row} for index, row in enumerate(slice_rows)
+        ]
     summary = {
         "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "db": str(db_path),
@@ -379,6 +411,8 @@ def write_summary(
         "case_count": len(CASES),
         "results_path": str(results_path),
         "complete_rows": len(rows),
+        "slice_count": len(slice_names),
+        "slice_summary": slice_summary,
         "ranked": [
             {
                 "rank": i + 1,
