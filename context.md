@@ -138,6 +138,11 @@ Firewall update completed:
 
 - Added current VPN IP `23.234.114.196/32` for inbound TCP `49222`.
 - VPN changed on 2026-05-28; added current VPN IP `23.234.110.196/32` for inbound TCP `49222`, `5001`, and `5002`.
+- Storage cleanup on 2026-05-28 removed large non-finalist HF caches from the VM:
+  - `unsloth/Qwen3.6-35B-A3B-GGUF` (about 11 GB): quality-reference only, not a practical fine-tuning base on the 8 GB CPU VM.
+  - `unsloth/gemma-4-E4B-it-GGUF` (about 8.9 GB): no longer a per-role production leader after LFM2-2.6B, Phi-4-mini, Gemma E2B, and guarded Nemotron Nano results.
+  - Free disk improved from about 7.7 GB to about 27 GB.
+  - Kept LFM2-2.6B, Phi-4-mini, Gemma E2B, BGE-M3, MiniLM, BGE reranker, and small parser/function-calling candidates for continued benchmark/fine-tune assessment.
 
 Services stopped during model work:
 
