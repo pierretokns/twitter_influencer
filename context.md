@@ -1909,6 +1909,13 @@ State-of-AI research note:
   - `mixedbread-ai/mxbai-rerank-base-v2`: score 0.413, retrieval MRR 0.326, citation pairwise 0.5. Count out for now unless model-card-specific scoring shows current CrossEncoder path is wrong.
   - Ettin rerankers 17M/32M/150M/400M: accessible but failed in the current VM CrossEncoder stack with `Tokenizer class TokenizersBackend does not exist`; do not count out quality yet, but they need runtime/version-specific loader work before retest.
   - `jinaai/jina-reranker-v2-base-multilingual`: accessible but missing `einops`; retest only after dependency/runtime work.
+- `jq` is now installed on the Hetzner VM for direct benchmark summary inspection.
+- PPLX embedding smoke (`retrieval_pipeline_matrix_pplx_0_6b_smoke_300_v1`, 300 docs, no reranker):
+  - Perplexity model cards say no instruction prefix is needed, embeddings are mean-pooled, unnormalized, and should be compared by cosine similarity; the benchmark uses normalized cosine-compatible vectors.
+  - `perplexity-ai/pplx-embed-v1-0.6b`: ran successfully, avg context/top-10 0.259/0.383, online 0.215s/query, offline doc encode 210.9s, failed pass threshold and failed finance-AI gate at 0.091/0.091.
+  - `perplexity-ai/pplx-embed-context-v1-0.6b`: ran successfully, avg context/top-10 0.149/0.276, online 0.186s/query, offline doc encode 224.0s, failed pass threshold and failed finance-AI gate at 0.091/0.091.
+  - MiniLM baseline in the same small run: avg context/top-10 0.190/0.354, online 0.007s/query, failed finance-AI gate at 0.045/0.091.
+  - Decision: PPLX 0.6B is provisionally counted out as a top Brandon finance-AI retrieval candidate on this local CPU/SentenceTransformers path. It is not a global model-quality count-out; revisit only if testing TEI/ONNX, 4B, or true contextualized multi-chunk document inputs.
 
 ### Gemini/Hosted Chat Retrieval Audit - 2026-05-28
 
