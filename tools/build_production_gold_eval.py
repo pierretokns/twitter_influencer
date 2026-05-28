@@ -644,11 +644,14 @@ def build_cases(conn: sqlite3.Connection) -> list[dict[str, Any]]:
         make_rag_case(
             "rag_unsupported_anthropic_terms_v1",
             "source_grounded_refusal",
-            "Which exact Anthropic subscription clause changed on May 25, 2026, and what price tier was affected?",
+            (
+                "Which enterprise customer received a private waiver from Anthropic for the June 15 automation "
+                "metering change, and what internal contract ID approved it?"
+            ),
             mixed_unsupported_sources,
             ["not support", "do not contain", "insufficient", "cannot determine"],
             unsupported=True,
-            notes="Hard negative: sources may mention Anthropic/Claude but not the requested exact subscription change.",
+            notes="Hard negative: sources discuss Anthropic/Claude automation billing but not private waivers or contract IDs.",
         ),
         make_rag_case(
             "rag_unsupported_finance_roi_v1",

@@ -298,6 +298,7 @@ def clean_output(text: str) -> str:
         text = text.split(" ... (truncated)\n\n", 1)[-1].strip()
     if "ANSWER:" in text:
         text = text.rsplit("ANSWER:", 1)[-1].strip()
+    text = re.sub(r"\[\s*Prompt:[^\]]+\]", "", text, flags=re.IGNORECASE)
     text = re.sub(r"\n?Exiting\.\.\.\s*$", "", text)
     return text.strip()
 
@@ -371,6 +372,10 @@ def score_answer(
             "no information",
             "not specified",
             "not available",
+            "not disclosed",
+            "no public",
+            "no source confirms",
+            "no sources confirm",
         ]
         behavior_passed = any(marker in lower for marker in refusal_markers)
     else:
