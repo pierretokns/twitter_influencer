@@ -7,6 +7,7 @@ import argparse
 import json
 import os
 import sqlite3
+import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -15,7 +16,6 @@ from typing import Any
 import numpy as np
 
 ROOT = Path(__file__).resolve().parents[1]
-import sys
 sys.path.insert(0, str(ROOT))
 
 DEFAULT_EMBEDDERS = [
@@ -303,46 +303,27 @@ def evaluate_pipeline(
         }
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--db", default="output_data/ai_news.db")
-    parser.add_argument("--out-dir", default="output_data/model_bench/retrieval_pipeline_matrix")
-    parser.add_argument("--embedders", nargs="*", default=DEFAULT_EMBEDDERS)
-    parser.add_argument("--rerankers", nargs="*", default=DEFAULT_RERANKERS)
-    parser.add_argument("--limit", type=int, default=1800)
-    parser.add_argument("--batch-size", type=int, default=16)
-    parser.add_argument("--max-sources", type=int, default=30)
-    parser.add_argument("--context-k", type=int, default=3)
-    args = parser.parse_args()
+def load_existing_results(results_path: Path) -> list[dict[str, Any]]:
+    if not results_path.exists():
+        return []
+    rows: list[dict[str, Any]] = []
+    for line in results_path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        try:
+            rows.append(json.loads(line))
+        except json.JSONDecodeError:
+            print(f"[warn] Skipping malformed result line in {results_path}", flush=True)
+    return rows
 
-    db_path = (ROOT / args.db).resolve()
-    out_dir = (ROOT / args.out_dir).resolve()
-    out_dir.mkdir(parents=True, exist_ok=True)
-    docs = load_corpus(db_path, args.limit)
 
-    results_path = out_dir / "retrieval_pipeline_matrix_results.jsonl"
-    summary_path = out_dir / "retrieval_pipeline_matrix_summary.json"
-    rows = []
-    with results_path.open("w", encoding="utf-8") as out:
-        for embedder in args.embedders:
-            for reranker in args.rerankers:
-                if embedder == "production_bge_m3_hybrid" and reranker not in {"none", "BAAI/bge-reranker-v2-m3", "mixedbread-ai/mxbai-rerank-base-v2", "Qwen/Qwen3-Reranker-0.6B"}:
-                    continue
-                print(f"PIPELINE embedder={embedder} reranker={reranker}", flush=True)
-                row = evaluate_pipeline(
-                    db_path,
-                    docs,
-                    embedder,
-                    reranker,
-                    args.batch_size,
-                    args.max_sources,
-                    args.context_k,
-                )
-                rows.append(row)
-                out.write(json.dumps(row, ensure_ascii=False) + "\n")
-                out.flush()
-                print(json.dumps({k: row.get(k) for k in ("embedder", "reranker", "ok", "passed", "avg_context_recall", "avg_top10_recall", "elapsed_sec", "error")}, ensure_ascii=False), flush=True)
-
+def write_summary(
+    summary_path: Path,
+    db_path: Path,
+    docs: list[dict[str, Any]],
+    rows: list[dict[str, Any]],
+    results_path: Path,
+) -> None:
     ranked = sorted(
         rows,
         key=lambda row: (
@@ -359,6 +340,7 @@ def main() -> int:
         "doc_count": len(docs),
         "case_count": len(CASES),
         "results_path": str(results_path),
+        "complete_rows": len(rows),
         "ranked": [
             {
                 "rank": i + 1,
@@ -375,6 +357,61 @@ def main() -> int:
         ],
     }
     summary_path.write_text(json.dumps(summary, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--db", default="output_data/ai_news.db")
+    parser.add_argument("--out-dir", default="output_data/model_bench/retrieval_pipeline_matrix")
+    parser.add_argument("--embedders", nargs="*", default=DEFAULT_EMBEDDERS)
+    parser.add_argument("--rerankers", nargs="*", default=DEFAULT_RERANKERS)
+    parser.add_argument("--limit", type=int, default=1800)
+    parser.add_argument("--batch-size", type=int, default=16)
+    parser.add_argument("--max-sources", type=int, default=30)
+    parser.add_argument("--context-k", type=int, default=3)
+    parser.add_argument("--resume", action="store_true", help="Append to existing results and skip completed embedder/reranker pairs")
+    args = parser.parse_args()
+
+    db_path = (ROOT / args.db).resolve()
+    out_dir = (ROOT / args.out_dir).resolve()
+    out_dir.mkdir(parents=True, exist_ok=True)
+    docs = load_corpus(db_path, args.limit)
+
+    results_path = out_dir / "retrieval_pipeline_matrix_results.jsonl"
+    summary_path = out_dir / "retrieval_pipeline_matrix_summary.json"
+    rows = load_existing_results(results_path) if args.resume else []
+    completed = {(row.get("embedder"), row.get("reranker")) for row in rows}
+    if rows:
+        write_summary(summary_path, db_path, docs, rows, results_path)
+        print(f"[resume] Loaded {len(rows)} existing rows from {results_path}", flush=True)
+
+    mode = "a" if args.resume else "w"
+    with results_path.open(mode, encoding="utf-8") as out:
+        for embedder in args.embedders:
+            for reranker in args.rerankers:
+                if embedder == "production_bge_m3_hybrid" and reranker not in {"none", "BAAI/bge-reranker-v2-m3", "mixedbread-ai/mxbai-rerank-base-v2", "Qwen/Qwen3-Reranker-0.6B"}:
+                    continue
+                if args.resume and (embedder, reranker) in completed:
+                    print(f"SKIP existing embedder={embedder} reranker={reranker}", flush=True)
+                    continue
+                print(f"PIPELINE embedder={embedder} reranker={reranker}", flush=True)
+                row = evaluate_pipeline(
+                    db_path,
+                    docs,
+                    embedder,
+                    reranker,
+                    args.batch_size,
+                    args.max_sources,
+                    args.context_k,
+                )
+                rows.append(row)
+                out.write(json.dumps(row, ensure_ascii=False) + "\n")
+                out.flush()
+                write_summary(summary_path, db_path, docs, rows, results_path)
+                print(json.dumps({k: row.get(k) for k in ("embedder", "reranker", "ok", "passed", "avg_context_recall", "avg_top10_recall", "elapsed_sec", "error")}, ensure_ascii=False), flush=True)
+
+    write_summary(summary_path, db_path, docs, rows, results_path)
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
     print(json.dumps(summary, indent=2, ensure_ascii=False))
     return 0
 
