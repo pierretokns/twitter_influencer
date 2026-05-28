@@ -377,7 +377,21 @@ def score_answer(
             "no source confirms",
             "no sources confirm",
         ]
-        behavior_passed = any(marker in lower for marker in refusal_markers)
+        unsupported_specificity_markers = [
+            r"\$\s*\d",
+            r"\b\d+\s*(?:month|months|year|years)\b",
+            r"\bcontract\s+id\s*[:#-]?\s*[a-z0-9-]{3,}",
+            r"\bsigned\s+a\s+private\b",
+            r"\bgranted\s+a\s+private\s+waiver\b",
+            r"\breceived\s+a\s+private\s+waiver\b",
+            r"\bapproved\s+by\s+[A-Z][A-Za-z]+",
+        ]
+        invented_specifics = [
+            pattern
+            for pattern in unsupported_specificity_markers
+            if re.search(pattern, answer, flags=re.IGNORECASE)
+        ]
+        behavior_passed = any(marker in lower for marker in refusal_markers) and not invented_specifics
     else:
         behavior_passed = bool(valid_citations) and expected_coverage >= 0.35
     return {
@@ -388,6 +402,7 @@ def score_answer(
         "valid_citations": valid_citations,
         "invalid_citations": invalid_citations,
         "thinking_leak": thinking_leak,
+        "invented_unsupported_specifics": invented_specifics if case.get("unsupported") else [],
         "passed": behavior_passed and not invalid_citations and not thinking_leak,
     }
 
