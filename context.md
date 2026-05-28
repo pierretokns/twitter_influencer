@@ -1886,6 +1886,20 @@ State-of-AI research note:
   - `Qwen/Qwen3-Embedding-0.6B`: context recall 0.271, top-10 recall 0.426, elapsed 244.1s, failed current pass threshold.
   - Per-slice weakness is severe for finance and governance in this small sample: finance context/top-10 recall 0.0/0.0, governance 0.125/0.25. YouTube is strong at 0.778/1.0.
   - Interpretation: do not count Qwen3 embedding out globally yet because this was a small sample and index speed is less important than online retrieval speed, but it is not a current top-3 candidate for Brandon finance/governance retrieval without a better runtime or retrieval formulation.
+- Retrieval timing benchmark adjustment:
+  - `tools/retrieval_pipeline_matrix_bench.py` now separates offline startup/indexing timing from online query timing. Offline fields include model load and corpus/document encoding; online fields include query embedding, vector scoring/ranking, reranking, and production retrieval/context packing.
+  - This matches the production constraint: document embedding can run slowly in scraping/backfill jobs, while online query retrieval must stay fast.
+- Timing-aware smoke, 300 docs (`retrieval_pipeline_matrix_online_timing_smoke_v1`):
+  - `sentence-transformers/all-MiniLM-L6-v2`: avg context/top-10 0.204/0.378, offline doc encode 8.0s, online 0.068s total for 7 queries, about 0.010s/query.
+  - `google/embeddinggemma-300m`: 0.256/0.414, offline doc encode 61.2s, online 0.422s total, about 0.060s/query.
+  - `ibm-granite/granite-embedding-small-english-r2`: 0.240/0.377, offline doc encode 18.1s, online 0.099s total, about 0.014s/query.
+  - `ibm-granite/granite-embedding-97m-multilingual-r2`: 0.240/0.354, offline doc encode 14.2s, online 0.116s total, about 0.017s/query.
+  - `Qwen/Qwen3-Embedding-0.6B`: 0.271/0.426, offline doc encode 214.2s, online 1.785s total, about 0.255s/query.
+  - Small-sample quality is weak for all single-vector candidates because the 300-doc sample misses finance sources; use larger runs for quality ranking. For online speed, MiniLM/Granite/EmbeddingGemma are all acceptable, Qwen is acceptable for background but not obviously worth its finance/governance weakness.
+- Production BGE-M3 hybrid warm timing, 300 docs (`retrieval_pipeline_matrix_online_timing_production_warm_v1`):
+  - No reranker: avg context/top-10 0.398/0.456, passes threshold. First cold query 17.7s, warm average 0.868s/query, warm p95 0.976s/query.
+  - With `BAAI/bge-reranker-v2-m3`: avg context/top-10 0.460/0.535, passes and improves quality. Warm average 8.543s/query, warm p95 8.977s/query.
+  - Decision: BGE-M3 hybrid remains the strongest production-shaped retrieval baseline, especially for finance. BGE reranking is useful for slow background synthesis or high-stakes citation checks, but too expensive to enable unconditionally in interactive chat unless `reranker_max_sources` is reduced or replaced by a faster reranker.
 
 ### Gemini/Hosted Chat Retrieval Audit - 2026-05-28
 
