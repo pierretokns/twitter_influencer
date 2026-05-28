@@ -542,6 +542,21 @@ def build_cases(conn: sqlite3.Connection) -> list[dict[str, Any]]:
             STRUCTURED_OUTPUT_TERMS,
             "Gold sources support the structured-output/control-plane slice before fine-tuning.",
         ),
+        make_retrieval_case(
+            "retrieval_inline_citation_support_v1",
+            "rag_webchat_inline_citations",
+            (
+                "Find source passages for a citation-heavy answer about finance AI signals, local models, "
+                "retrieval, reranking, evals, and source-grounded citation support."
+            ),
+            sources_covering_terms(
+                finance_sources + finance_payment_sources + curation_sources + local_model_sources,
+                ["finance", "ai", "model", "retrieval", "rerank", "citation", "eval"],
+                max_sources=8,
+            ),
+            ["finance", "ai", "model", "retrieval", "rerank", "citation", "eval"],
+            "Gold sources exercise retrieval for inline-citation webchat answers before generation.",
+        ),
         make_rag_case(
             "rag_finance_brief_v1",
             "finance_domain_signal",
@@ -596,6 +611,23 @@ def build_cases(conn: sqlite3.Connection) -> list[dict[str, Any]]:
             local_deployment_terms,
             unsupported=False,
             notes="Tests local-model operational synthesis for the migration away from hosted Claude.",
+        ),
+        make_rag_case(
+            "rag_inline_citation_finance_model_brief_v1",
+            "rag_webchat_inline_citations",
+            (
+                "Write concise Brandon-style bullets on the AI-and-finance items in these sources. "
+                "Every factual sentence must have an inline numeric citation, and unsupported finance/model "
+                "claims must be omitted."
+            ),
+            sources_covering_terms(
+                finance_sources + finance_payment_sources + curation_sources + local_model_sources,
+                ["finance", "ai", "model", "retrieval", "rerank", "citation", "eval"],
+                max_sources=8,
+            ),
+            ["finance", "ai", "model", "retrieval", "citation", "eval"],
+            unsupported=False,
+            notes="Tests the actual webchat workload: concise sourced bullets with sentence-level inline citations.",
         ),
         make_rag_case(
             "rag_prompt_optimization_before_finetune_v1",
