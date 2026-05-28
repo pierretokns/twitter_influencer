@@ -1837,3 +1837,42 @@ State-of-AI research note:
 - Benchmark/smoke scripts start fresh Python processes, so their logs can show repeated BGE-M3 loads even though a long-running service would keep the singleton model in memory.
 - `agents/hybrid_retriever.py` now caches single-query embeddings after first encode, not only startup-precomputed queries. Repeated identical chat queries in the same process should skip re-encoding.
 - `agents/chat_agent.py` now returns a clear retrieval warning if the query embedder is unavailable, because stored vectors cannot be searched without a query vector.
+
+### Embedding/Reranker Matrix Updates - 2026-05-28
+
+- HF access check on the VM now passes for the new embedding/reranker candidates:
+  - Granite: `ibm-granite/granite-embedding-small-english-r2`, `granite-embedding-english-r2`, `granite-embedding-97m-multilingual-r2`, `granite-embedding-311m-multilingual-r2`, and `granite-embedding-reranker-english-r2`.
+  - Jina: `jinaai/jina-embeddings-v4` and `jinaai/jina-embeddings-v4-text-code-GGUF`.
+  - Qwen: `Qwen/Qwen3-Embedding-0.6B`, `Qwen/Qwen3-Embedding-0.6B-GGUF`, `Qwen/Qwen3-Reranker-0.6B`.
+  - Perplexity: `perplexity-ai/pplx-embed-v1-0.6b`, `pplx-embed-context-v1-0.6b`, and 4B reference variants.
+  - ZeroEntropy/Mixedbread rerankers are also accessible.
+- Retrieval matrix `output_data/model_bench/retrieval_pipeline_matrix_text_embedders_v1`:
+  - `sentence-transformers/all-MiniLM-L6-v2`: context recall 0.487, top-10 recall 0.565, 18.9s.
+  - `BAAI/bge-m3`: context recall 0.450, top-10 recall 0.653, 321.4s.
+  - production `BGE-M3` hybrid path: context recall 0.414, top-10 recall 0.506, 28.2s.
+  - `google/embeddinggemma-300m`: now accessible after gate approval, but previous row was gated; retest pending.
+  - `nvidia/llama-nemotron-embed-1b-v2`: counted out for this 8 GB CPU VM after projecting roughly 2.5 hours for a 1,800-document embedding matrix while consuming most CPU/RAM.
+- MiniLM reranker matrix `retrieval_pipeline_matrix_minilm_bge_reranker_v1`:
+  - MiniLM without reranker: context recall 0.460, top-10 recall 0.612, 67.7s.
+  - MiniLM + `BAAI/bge-reranker-v2-m3`: context recall 0.467, top-10 recall 0.626, 229.1s.
+  - Interpretation: BGE reranking gives only a small lift at `max_sources=15`; keep it for focused service-path validation, but do not assume it is worth the CPU cost for every background retrieval job.
+- Granite perf matrix `retrieval_pipeline_matrix_granite_perf_v1` with `--text-chars 1200 --model-max-length 512`:
+  - `ibm-granite/granite-embedding-small-english-r2`: context recall 0.489, top-10 recall 0.637, 138.7s.
+  - `ibm-granite/granite-embedding-97m-multilingual-r2`: context recall 0.443, top-10 recall 0.655, 91.9s.
+  - MiniLM baseline in same run: context recall 0.446, top-10 recall 0.567, 52.9s.
+  - Earlier Granite 97M default text-length run scored context recall 0.489, top-10 recall 0.673, 134.7s.
+  - `granite-embedding-311m-multilingual-r2` was stopped as too slow on this VM before completion.
+  - Interpretation: Granite small English is the best current context-recall candidate among new accessible embedders, but MiniLM remains the latency baseline. Granite 97M improves top-10 recall but loses context recall under the shorter text/max-length setting. Granite 311M is not a practical CPU embedding candidate for this VM without a dedicated optimized runtime.
+- Benchmark harness updates:
+  - `tools/retrieval_pipeline_matrix_bench.py` now supports `--text-chars`, `--model-max-length`, `--truncate-dim`, per-row resumability, and Jina query/passage prompt handling.
+  - `tools/check_hf_model_access.py` records candidate access/gating status without downloading weights.
+
+### Gemini/Hosted Chat Retrieval Audit - 2026-05-28
+
+- Background audit found no active Gemini runtime path. Gemini references are stale comments/dependencies or query examples; main Flask chat uses `ChatAgent`.
+- Main Flask `ChatAgent` hosted/local branches share retrieval, optional reranking, context compression, source numbering, and basic citation extraction.
+- Divergences:
+  - `ChatAgent` still defaults to hosted Bedrock/Strands when `CHAT_BACKEND` is unset; deployment should set `CHAT_BACKEND=llama_cpp` or fail closed for Hetzner.
+  - Local llama.cpp branch has missing-citation retry; hosted Bedrock branch does not.
+  - Citation extraction is range checking only; neither hosted nor local chat performs the full hybrid citation support validation used in `linkedin_autopilot.py`.
+  - Legacy AgentCore chat remains disabled by default; if re-enabled, it is a retrieval regression because it fetches `/api/feed` instead of using BGE/chunk/rerank retrieval.

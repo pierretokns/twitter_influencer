@@ -108,7 +108,7 @@ def doc_blob(doc: dict[str, Any]) -> str:
     return " ".join(str(doc.get(key) or "") for key in ("id", "type", "source", "title", "text", "url"))
 
 
-def load_corpus(db_path: Path, limit: int) -> list[dict[str, Any]]:
+def load_corpus(db_path: Path, limit: int, text_chars: int) -> list[dict[str, Any]]:
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     docs: list[dict[str, Any]] = []
@@ -160,7 +160,7 @@ def load_corpus(db_path: Path, limit: int) -> list[dict[str, Any]]:
                     "type": source_type,
                     "source": row["source"],
                     "title": row["title"],
-                    "text": text[:2400],
+                    "text": text[:text_chars],
                     "url": row["url"],
                 }
             )
@@ -168,17 +168,35 @@ def load_corpus(db_path: Path, limit: int) -> list[dict[str, Any]]:
     return docs[:limit]
 
 
-def encode_sentence_transformer(model_name: str, texts: list[str], batch_size: int) -> np.ndarray:
+def encode_sentence_transformer(
+    model_name: str,
+    texts: list[str],
+    batch_size: int,
+    model_max_length: int | None,
+    truncate_dim: int | None,
+    task: str | None = None,
+    prompt_name: str | None = None,
+) -> np.ndarray:
     hf_env()
     from sentence_transformers import SentenceTransformer
 
     model = SentenceTransformer(model_name, trust_remote_code=True)
+    if model_max_length:
+        model.max_seq_length = model_max_length
+    encode_kwargs: dict[str, Any] = {}
+    if truncate_dim:
+        encode_kwargs["truncate_dim"] = truncate_dim
+    if task:
+        encode_kwargs["task"] = task
+    if prompt_name:
+        encode_kwargs["prompt_name"] = prompt_name
     emb = model.encode(
         texts,
         batch_size=batch_size,
         normalize_embeddings=True,
         convert_to_numpy=True,
         show_progress_bar=True,
+        **encode_kwargs,
     )
     return np.asarray(emb, dtype=np.float32)
 
@@ -258,6 +276,8 @@ def evaluate_pipeline(
     batch_size: int,
     max_sources: int,
     context_k: int,
+    model_max_length: int | None,
+    truncate_dim: int | None,
 ) -> dict[str, Any]:
     started = time.time()
     rows: list[dict[str, Any]] = []
@@ -267,10 +287,28 @@ def evaluate_pipeline(
                 ranked = production_retrieve(db_path, case, max_sources, context_k, reranker_name)
                 rows.append(score_ranked(case, ranked, context_k))
         else:
-            doc_texts = [doc_blob(doc)[:2400] for doc in docs]
+            doc_texts = [doc_blob(doc) for doc in docs]
             query_texts = [case.query for case in CASES]
-            doc_emb = encode_sentence_transformer(embedder_name, doc_texts, batch_size)
-            query_emb = encode_sentence_transformer(embedder_name, query_texts, batch_size)
+            is_jina = embedder_name.startswith("jinaai/jina-embeddings-v4")
+            task = "retrieval" if is_jina else None
+            doc_emb = encode_sentence_transformer(
+                embedder_name,
+                doc_texts,
+                batch_size,
+                model_max_length,
+                truncate_dim,
+                task=task,
+                prompt_name="passage" if is_jina else None,
+            )
+            query_emb = encode_sentence_transformer(
+                embedder_name,
+                query_texts,
+                batch_size,
+                model_max_length,
+                truncate_dim,
+                task=task,
+                prompt_name="query" if is_jina else None,
+            )
             scores = query_emb @ doc_emb.T
             reranker = None if reranker_name == "none" else load_reranker(reranker_name)
             for i, case in enumerate(CASES):
@@ -369,13 +407,16 @@ def main() -> int:
     parser.add_argument("--batch-size", type=int, default=16)
     parser.add_argument("--max-sources", type=int, default=30)
     parser.add_argument("--context-k", type=int, default=3)
+    parser.add_argument("--text-chars", type=int, default=2400, help="Characters of title/content kept per document before embedding")
+    parser.add_argument("--model-max-length", type=int, default=None, help="Override SentenceTransformer max_seq_length")
+    parser.add_argument("--truncate-dim", type=int, default=None, help="Use Matryoshka truncate_dim for models that support it")
     parser.add_argument("--resume", action="store_true", help="Append to existing results and skip completed embedder/reranker pairs")
     args = parser.parse_args()
 
     db_path = (ROOT / args.db).resolve()
     out_dir = (ROOT / args.out_dir).resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
-    docs = load_corpus(db_path, args.limit)
+    docs = load_corpus(db_path, args.limit, args.text_chars)
 
     results_path = out_dir / "retrieval_pipeline_matrix_results.jsonl"
     summary_path = out_dir / "retrieval_pipeline_matrix_summary.json"
@@ -403,6 +444,8 @@ def main() -> int:
                     args.batch_size,
                     args.max_sources,
                     args.context_k,
+                    args.model_max_length,
+                    args.truncate_dim,
                 )
                 rows.append(row)
                 out.write(json.dumps(row, ensure_ascii=False) + "\n")
