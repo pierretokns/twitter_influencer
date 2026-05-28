@@ -1865,7 +1865,19 @@ State-of-AI research note:
   - Interpretation: Granite small English is the best current context-recall candidate among new accessible embedders, but MiniLM remains the latency baseline. Granite 97M improves top-10 recall but loses context recall under the shorter text/max-length setting. Granite 311M is not a practical CPU embedding candidate for this VM without a dedicated optimized runtime.
 - Benchmark harness updates:
   - `tools/retrieval_pipeline_matrix_bench.py` now supports `--text-chars`, `--model-max-length`, `--truncate-dim`, per-row resumability, and Jina query/passage prompt handling.
+  - Qwen3 embedding rows now use the model-card query prompt (`prompt_name="query"`) before any poor/slow result is counted out, because Qwen documents a 1-5% retrieval drop without task-specific query instructions.
   - `tools/check_hf_model_access.py` records candidate access/gating status without downloading weights.
+
+### Late-Interaction and Unified Retrieval Candidates - 2026-05-28
+
+- Initial retrieval research over-focused on the existing harness shape: single-vector SentenceTransformer embedders plus CrossEncoder rerankers. That missed candidate families that need different execution paths:
+  - ColBERT/PLAID-style late interaction: multi-vector per-token document embeddings with MaxSim scoring. HF candidates to access-check/test include `colbert-ir/colbertv2.0`, `answerdotai/answerai-colbert-small-v1`, `jinaai/jina-colbert-v2`, `mixedbread-ai/mxbai-edge-colbert-v0-32m`, `mixedbread-ai/mxbai-edge-colbert-v0-17m`, `LiquidAI/LFM2-ColBERT-350M`, and `LiquidAI/LFM2-ColBERT-350M-GGUF`.
+  - E2Rank-style unified embedding + listwise reranking: `Alibaba-NLP/E2Rank-0.6B` and `mradermacher/E2Rank-0.6B-GGUF`. The model card requires E2Rank-specific handling: append `<|endoftext|>`, use left padding/last-token pooling, use query instructions, and for reranking create a listwise pseudo-query from the top candidate docs. Do not score this through a generic CrossEncoder path.
+  - EBCAR-style embedding-only context-aware reranking: currently found as paper plus official `BorealisAI/EBCAR` GitHub implementation, not as an obvious production HF weight. Treat as an algorithmic prototype to revisit after the top HF-ready models are tested.
+- CPU-specific rule before counting out a slow retrieval model:
+  - Check the model card/runtime notes first: query prompts/instructions, EOS requirements, max sequence length, matryoshka/truncate dimensions, batch size, tokenizer padding side, ONNX/GGUF/TEI availability, and whether the model is single-vector, multi-vector, or listwise.
+  - Count out only after either the recommended CPU path is tested or the recommended path is incompatible with the 8 GB Hetzner VM.
+  - ColBERT needs a separate late-interaction benchmark path with indexed token vectors or a rerank-only top-N mode; E2Rank needs a unified embed/listwise rerank path; EBCAR needs implementation work before a fair model comparison.
 
 ### Gemini/Hosted Chat Retrieval Audit - 2026-05-28
 

@@ -23,6 +23,7 @@ DEFAULT_EMBEDDERS = [
     "sentence-transformers/all-MiniLM-L6-v2",
     "BAAI/bge-m3",
     "google/embeddinggemma-300m",
+    "Qwen/Qwen3-Embedding-0.6B",
     "nvidia/llama-nemotron-embed-1b-v2",
 ]
 
@@ -201,6 +202,14 @@ def encode_sentence_transformer(
     return np.asarray(emb, dtype=np.float32)
 
 
+def prompt_for_embedder(model_name: str, is_query: bool) -> str | None:
+    if not is_query:
+        return None
+    if model_name.startswith("Qwen/Qwen3-Embedding-"):
+        return "query"
+    return None
+
+
 def load_reranker(model_name: str) -> Any:
     hf_env()
     from sentence_transformers import CrossEncoder
@@ -307,7 +316,7 @@ def evaluate_pipeline(
                 model_max_length,
                 truncate_dim,
                 task=task,
-                prompt_name="query" if is_jina else None,
+                prompt_name="query" if is_jina else prompt_for_embedder(embedder_name, is_query=True),
             )
             scores = query_emb @ doc_emb.T
             reranker = None if reranker_name == "none" else load_reranker(reranker_name)
