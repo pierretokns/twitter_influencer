@@ -477,7 +477,7 @@ def build_report() -> dict[str, Any]:
         "production_gold_results.jsonl"
     )
     enhanced_generation_path = (
-        "output_data/gold_eval/production_expanded_v2_generation_top3_compact_v2/"
+        "output_data/gold_eval/production_expanded_v2_generation_top3_compact_v2_rescored/"
         "production_gold_results.jsonl"
     )
     seed_generation_path = (
@@ -562,7 +562,7 @@ def build_report() -> dict[str, Any]:
                 "fine_tune_needed": False,
             },
             "rag_generation_and_webchat": {
-                "decision": "base LFM2-2.6B remains the best user-facing RAG generator, but the enhanced 24-case benchmark shows base models are not fully sufficient without validators/retries; Gemma 4 E2B is counted out for this role due thinking leakage on every enhanced case",
+                "decision": "base LFM2-2.6B remains the best user-facing RAG generator, but the enhanced 24-case rescored benchmark shows base models are not fully sufficient without deterministic citation cleanup and unsupported-source routing; Gemma 4 E2B is counted out for this role due thinking leakage on every enhanced case",
                 "top_models": generation["models"],
                 "enhanced_v2": enhanced_generation,
                 "phi_backup_with_retry": phi_retry,
