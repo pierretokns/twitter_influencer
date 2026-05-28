@@ -1927,6 +1927,12 @@ State-of-AI research note:
   - `google/embeddinggemma-300m` without reranker is also strong: finance-AI gate 0.341/0.673, avg 0.475/0.637, online 0.059s/query after a one-time 309.7s doc encode.
   - `ibm-granite/granite-embedding-small-english-r2` is viable but just misses finance-AI gate without reranker: 0.291/0.673, avg 0.451/0.626, online 0.019s/query after a one-time 99.2s doc encode.
   - Practical retrieval shortlist from this run: Granite 97M no reranker for fast Brandon finance-AI retrieval, EmbeddingGemma no reranker for quality/latency balance, production BGE-M3 hybrid + ModernBERT for production-shaped citation/chat validation, and Granite 97M + ModernBERT for slower background synthesis quality.
+- E2Rank custom adapter path:
+  - `tools/retrieval_pipeline_matrix_bench.py` now supports `--rerankers e2rank-listwise` for `Alibaba-NLP/E2Rank-*` embedders. This follows the model-card path: left-padding Transformers load, last-token pooling, EOS-appended docs, instruction query embeddings, and listwise pseudo-query embeddings scored against cached E2Rank doc embeddings.
+  - Regression test `test_retrieval_model_adapters.py` pins the listwise prompt shape and skips `e2rank-listwise` for non-E2Rank embedders.
+  - VM smoke `e2rank_listwise_smoke` proved the path works on CPU and reuses cached doc embeddings: listwise row had `embedding_cache_hit: 1.0`.
+  - VM 300-doc smoke `e2rank_listwise_smoke_300`: E2Rank embedding-only scored avg context/top-10 0.301/0.430 and missed the 0.45 top-10 threshold; E2Rank listwise scored 0.261/0.430. Both failed the finance-AI gate at 0.0/0.0.
+  - Decision: E2Rank-0.6B is not a current top Brandon finance-AI retrieval candidate on this corpus/sample. Do not count out globally because the adapter path is now correct and the 300-doc sample can miss finance sources, but prioritize Granite 97M, EmbeddingGemma, and production BGE-M3/ModernBERT before spending a full 1,200-doc E2Rank run.
 
 ### Gemini/Hosted Chat Retrieval Audit - 2026-05-28
 
