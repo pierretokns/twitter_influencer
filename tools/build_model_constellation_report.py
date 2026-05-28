@@ -159,6 +159,7 @@ def leaders_from_overall_retrieval(summary: dict[str, Any], source: str, limit: 
     rows = [row for row in summary.get("ranked", []) if row.get("ok") and row.get("passed")]
     rows.sort(
         key=lambda row: (
+            retrieval_score(row),
             row.get("avg_context_recall", 0.0),
             row.get("avg_top10_recall", 0.0),
             -float((row.get("timings") or {}).get("online_avg_per_query_sec", row.get("elapsed_sec") or 1e9)),
