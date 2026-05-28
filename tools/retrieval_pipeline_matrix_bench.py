@@ -18,6 +18,8 @@ import numpy as np
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
+from tools.retrieval_model_adapters import adapter_for_model, format_texts_for_model
+
 DEFAULT_EMBEDDERS = [
     "production_bge_m3_hybrid",
     "sentence-transformers/all-MiniLM-L6-v2",
@@ -241,24 +243,9 @@ def encode_with_sentence_transformer(
     return np.asarray(emb, dtype=np.float32)
 
 
-def format_texts_for_embedder(model_name: str, texts: list[str], is_query: bool) -> list[str]:
-    if model_name.startswith("nomic-ai/nomic-embed-text-v2-moe"):
-        prefix = "search_query: " if is_query else "search_document: "
-        return [prefix + text for text in texts]
-    if model_name.startswith("Alibaba-NLP/E2Rank-"):
-        if is_query:
-            task = "Given a web search query, retrieve relevant passages that answer the query"
-            return [f"Instruct: {task}\nQuery:{text}<|endoftext|>" for text in texts]
-        return [text + "<|endoftext|>" for text in texts]
-    return texts
-
-
 def prompt_for_embedder(model_name: str, is_query: bool) -> str | None:
-    if not is_query:
-        return None
-    if model_name.startswith("Qwen/Qwen3-Embedding-"):
-        return "query"
-    return None
+    adapter = adapter_for_model(model_name)
+    return adapter.query_prompt_name if is_query else adapter.document_prompt_name
 
 
 def load_reranker(model_name: str) -> Any:
@@ -365,10 +352,12 @@ def evaluate_pipeline(
             timings["online_retrieve_warm_avg_sec"] = round(sum(warm_times) / len(warm_times), 3)
             timings["online_retrieve_warm_p95_sec"] = round(float(np.percentile(warm_times, 95)), 3)
         else:
-            doc_texts = format_texts_for_embedder(embedder_name, [doc_blob(doc) for doc in docs], is_query=False)
-            query_texts = format_texts_for_embedder(embedder_name, [case.query for case in CASES], is_query=True)
-            is_jina = embedder_name.startswith("jinaai/jina-embeddings-v")
-            task = "retrieval" if is_jina else None
+            adapter = adapter_for_model(embedder_name)
+            if not adapter.current_matrix_supported:
+                raise ValueError(f"{embedder_name} requires {adapter.kind} adapter: {adapter.notes}")
+            doc_texts = format_texts_for_model(embedder_name, [doc_blob(doc) for doc in docs], is_query=False)
+            query_texts = format_texts_for_model(embedder_name, [case.query for case in CASES], is_query=True)
+            task = adapter.task
             load_started = time.time()
             model = load_sentence_transformer(embedder_name, model_max_length)
             timings["offline_model_load_sec"] = round(time.time() - load_started, 3)
@@ -379,7 +368,7 @@ def evaluate_pipeline(
                 batch_size,
                 truncate_dim,
                 task=task,
-                prompt_name="passage" if is_jina else None,
+                prompt_name=prompt_for_embedder(embedder_name, is_query=False),
             )
             timings["offline_doc_encode_sec"] = round(time.time() - doc_started, 3)
             query_started = time.time()
@@ -389,7 +378,7 @@ def evaluate_pipeline(
                 batch_size,
                 truncate_dim,
                 task=task,
-                prompt_name="query" if is_jina else prompt_for_embedder(embedder_name, is_query=True),
+                prompt_name=prompt_for_embedder(embedder_name, is_query=True),
             )
             timings["online_query_encode_sec"] = round(time.time() - query_started, 3)
             search_started = time.time()
