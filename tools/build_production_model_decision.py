@@ -590,11 +590,12 @@ def build_report() -> dict[str, Any]:
                 "remaining_gate": "human-review failures and add more held-out traces as production schemas change before considering fine-tuning",
             },
             "brandon_finance_style": {
-                "decision": "human-review packet and split tooling exist, but there are zero reviewed rows; not enough labels for final style or fine-tuning decision",
-                "fine_tune_needed": "optional later",
+                "decision": "base LFM2-2.6B is good enough for first Brandon finance/news style deployment under the current code-scored finance, inline-citation, local-model, and refusal slices; human labels are still required before any style fine-tune",
+                "fine_tune_needed": "not before first deployment; optional later only after reviewed Brandon-usefulness labels identify repeated style failures",
                 "human_review": human_review,
                 "review_splits": review_splits,
-                "next_gate": "label answer usefulness, finance relevance, and sentence/source citation support in the review packet",
+                "scoreboard": slice_scoreboard,
+                "next_gate": "label answer usefulness, finance relevance, and sentence/source citation support in the review packet before using any data for style SFT",
             },
         },
         "current_deployment_recommendation": {
@@ -632,7 +633,7 @@ def build_report() -> dict[str, Any]:
         "hosted_migration": hosted_audit,
         "llm_client_local_smoke": llm_client_smoke,
         "remaining_before_goal_completion": [
-            "Human-label the generated review packet; current split summary has zero reviewed rows and zero approved training candidates.",
+            "Human-label the generated review packet before any fine-tuning; current split summary has zero reviewed rows and zero approved training candidates.",
             "Keep the model regression gate passing and add more held-out traces as production behavior changes.",
             "Keep the disabled AgentCore/hosted paths guarded unless they are rewritten to call Hetzner-local services; current scanned hosted paths are either local-backed docs/code or disabled-by-default legacy runtimes.",
         ],
