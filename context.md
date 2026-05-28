@@ -137,6 +137,7 @@ Benchmark validity references:
 Firewall update completed:
 
 - Added current VPN IP `23.234.114.196/32` for inbound TCP `49222`.
+- VPN changed on 2026-05-28; added current VPN IP `23.234.110.196/32` for inbound TCP `49222`, `5001`, and `5002`.
 
 Services stopped during model work:
 
