@@ -1933,6 +1933,10 @@ State-of-AI research note:
   - VM smoke `e2rank_listwise_smoke` proved the path works on CPU and reuses cached doc embeddings: listwise row had `embedding_cache_hit: 1.0`.
   - VM 300-doc smoke `e2rank_listwise_smoke_300`: E2Rank embedding-only scored avg context/top-10 0.301/0.430 and missed the 0.45 top-10 threshold; E2Rank listwise scored 0.261/0.430. Both failed the finance-AI gate at 0.0/0.0.
   - Decision: E2Rank-0.6B is not a current top Brandon finance-AI retrieval candidate on this corpus/sample. Do not count out globally because the adapter path is now correct and the 300-doc sample can miss finance sources, but prioritize Granite 97M, EmbeddingGemma, and production BGE-M3/ModernBERT before spending a full 1,200-doc E2Rank run.
+- ColBERT late-interaction path:
+  - Added `tools/colbert_late_interaction_bench.py`, a separate MaxSim token-embedding smoke harness for ColBERT/late-interaction models. It is intentionally not folded into the single-vector matrix.
+  - VM smokes ran for `answerdotai/answerai-colbert-small-v1`, `mixedbread-ai/mxbai-edge-colbert-v0-17m`, and `mixedbread-ai/mxbai-edge-colbert-v0-32m` on 20 docs. All executed, but SentenceTransformers warned that no ST model package was found and created a generic mean-pooling model.
+  - Because of that fallback, the poor finance/generic scores are not fair ColBERT quality evidence. Treat these as runtime probes only. A fair ColBERT count-out requires a model-specific loader or official example path that exposes the intended multi-vector projection/scoring behavior.
 
 ### Gemini/Hosted Chat Retrieval Audit - 2026-05-28
 
