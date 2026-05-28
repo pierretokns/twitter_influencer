@@ -178,12 +178,35 @@ def encode_sentence_transformer(
     task: str | None = None,
     prompt_name: str | None = None,
 ) -> np.ndarray:
+    model = load_sentence_transformer(model_name, model_max_length)
+    return encode_with_sentence_transformer(
+        model,
+        texts,
+        batch_size,
+        truncate_dim,
+        task=task,
+        prompt_name=prompt_name,
+    )
+
+
+def load_sentence_transformer(model_name: str, model_max_length: int | None) -> Any:
     hf_env()
     from sentence_transformers import SentenceTransformer
 
     model = SentenceTransformer(model_name, trust_remote_code=True)
     if model_max_length:
         model.max_seq_length = model_max_length
+    return model
+
+
+def encode_with_sentence_transformer(
+    model: Any,
+    texts: list[str],
+    batch_size: int,
+    truncate_dim: int | None,
+    task: str | None = None,
+    prompt_name: str | None = None,
+) -> np.ndarray:
     encode_kwargs: dict[str, Any] = {}
     if truncate_dim:
         encode_kwargs["truncate_dim"] = truncate_dim
@@ -200,6 +223,18 @@ def encode_sentence_transformer(
         **encode_kwargs,
     )
     return np.asarray(emb, dtype=np.float32)
+
+
+def format_texts_for_embedder(model_name: str, texts: list[str], is_query: bool) -> list[str]:
+    if model_name.startswith("nomic-ai/nomic-embed-text-v2-moe"):
+        prefix = "search_query: " if is_query else "search_document: "
+        return [prefix + text for text in texts]
+    if model_name.startswith("Alibaba-NLP/E2Rank-"):
+        if is_query:
+            task = "Given a web search query, retrieve relevant passages that answer the query"
+            return [f"Instruct: {task}\nQuery:{text}<|endoftext|>" for text in texts]
+        return [text + "<|endoftext|>" for text in texts]
+    return texts
 
 
 def prompt_for_embedder(model_name: str, is_query: bool) -> str | None:
@@ -291,41 +326,73 @@ def evaluate_pipeline(
     started = time.time()
     rows: list[dict[str, Any]] = []
     try:
+        timings: dict[str, float] = {}
         if embedder_name == "production_bge_m3_hybrid":
+            retrieve_total = 0.0
             for case in CASES:
+                retrieve_started = time.time()
                 ranked = production_retrieve(db_path, case, max_sources, context_k, reranker_name)
+                retrieve_total += time.time() - retrieve_started
                 rows.append(score_ranked(case, ranked, context_k))
+            timings["online_retrieve_total_sec"] = round(retrieve_total, 3)
+            timings["online_retrieve_avg_sec"] = round(retrieve_total / len(CASES), 3)
         else:
-            doc_texts = [doc_blob(doc) for doc in docs]
-            query_texts = [case.query for case in CASES]
-            is_jina = embedder_name.startswith("jinaai/jina-embeddings-v4")
+            doc_texts = format_texts_for_embedder(embedder_name, [doc_blob(doc) for doc in docs], is_query=False)
+            query_texts = format_texts_for_embedder(embedder_name, [case.query for case in CASES], is_query=True)
+            is_jina = embedder_name.startswith("jinaai/jina-embeddings-v")
             task = "retrieval" if is_jina else None
-            doc_emb = encode_sentence_transformer(
-                embedder_name,
+            load_started = time.time()
+            model = load_sentence_transformer(embedder_name, model_max_length)
+            timings["offline_model_load_sec"] = round(time.time() - load_started, 3)
+            doc_started = time.time()
+            doc_emb = encode_with_sentence_transformer(
+                model,
                 doc_texts,
                 batch_size,
-                model_max_length,
                 truncate_dim,
                 task=task,
                 prompt_name="passage" if is_jina else None,
             )
-            query_emb = encode_sentence_transformer(
-                embedder_name,
+            timings["offline_doc_encode_sec"] = round(time.time() - doc_started, 3)
+            query_started = time.time()
+            query_emb = encode_with_sentence_transformer(
+                model,
                 query_texts,
                 batch_size,
-                model_max_length,
                 truncate_dim,
                 task=task,
                 prompt_name="query" if is_jina else prompt_for_embedder(embedder_name, is_query=True),
             )
+            timings["online_query_encode_sec"] = round(time.time() - query_started, 3)
+            search_started = time.time()
             scores = query_emb @ doc_emb.T
+            timings["online_vector_score_sec"] = round(time.time() - search_started, 3)
             reranker = None if reranker_name == "none" else load_reranker(reranker_name)
+            rerank_total = 0.0
             for i, case in enumerate(CASES):
+                rank_started = time.time()
                 top_idx = list(np.argsort(-scores[i]))[:max_sources]
                 ranked = [{**docs[j], "score": round(float(scores[i, j]), 5)} for j in top_idx]
+                timings["online_vector_rank_sec"] = round(timings.get("online_vector_rank_sec", 0.0) + (time.time() - rank_started), 3)
                 if reranker is not None:
+                    rerank_started = time.time()
                     ranked = rerank_docs(reranker, case.query, ranked, batch_size)
+                    rerank_total += time.time() - rerank_started
                 rows.append(score_ranked(case, ranked, context_k))
+            timings["online_rerank_total_sec"] = round(rerank_total, 3)
+            timings["online_rerank_avg_sec"] = round(rerank_total / len(CASES), 3)
+        online_total = sum(
+            timings.get(key, 0.0)
+            for key in (
+                "online_query_encode_sec",
+                "online_vector_score_sec",
+                "online_vector_rank_sec",
+                "online_rerank_total_sec",
+                "online_retrieve_total_sec",
+            )
+        )
+        timings["online_total_sec"] = round(online_total, 3)
+        timings["online_avg_per_query_sec"] = round(online_total / len(CASES), 3)
         avg_context = sum(row["context_recall"] for row in rows) / len(rows)
         avg_top10 = sum(row["top10_recall"] for row in rows) / len(rows)
         passed = avg_context >= 0.28 and avg_top10 >= 0.45
@@ -337,6 +404,7 @@ def evaluate_pipeline(
             "avg_context_recall": round(avg_context, 3),
             "avg_top10_recall": round(avg_top10, 3),
             "elapsed_sec": round(time.time() - started, 3),
+            "timings": timings,
             "cases": rows,
         }
     except Exception as exc:
@@ -432,6 +500,7 @@ def write_summary(
                 "avg_context_recall": row.get("avg_context_recall"),
                 "avg_top10_recall": row.get("avg_top10_recall"),
                 "elapsed_sec": row.get("elapsed_sec"),
+                "timings": row.get("timings"),
                 "error": row.get("error"),
             }
             for i, row in enumerate(ranked)
@@ -494,7 +563,7 @@ def main() -> int:
                 out.write(json.dumps(row, ensure_ascii=False) + "\n")
                 out.flush()
                 write_summary(summary_path, db_path, docs, rows, results_path)
-                print(json.dumps({k: row.get(k) for k in ("embedder", "reranker", "ok", "passed", "avg_context_recall", "avg_top10_recall", "elapsed_sec", "error")}, ensure_ascii=False), flush=True)
+                print(json.dumps({k: row.get(k) for k in ("embedder", "reranker", "ok", "passed", "avg_context_recall", "avg_top10_recall", "elapsed_sec", "timings", "error")}, ensure_ascii=False), flush=True)
 
     write_summary(summary_path, db_path, docs, rows, results_path)
     summary = json.loads(summary_path.read_text(encoding="utf-8"))
