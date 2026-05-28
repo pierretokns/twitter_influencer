@@ -15,6 +15,7 @@ ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_OUT_DIR = ROOT / "output_data" / "model_bench" / "slice_scoreboard"
 
 RESULT_ARTIFACTS = [
+    "output_data/gold_eval/production_expanded_v2_generation_top3_compact_v2_chat_guardrails_rescored/production_gold_results.jsonl",
     "output_data/gold_eval/production_expanded_v2_generation_top3_compact/production_gold_results.jsonl",
     "output_data/gold_eval/production_expanded_v2_generation_phi_citation_retry/production_gold_results.jsonl",
     "output_data/gold_eval/production_expanded_v2_generation_curation_delta_top3/production_gold_results.jsonl",
