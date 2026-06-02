@@ -9,6 +9,14 @@ WorkingDirectory=/home/erki/twitter_influencer
 Environment=PATH=/home/erki/.local/bin:/usr/bin
 Environment=DISPLAY=:20
 Environment=AI_NEWS_DB_PATH=/home/appuser/twitter_influencer/output_data/ai_news.db
+Environment=CHAT_BACKEND=llama_cpp
+Environment=CHAT_LLAMA_MODEL=LiquidAI/LFM2-2.6B-GGUF:LFM2-2.6B-Q4_K_M.gguf
+Environment=CHAT_LLAMA_CLI=/home/appuser/opt/llama.cpp/llama-cli
+Environment=CHAT_MAX_TOKENS=180
+Environment=CHAT_LLAMA_THREADS=6
+Environment=CHAT_ENABLE_RERANKER=1
+Environment=CHAT_CONTEXT_MAX_SOURCES=3
+Environment=CHAT_CONTEXT_SOURCE_CHARS=450
 EnvironmentFile=/home/erki/twitter_influencer/.env
 ExecStart=/home/erki/.local/bin/uv run python linkedin_feed.py
 Restart=always
